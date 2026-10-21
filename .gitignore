@@ -1,0 +1,13 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+
+# Arduino / PlatformIO / ESP32 build artifacts
+.pio/
+.vscode/
+build/
+*.bin
+*.elf
+*.hex
