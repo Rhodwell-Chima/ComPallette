@@ -7,6 +7,9 @@ operating within a mine tunnel network. Emits protocol v1 packets, demonstrates
 immediate emergency alert handling (falls, gas spikes), and provides realistic
 telemetry streams for testing gateways, backends, and dashboards without requiring
 physical ESP32 hardware.
+
+Optionally forwards live simulated mesh packets directly to the surface backend
+via HTTP POST using the `--forward-to <URL>` parameter.
 """
 
 import argparse
@@ -14,8 +17,11 @@ import json
 import random
 import sys
 import time
+import urllib.request
+import urllib.error
 
 PROTOCOL_VERSION = 1
+DEFAULT_API_KEY = "compallette-mining-secret-key-v1"
 
 ANCHORS = [
     {"id": "ANCHOR-SHAFT1-SURFACE", "zone": "SURFACE-PORTAL"},
@@ -30,6 +36,30 @@ MINERS = [
     {"id": "MINER-106", "name": "Chileshe Phiri",  "current_zone": "LEVEL-3-ACTIVE-STOPE"},
     {"id": "MINER-112", "name": "Peter Mwape",     "current_zone": "LEVEL-2-HAULAGE-WAY"},
 ]
+
+
+def forward_packet_http(backend_url, endpoint, packet_dict):
+    """Optionally forwards packet to a live HTTP backend."""
+    if not backend_url:
+        return
+    url = backend_url.rstrip("/") + endpoint
+    data = json.dumps(packet_dict).encode("utf-8")
+    req = urllib.request.Request(
+        url,
+        data=data,
+        headers={
+            "Content-Type": "application/json",
+            "X-API-Key": DEFAULT_API_KEY,
+            "X-Gateway-ID": "GW-SIMULATOR",
+        },
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=1.5) as resp:
+            pass
+    except Exception as e:
+        # Gracefully handle backend unavailability during simulation
+        pass
 
 
 def generate_telemetry_packet(miner, seq, uptime_ms, trigger_hazard=False):
@@ -98,12 +128,14 @@ def generate_heartbeat_packet(node_id, role, zone, seq, uptime_ms, visible_nodes
     }
 
 
-def run_simulation(duration_seconds=30, interval_seconds=2.0):
+def run_simulation(duration_seconds=30, interval_seconds=2.0, forward_to=None):
     print("=" * 70)
     print("  COMPALLETTE UNDERGROUND MESH NETWORK SIMULATOR (Protocol v1)  ")
     print("=" * 70)
     print(f"[*] Simulating {len(MINERS)} wearable miner tags and {len(ANCHORS)} stationary anchors.")
     print(f"[*] Update Interval: {interval_seconds}s | Run Duration: {duration_seconds}s")
+    if forward_to:
+        print(f"[*] Forwarding packets to HTTP backend: {forward_to}")
     print("=" * 70)
 
     start_time = time.time()
@@ -148,10 +180,14 @@ def run_simulation(duration_seconds=30, interval_seconds=2.0):
                     print(f" --> Payload: {json.dumps(alert_pkt)}")
                     print("!" * 70)
 
+                    forward_packet_http(forward_to, "/api/v1/alert", alert_pkt)
+
                 # Regular telemetry output
                 co_val = telem_pkt["payload"]["co"]
                 status_badge = "[CRIT]" if co_val >= 50 else "[WARN]" if co_val >= 25 else "[NORM]"
                 print(f"[TX TELEMETRY #{seq:03d}] {miner['id']} @ {miner['current_zone']:<24} | CO: {co_val:>4.1f} ppm {status_badge} | Batt: {telem_pkt['payload']['batt']}V")
+
+                forward_packet_http(forward_to, "/api/v1/telemetry", telem_pkt)
 
             # 2. Periodic Anchor Node Heartbeat (every 5 cycles)
             if cycle % 5 == 0:
@@ -166,6 +202,7 @@ def run_simulation(duration_seconds=30, interval_seconds=2.0):
                         visible_nodes=len(MINERS) + len(ANCHORS) - 1,
                     )
                     print(f"[HEARTBEAT] {anchor['id']} ({anchor['zone']}) | Heap: {hb_pkt['payload']['heap']} B | Peers: {hb_pkt['payload']['nodes']}")
+                    forward_packet_http(forward_to, "/api/v1/heartbeat", hb_pkt)
 
             time.sleep(interval_seconds)
 
@@ -181,6 +218,7 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Compallette Mesh Network Simulator")
     parser.add_argument("--duration", type=int, default=10, help="Run duration in seconds")
     parser.add_argument("--interval", type=float, default=2.0, help="Packet interval in seconds")
+    parser.add_argument("--forward-to", type=str, default=None, help="HTTP backend base URL (e.g. http://127.0.0.1:8080)")
     args = parser.parse_args()
 
-    run_simulation(duration_seconds=args.duration, interval_seconds=args.interval)
+    run_simulation(duration_seconds=args.duration, interval_seconds=args.interval, forward_to=args.forward_to)

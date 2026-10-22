@@ -2,6 +2,7 @@
 #include <ArduinoJson.h>
 #include "Config.h"
 #include "Protocol.h"
+#include "GatewayManager.h"
 
 // ============================================================================
 // COMPALLETTE - SUBTERRANEAN MESH MONITORING NODE FIRMWARE
@@ -10,6 +11,10 @@
 // --- GLOBAL INSTANCES ---
 painlessMesh mesh;
 Scheduler userScheduler;
+
+#if (CURRENT_ROLE == ROLE_GATEWAY)
+GatewayManager gatewayManager;
+#endif
 
 // Backward-compatibility alias for legacy code references
 const bool NODE_IS_STATIONARY = (CURRENT_ROLE != ROLE_WEARABLE);
@@ -122,6 +127,11 @@ void receivedCallback(uint32_t from, String &msg) {
     Serial.printf("\n[ERROR] Malformed or unparseable packet from Node %u: %s\n", from, msg.c_str());
     return;
   }
+
+#if (CURRENT_ROLE == ROLE_GATEWAY)
+  // If operating as the surface/shaft gateway bridge, forward packet to buffer
+  gatewayManager.handleIncomingMeshPacket(from, msg);
+#endif
 
   // Handle Legacy format packets
   if (isLegacy) {
@@ -293,6 +303,11 @@ void setup() {
     taskSendTelemetry.enable();
   }
 
+#if (CURRENT_ROLE == ROLE_GATEWAY)
+  // Initialize uplink and offline buffering subsystem on gateway builds
+  gatewayManager.begin();
+#endif
+
   Serial.printf("[INIT] Mesh online. Unique Chip Mesh ID: %u\n", mesh.getNodeId());
   Serial.println("==============================================================\n");
 }
@@ -303,4 +318,9 @@ void setup() {
 void loop() {
   // Drives mesh packet routing, heartbeat timers, and task scheduling
   mesh.update();
+
+#if (CURRENT_ROLE == ROLE_GATEWAY)
+  // Drives Wi-Fi uplink state machine, backoff retries, and offline buffer flushes
+  gatewayManager.update();
+#endif
 }

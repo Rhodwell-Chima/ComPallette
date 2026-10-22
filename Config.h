@@ -7,7 +7,8 @@
 // COMPALLETTE - SYSTEM CONFIGURATION & NODE PROFILE
 // ============================================================================
 // This configuration file centralizes all network parameters, node identity,
-// timing, threshold limits, and hardware pin mappings.
+// timing, threshold limits, hardware pin mappings, gateway settings,
+// and offline store-and-forward buffer policies.
 
 // ----------------------------------------------------------------------------
 // 1. Mesh Network Configuration
@@ -78,5 +79,31 @@ enum NodeRole {
 // or synthetic test data generators to prevent unvalidated lab data from being
 // mistaken for real-world mine readings.
 #define SIMULATE_SENSORS        true
+
+// ----------------------------------------------------------------------------
+// 7. Gateway & Upstream Infrastructure Configuration
+// ----------------------------------------------------------------------------
+// Parameters used when CURRENT_ROLE is configured as ROLE_GATEWAY
+#define UPLINK_WIFI_SSID        "MineSurface_WiFi"
+#define UPLINK_WIFI_PASSWORD    "SurfaceLink2026"
+#define BACKEND_BASE_URL        "http://192.168.1.100:8080"
+#define BACKEND_API_KEY         "compallette-mining-secret-key-v1"
+#define BACKEND_TIMEOUT_MS      4000       // HTTP request timeout in ms
+
+// Backend API REST endpoints
+#define ENDPOINT_TELEMETRY      "/api/v1/telemetry"
+#define ENDPOINT_ALERT          "/api/v1/alert"
+#define ENDPOINT_HEARTBEAT      "/api/v1/heartbeat"
+
+// Gateway reconnection backoff timings (milliseconds)
+#define GW_RECONNECT_MIN_MS     2000       // Initial retry delay
+#define GW_RECONNECT_MAX_MS     60000      // Max exponential backoff ceiling
+
+// ----------------------------------------------------------------------------
+// 8. Offline Buffer & Store-and-Forward Configuration
+// ----------------------------------------------------------------------------
+#define BUFFER_MAX_RAM_ITEMS    50         // In-memory queue items (~10 KB heap)
+#define BUFFER_MAX_FLASH_ITEMS  500        // Persistent LittleFS queue items (~100 KB flash)
+#define BUFFER_FLASH_FILE       "/compallette_buffer.jsonl"
 
 #endif // CONFIG_H
