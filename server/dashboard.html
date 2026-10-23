@@ -30,11 +30,7 @@
       --font-mono: "JetBrains Mono", "SF Mono", Consolas, Menlo, Monaco, monospace;
     }
 
-    * {
-      box-sizing: border-box;
-      margin: 0;
-      padding: 0;
-    }
+    * { box-sizing: border-box; margin: 0; padding: 0; }
 
     body {
       background-color: var(--bg-base);
@@ -362,7 +358,7 @@
 
     .tab-btn.active {
       background-color: var(--bg-card);
-      color: #fff;
+      color: #38bdf8;
     }
 
     /* --- SUBTERRANEAN ZONE SPATIAL VIEW --- */
@@ -556,7 +552,6 @@
 
     canvas {
       width: 100%;
-      height: 140px;
       display: block;
     }
 
@@ -771,14 +766,33 @@
             <span>&#128506;</span> Subterranean Personnel Tracking
           </div>
           <div class="tab-bar">
-            <button class="tab-btn active" id="tab-btn-zones" onclick="switchView('zones')">ZONES (SPATIAL)</button>
+            <button class="tab-btn active" id="tab-btn-model" onclick="switchView('model')">DIGITAL MINE TWIN</button>
+            <button class="tab-btn" id="tab-btn-zones" onclick="switchView('zones')">ZONES (CARDS)</button>
             <button class="tab-btn" id="tab-btn-table" onclick="switchView('table')">PERSONNEL MATRIX</button>
           </div>
         </div>
 
         <div class="panel-body">
-          <!-- VIEW 1: ZONES -->
-          <div id="view-zones" class="zones-container">
+          <!-- VIEW 0: DIGITAL MINE TWIN SIMULATION MAP -->
+          <div id="view-model" style="display: block;">
+            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px; font-size: 11px; color: var(--text-muted);">
+              <span><strong style="color: #38bdf8;">SUBTERRANEAN DIGITAL MODEL</strong> &bull; Cross-Sectional Drift Schematic</span>
+              <span style="font-family: var(--font-mono);">SCALE: 1:500 &bull; WIRELESS MESH MINE TOPOLOGY</span>
+            </div>
+            <canvas id="mineModelCanvas" style="width: 100%; height: 460px; background: #070b14; border-radius: 6px; border: 1px solid var(--border-subtle); display: block;"></canvas>
+            <div style="display: flex; justify-content: space-between; align-items: center; margin-top: 8px; font-size: 11px; color: var(--text-dim);">
+              <div style="display: flex; gap: 14px; flex-wrap: wrap;">
+                <span style="display: inline-flex; align-items: center; gap: 5px;"><span style="width: 8px; height: 8px; border-radius: 50%; background: #10b981;"></span> Normal Miner</span>
+                <span style="display: inline-flex; align-items: center; gap: 5px;"><span style="width: 8px; height: 8px; border-radius: 50%; background: #f59e0b;"></span> Gas Warning (&gt;25 ppm)</span>
+                <span style="display: inline-flex; align-items: center; gap: 5px;"><span style="width: 8px; height: 8px; border-radius: 50%; background: #ef4444;"></span> Critical Alarm / Man Down</span>
+                <span style="display: inline-flex; align-items: center; gap: 5px;"><span style="width: 8px; height: 8px; border-radius: 2px; background: #38bdf8;"></span> Fixed Mesh Anchor</span>
+              </div>
+              <span id="canvas-hover-info" style="font-family: var(--font-mono); color: #38bdf8;">Click any miner to inspect historical trends</span>
+            </div>
+          </div>
+
+          <!-- VIEW 1: ZONES CARDS -->
+          <div id="view-zones" class="zones-container" style="display: none;">
             <div style="color: var(--text-muted); font-size: 13px; text-align: center; padding: 30px;">
               Scanning underground mesh for active personnel...
             </div>
@@ -957,10 +971,342 @@
 
     // --- TAB SWITCHING ---
     function switchView(viewName) {
+      document.getElementById("tab-btn-model").classList.toggle("active", viewName === 'model');
       document.getElementById("tab-btn-zones").classList.toggle("active", viewName === 'zones');
       document.getElementById("tab-btn-table").classList.toggle("active", viewName === 'table');
+
+      document.getElementById("view-model").style.display = (viewName === 'model') ? 'block' : 'none';
       document.getElementById("view-zones").style.display = (viewName === 'zones') ? 'flex' : 'none';
       document.getElementById("view-table").style.display = (viewName === 'table') ? 'block' : 'none';
+    }
+
+    // ------------------------------------------------------------------------
+    // SUBTERRANEAN DIGITAL TWIN (2.5D SIMULATION ENGINE)
+    // ------------------------------------------------------------------------
+    const ZONE_WAYPOINTS = {
+      "SURFACE-PORTAL":      { x: 0.16, y: 0.16, label: "Surface Portal", depth: "0m" },
+      "LEVEL-1-STATION":     { x: 0.50, y: 0.38, label: "Level 1 Station", depth: "-100m" },
+      "LEVEL-2-NORTH-DRIFT": { x: 0.22, y: 0.60, label: "Level 2 North Drift", depth: "-250m" },
+      "LEVEL-2-HAULAGE-WAY": { x: 0.78, y: 0.60, label: "Level 2 Haulage Way", depth: "-250m" },
+      "LEVEL-3-ACTIVE-STOPE":{ x: 0.72, y: 0.84, label: "Level 3 Active Stope", depth: "-450m" }
+    };
+
+    const ANCHOR_NODES = [
+      { id: "ANCHOR-SHAFT1-SURFACE", x: 0.50, y: 0.16, zone: "SURFACE-PORTAL" },
+      { id: "ANCHOR-LVL1-STATION",   x: 0.50, y: 0.38, zone: "LEVEL-1-STATION" },
+      { id: "ANCHOR-LVL2-NORTH",     x: 0.22, y: 0.60, zone: "LEVEL-2-NORTH-DRIFT" },
+      { id: "ANCHOR-LVL2-HAULAGE",   x: 0.78, y: 0.60, zone: "LEVEL-2-HAULAGE-WAY" },
+      { id: "ANCHOR-LVL3-STOPE",     x: 0.72, y: 0.84, zone: "LEVEL-3-ACTIVE-STOPE" }
+    ];
+
+    // Miner simulation animation state for smooth movement interpolation
+    const minerSimState = {};
+    let animPulsePhase = 0;
+
+    function initMineModelCanvas() {
+      const canvas = document.getElementById("mineModelCanvas");
+      if (!canvas) return;
+      canvas.width = canvas.parentElement.clientWidth - 2;
+      canvas.height = 460;
+
+      canvas.addEventListener("mousemove", (e) => {
+        const rect = canvas.getBoundingClientRect();
+        const mouseX = e.clientX - rect.left;
+        const mouseY = e.clientY - rect.top;
+
+        // Check if hovering over any miner
+        let hoveredMiner = null;
+        for (const [id, m] of Object.entries(minerSimState)) {
+          const dx = mouseX - m.currX;
+          const dy = mouseY - m.currY;
+          if (Math.hypot(dx, dy) < 18) {
+            hoveredMiner = m;
+            break;
+          }
+        }
+
+        const info = document.getElementById("canvas-hover-info");
+        if (hoveredMiner) {
+          canvas.style.cursor = "pointer";
+          info.innerHTML = `<strong>${hoveredMiner.id}</strong> &bull; Zone: ${hoveredMiner.zone} &bull; CO: ${hoveredMiner.co.toFixed(1)} ppm &bull; Batt: ${hoveredMiner.batt.toFixed(2)}V`;
+        } else {
+          canvas.style.cursor = "default";
+          info.textContent = "Click any miner to inspect historical trends";
+        }
+      });
+
+      canvas.addEventListener("click", (e) => {
+        const rect = canvas.getBoundingClientRect();
+        const mouseX = e.clientX - rect.left;
+        const mouseY = e.clientY - rect.top;
+
+        for (const [id, m] of Object.entries(minerSimState)) {
+          const dx = mouseX - m.currX;
+          const dy = mouseY - m.currY;
+          if (Math.hypot(dx, dy) < 18) {
+            selectMiner(m.id);
+            break;
+          }
+        }
+      });
+    }
+
+    function renderMineModel() {
+      const canvas = document.getElementById("mineModelCanvas");
+      if (!canvas || canvas.offsetParent === null) return;
+      const ctx = canvas.getContext("2d");
+      const w = canvas.width;
+      const h = canvas.height;
+
+      animPulsePhase = (animPulsePhase + 0.04) % (Math.PI * 2);
+
+      ctx.clearRect(0, 0, w, h);
+
+      // 1. Draw Geological Rock Layers & Depth Rulers
+      const depthY0 = h * 0.16;
+      const depthY1 = h * 0.38;
+      const depthY2 = h * 0.60;
+      const depthY3 = h * 0.84;
+
+      // Surface ground line
+      ctx.fillStyle = "#1e293b";
+      ctx.fillRect(0, 0, w, depthY0);
+
+      ctx.strokeStyle = "#334155";
+      ctx.lineWidth = 1;
+      ctx.beginPath();
+      ctx.moveTo(0, depthY0);
+      ctx.lineTo(w, depthY0);
+      ctx.stroke();
+
+      // Depth benchmark lines & labels
+      const depths = [
+        { y: depthY0, label: "0m  (SURFACE EL)" },
+        { y: depthY1, label: "-100m (LEVEL 1)" },
+        { y: depthY2, label: "-250m (LEVEL 2)" },
+        { y: depthY3, label: "-450m (LEVEL 3)" }
+      ];
+
+      ctx.font = "10px monospace";
+      ctx.fillStyle = "#475569";
+      depths.forEach(d => {
+        ctx.strokeStyle = "rgba(71, 85, 105, 0.25)";
+        ctx.setLineDash([4, 6]);
+        ctx.beginPath();
+        ctx.moveTo(0, d.y);
+        ctx.lineTo(w, d.y);
+        ctx.stroke();
+        ctx.setLineDash([]);
+        ctx.fillText(d.label, 12, d.y - 6);
+      });
+
+      // 2. Draw Subterranean Drift Tunnels (Thick Dark Blue Ribbons)
+      ctx.lineCap = "round";
+      ctx.lineJoin = "round";
+
+      // Tunnel drift path definitions
+      const tunnels = [
+        // Surface portal decline
+        [ { x: w * 0.12, y: depthY0 }, { x: w * 0.22, y: depthY0 }, { x: w * 0.36, y: depthY1 } ],
+        // Main Vertical Hoist Shaft
+        [ { x: w * 0.50, y: depthY0 - 25 }, { x: w * 0.50, y: depthY3 + 25 } ],
+        // Level 1 Drift
+        [ { x: w * 0.32, y: depthY1 }, { x: w * 0.50, y: depthY1 } ],
+        // Level 2 North Drift
+        [ { x: w * 0.14, y: depthY2 }, { x: w * 0.50, y: depthY2 } ],
+        // Level 2 Haulage Way
+        [ { x: w * 0.50, y: depthY2 }, { x: w * 0.86, y: depthY2 } ],
+        // Decline Ramp connecting Level 2 to Level 3 Stope
+        [ { x: w * 0.82, y: depthY2 }, { x: w * 0.72, y: depthY3 } ],
+        // Level 3 Deep Stope
+        [ { x: w * 0.38, y: depthY3 }, { x: w * 0.84, y: depthY3 } ]
+      ];
+
+      // Draw tunnel background (cavity)
+      tunnels.forEach(t => {
+        ctx.strokeStyle = "#131c2e";
+        ctx.lineWidth = 26;
+        ctx.beginPath();
+        ctx.moveTo(t[0].x, t[0].y);
+        for (let i = 1; i < t.length; i++) ctx.lineTo(t[i].x, t[i].y);
+        ctx.stroke();
+
+        // Tunnel inner floor outline
+        ctx.strokeStyle = "#1e2c47";
+        ctx.lineWidth = 2;
+        ctx.stroke();
+      });
+
+      // Haulage rail tracks (Level 2 Haulage)
+      ctx.strokeStyle = "rgba(148, 163, 184, 0.25)";
+      ctx.lineWidth = 1;
+      ctx.beginPath();
+      ctx.moveTo(w * 0.50, depthY2 + 5);
+      ctx.lineTo(w * 0.86, depthY2 + 5);
+      ctx.moveTo(w * 0.50, depthY2 + 8);
+      ctx.lineTo(w * 0.86, depthY2 + 8);
+      ctx.stroke();
+
+      // Ventilation Flow Arrows (Level 2 North & Level 3 Stope)
+      ctx.fillStyle = "rgba(56, 189, 248, 0.4)";
+      ctx.font = "10px sans-serif";
+      ctx.fillText(">>> VENTILATION AIRFLOW >>>", w * 0.24, depthY2 + 3);
+      ctx.fillText(">>> FRESH AIR INTAKE >>>", w * 0.48, depthY3 + 3);
+
+      // Surface Headframe Tower
+      ctx.strokeStyle = "#64748b";
+      ctx.lineWidth = 2;
+      ctx.strokeRect(w * 0.48, depthY0 - 45, w * 0.04, 45);
+      ctx.beginPath();
+      ctx.moveTo(w * 0.48, depthY0 - 45);
+      ctx.lineTo(w * 0.52, depthY0);
+      ctx.moveTo(w * 0.52, depthY0 - 45);
+      ctx.lineTo(w * 0.48, depthY0);
+      ctx.stroke();
+
+      // 3. Draw Wireless Mesh Links between Anchors (Cyan Dashed Pulsing Lines)
+      const meshLinks = [
+        [ ANCHOR_NODES[0], ANCHOR_NODES[1] ],
+        [ ANCHOR_NODES[1], ANCHOR_NODES[2] ],
+        [ ANCHOR_NODES[1], ANCHOR_NODES[3] ],
+        [ ANCHOR_NODES[3], ANCHOR_NODES[4] ],
+        [ ANCHOR_NODES[2], ANCHOR_NODES[4] ]
+      ];
+
+      meshLinks.forEach(link => {
+        const x1 = link[0].x * w;
+        const y1 = link[0].y * h;
+        const x2 = link[1].x * w;
+        const y2 = link[1].y * h;
+
+        ctx.strokeStyle = "rgba(56, 189, 248, 0.28)";
+        ctx.lineWidth = 1.5;
+        ctx.setLineDash([5, 5]);
+        ctx.beginPath();
+        ctx.moveTo(x1, y1);
+        ctx.lineTo(x2, y2);
+        ctx.stroke();
+        ctx.setLineDash([]);
+      });
+
+      // 4. Draw Stationary Mesh Anchors
+      ANCHOR_NODES.forEach(a => {
+        const ax = a.x * w;
+        const ay = a.y * h;
+
+        // Anchor beacon pulse
+        ctx.strokeStyle = "rgba(56, 189, 248, 0.4)";
+        ctx.lineWidth = 1;
+        ctx.beginPath();
+        ctx.arc(ax, ay, 8 + Math.sin(animPulsePhase) * 2, 0, Math.PI * 2);
+        ctx.stroke();
+
+        // Anchor square badge
+        ctx.fillStyle = "#0284c7";
+        ctx.fillRect(ax - 5, ay - 5, 10, 10);
+        ctx.strokeStyle = "#e0f2fe";
+        ctx.lineWidth = 1;
+        ctx.strokeRect(ax - 5, ay - 5, 10, 10);
+
+        // Label
+        ctx.font = "9px monospace";
+        ctx.fillStyle = "#7dd3fc";
+        ctx.fillText(a.id.replace("ANCHOR-", ""), ax - 25, ay - 10);
+      });
+
+      // 5. Draw Tracked Miner Avatars with Smooth Position Interpolation
+      // Group miners by zone to offset their X position so they don't visually collide
+      const minersByZone = {};
+      allNodes.filter(n => n.role === 'WEARABLE').forEach(n => {
+        const z = n.current_zone || "SURFACE-PORTAL";
+        if (!minersByZone[z]) minersByZone[z] = [];
+        minersByZone[z].push(n);
+      });
+
+      for (const [zone, mList] of Object.entries(minersByZone)) {
+        const wp = ZONE_WAYPOINTS[zone] || ZONE_WAYPOINTS["SURFACE-PORTAL"];
+        const baseX = wp.x * w;
+        const baseY = wp.y * h;
+
+        mList.forEach((m, idx) => {
+          // Calculate target offset
+          const offsetX = (idx - (mList.length - 1) / 2) * 36;
+          const targetX = baseX + offsetX;
+          const targetY = baseY;
+
+          if (!minerSimState[m.node_id]) {
+            minerSimState[m.node_id] = {
+              id: m.node_id,
+              currX: targetX,
+              currY: targetY,
+              targetX: targetX,
+              targetY: targetY,
+              zone: zone,
+              co: m.latest_co || 0.0,
+              batt: m.battery_v || 0.0,
+              fall: m.latest_co > 45,
+            };
+          } else {
+            minerSimState[m.node_id].targetX = targetX;
+            minerSimState[m.node_id].targetY = targetY;
+            minerSimState[m.node_id].zone = zone;
+            minerSimState[m.node_id].co = m.latest_co || 0.0;
+            minerSimState[m.node_id].batt = m.battery_v || 0.0;
+          }
+
+          const s = minerSimState[m.node_id];
+          // Lerp movement towards target
+          s.currX += (s.targetX - s.currX) * 0.08;
+          s.currY += (s.targetY - s.currY) * 0.08;
+
+          const isCrit = s.co >= 50.0 || (m.latest_co > 45 && m.latest_co < 47); // Fall simulation
+          const isWarn = s.co >= 25.0 && s.co < 50.0;
+
+          // Critical Hazard Emergency Pulse Rings
+          if (isCrit) {
+            const pulseRadius = 14 + (Math.sin(animPulsePhase * 2) + 1) * 8;
+            ctx.strokeStyle = "rgba(239, 68, 68, 0.7)";
+            ctx.lineWidth = 2;
+            ctx.beginPath();
+            ctx.arc(s.currX, s.currY, pulseRadius, 0, Math.PI * 2);
+            ctx.stroke();
+
+            ctx.fillStyle = "rgba(239, 68, 68, 0.25)";
+            ctx.beginPath();
+            ctx.arc(s.currX, s.currY, 14, 0, Math.PI * 2);
+            ctx.fill();
+          } else if (isWarn) {
+            ctx.fillStyle = "rgba(245, 158, 11, 0.2)";
+            ctx.beginPath();
+            ctx.arc(s.currX, s.currY, 13, 0, Math.PI * 2);
+            ctx.fill();
+          }
+
+          // Main Miner Dot Avatar
+          ctx.fillStyle = isCrit ? "#ef4444" : isWarn ? "#f59e0b" : "#10b981";
+          ctx.beginPath();
+          ctx.arc(s.currX, s.currY, 8, 0, Math.PI * 2);
+          ctx.fill();
+
+          ctx.strokeStyle = "#ffffff";
+          ctx.lineWidth = 1.5;
+          ctx.stroke();
+
+          // Miner ID & CO Tag
+          ctx.font = "bold 10px monospace";
+          ctx.fillStyle = "#ffffff";
+          ctx.textAlign = "center";
+          ctx.fillText(m.node_id, s.currX, s.currY - 14);
+
+          // Small Gas Pill
+          ctx.font = "9px monospace";
+          ctx.fillStyle = isCrit ? "#fca5a5" : isWarn ? "#fde047" : "#86efac";
+          ctx.fillText(`${s.co.toFixed(1)} ppm`, s.currX, s.currY + 18);
+        });
+      }
+
+      ctx.textAlign = "left"; // Reset text alignment
+      requestAnimationFrame(renderMineModel);
     }
 
     // --- DATA FETCHING & UI UPDATE ---
@@ -1157,7 +1503,6 @@
 
     function updateMinerSelect(nodes) {
       const select = document.getElementById("select-miner");
-      const currentVal = select.value;
       const miners = nodes.filter(n => n.role === 'WEARABLE');
 
       select.innerHTML = miners.map(m =>
@@ -1172,7 +1517,8 @@
 
     function selectMiner(nodeId) {
       selectedMinerId = nodeId;
-      document.getElementById("select-miner").value = nodeId;
+      const sel = document.getElementById("select-miner");
+      if (sel) sel.value = nodeId;
       fetchMinerHistory(nodeId);
     }
 
@@ -1340,9 +1686,13 @@
       }
     }
 
-    // Initial Load & Auto-Refresh loop every 2 seconds
-    fetchData();
-    setInterval(fetchData, 2000);
+    // Initialization: Canvas model, fetch loop, and animation loop
+    window.addEventListener("DOMContentLoaded", () => {
+      initMineModelCanvas();
+      requestAnimationFrame(renderMineModel);
+      fetchData();
+      setInterval(fetchData, 2000);
+    });
   </script>
 </body>
 </html>
