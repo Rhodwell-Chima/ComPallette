@@ -14,9 +14,19 @@ import urllib.parse
 from http.server import ThreadingHTTPServer, BaseHTTPRequestHandler
 from typing import Optional
 
-from server.config import SERVER_HOST, SERVER_PORT, API_KEY, DB_PATH
-from server.database import Database
-from server.watchdog import NodeWatchdog
+# Ensure repository root is in sys.path so 'server' package is always found
+REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if REPO_ROOT not in sys.path:
+    sys.path.insert(0, REPO_ROOT)
+
+try:
+    from server.config import SERVER_HOST, SERVER_PORT, API_KEY, DB_PATH
+    from server.database import Database
+    from server.watchdog import NodeWatchdog
+except ModuleNotFoundError:
+    from config import SERVER_HOST, SERVER_PORT, API_KEY, DB_PATH
+    from database import Database
+    from watchdog import NodeWatchdog
 
 # Shared singletons initialized on startup
 DB: Optional[Database] = None

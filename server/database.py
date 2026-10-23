@@ -6,12 +6,21 @@ alert lifecycle state transitions, and audit logging.
 """
 
 import os
+import sys
 import sqlite3
 import time
 from contextlib import contextmanager
 from typing import Dict, List, Optional, Tuple, Any
 
-from server.config import DB_PATH, CO_WARN_PPM, CO_CRIT_PPM
+# Ensure repository root is in sys.path
+REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if REPO_ROOT not in sys.path:
+    sys.path.insert(0, REPO_ROOT)
+
+try:
+    from server.config import DB_PATH, CO_WARN_PPM, CO_CRIT_PPM
+except ModuleNotFoundError:
+    from config import DB_PATH, CO_WARN_PPM, CO_CRIT_PPM
 
 
 class Database:

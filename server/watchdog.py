@@ -6,16 +6,31 @@ Automatically detects stale nodes and raises COMM_LOST alerts when miners
 or stationary anchors drop off the subterranean mesh.
 """
 
+import os
+import sys
 import threading
 import time
 from typing import Optional
 
-from server.config import (
-    STALE_THRESHOLD_SECONDS,
-    OFFLINE_THRESHOLD_SECONDS,
-    WATCHDOG_CHECK_INTERVAL,
-)
-from server.database import Database
+# Ensure repository root is in sys.path
+REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if REPO_ROOT not in sys.path:
+    sys.path.insert(0, REPO_ROOT)
+
+try:
+    from server.config import (
+        STALE_THRESHOLD_SECONDS,
+        OFFLINE_THRESHOLD_SECONDS,
+        WATCHDOG_CHECK_INTERVAL,
+    )
+    from server.database import Database
+except ModuleNotFoundError:
+    from config import (
+        STALE_THRESHOLD_SECONDS,
+        OFFLINE_THRESHOLD_SECONDS,
+        WATCHDOG_CHECK_INTERVAL,
+    )
+    from database import Database
 
 
 class NodeWatchdog:
