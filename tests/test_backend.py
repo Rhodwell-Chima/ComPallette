@@ -228,6 +228,15 @@ class TestServerEndToEnd(unittest.TestCase):
         self.assertEqual(status, 200)
         self.assertEqual(body["status"], "healthy")
 
+    def test_dashboard_page_served(self):
+        req = urllib.request.Request(BASE_URL + "/dashboard", method="GET")
+        with urllib.request.urlopen(req) as resp:
+            self.assertEqual(resp.status, 200)
+            self.assertIn("text/html", resp.headers.get("Content-Type", ""))
+            html = resp.read().decode("utf-8")
+            self.assertIn("COMPALLETTE", html)
+            self.assertIn("Subterranean Safety Operations Center", html)
+
     def test_unauthorized_ingest_rejection(self):
         url = BASE_URL + "/api/v1/telemetry"
         req = urllib.request.Request(

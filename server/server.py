@@ -71,7 +71,7 @@ class CompalletteRequestHandler(BaseHTTPRequestHandler):
         path = parsed_url.path.rstrip("/")
         query = urllib.parse.parse_qs(parsed_url.query)
 
-        if path == "/health" or path == "":
+        if path == "/health":
             self._send_json(200, {
                 "status": "healthy",
                 "service": "Compallette Underground Mining Safety Server",
@@ -79,6 +79,19 @@ class CompalletteRequestHandler(BaseHTTPRequestHandler):
                 "database": DB.db_path if DB else "uninitialized",
             })
             return
+
+        if path in ("", "/", "/dashboard", "/index.html"):
+            dashboard_file = os.path.join(os.path.dirname(__file__), "dashboard.html")
+            if os.path.exists(dashboard_file):
+                with open(dashboard_file, "r", encoding="utf-8") as f:
+                    content = f.read().encode("utf-8")
+                self.send_response(200)
+                self.send_header("Content-Type", "text/html; charset=utf-8")
+                self.send_header("Content-Length", str(len(content)))
+                self.send_header("Access-Control-Allow-Origin", "*")
+                self.end_headers()
+                self.wfile.write(content)
+                return
 
         if path == "/api/v1/system/summary":
             summary = DB.get_system_summary()
