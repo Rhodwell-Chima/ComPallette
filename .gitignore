@@ -4,6 +4,12 @@ __pycache__/
 *$py.class
 .pytest_cache/
 
+# Databases
+*.db
+*.sqlite
+*.sqlite3
+server/data/
+
 # Arduino / PlatformIO / ESP32 build artifacts
 .pio/
 .vscode/
