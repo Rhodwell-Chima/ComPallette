@@ -1,0 +1,15 @@
+[package]
+name = "compallette-backend-rocket"
+version = "2.0.0"
+edition = "2021"
+authors = ["Compallette Mining Safety Engineering"]
+description = "High-throughput underground mining telemetry ingestion service built with Rust & Rocket"
+
+[dependencies]
+rocket = { version = "0.5.1", features = ["json"] }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+tokio = { version = "1.38", features = ["full"] }
+chrono = { version = "0.4", features = ["serde"] }
+sqlx = { version = "0.7", features = ["runtime-tokio-rustls", "postgres", "macros", "chrono"] }
+dotenvy = "0.15"

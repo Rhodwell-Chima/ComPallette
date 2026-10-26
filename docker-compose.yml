@@ -19,17 +19,18 @@ services:
       timeout: 5s
       retries: 5
 
+  # Default: Python / Django REST Framework Ingestion Service
   backend:
     build:
-      context: ./backend
+      context: ./backend/django
       dockerfile: Dockerfile
-    container_name: compallette_backend
+    container_name: compallette_backend_django
     restart: unless-stopped
     command: >
       sh -c "python manage.py migrate &&
              python manage.py runserver 0.0.0.0:8000"
     volumes:
-      - ./backend:/app
+      - ./backend/django:/app
     ports:
       - "8000:8000"
     environment:
@@ -46,11 +47,33 @@ services:
       db:
         condition: service_healthy
 
+  # Optional: Rust Rocket Backend Service (High-throughput comparison target)
+  # Run via: docker compose --profile rocket up
+  backend-rocket:
+    build:
+      context: ./backend/rocket
+      dockerfile: Dockerfile
+    container_name: compallette_backend_rocket
+    restart: unless-stopped
+    ports:
+      - "8001:8000"
+    environment:
+      - ROCKET_PORT=8000
+      - ROCKET_ADDRESS=0.0.0.0
+      - DATABASE_URL=postgres://${POSTGRES_USER:-compallette_user}:${POSTGRES_PASSWORD:-compallette_secure_pass_2026}@db:5432/${POSTGRES_DB:-compallette_db}
+      - COMPALLETTE_API_KEY=${COMPALLETTE_API_KEY:-compallette-mining-secret-key-v1}
+    depends_on:
+      db:
+        condition: service_healthy
+    profiles:
+      - rocket
+
+  # React 18 + TypeScript Industrial Cockpit Dashboard
   frontend:
     build:
-      context: ./frontend
+      context: ./frontend/react
       dockerfile: Dockerfile
-    container_name: compallette_frontend
+    container_name: compallette_frontend_react
     restart: unless-stopped
     ports:
       - "3000:80"
