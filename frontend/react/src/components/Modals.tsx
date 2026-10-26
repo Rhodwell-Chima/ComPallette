@@ -20,48 +20,41 @@ export const AckModal: React.FC<AckModalProps> = ({ isOpen, alertId, onClose, on
   };
 
   return (
-    <div style={{
-      position: 'fixed',
-      inset: 0,
-      backgroundColor: 'rgba(0, 0, 0, 0.75)',
-      backdropFilter: 'blur(2px)',
-      zIndex: 1000,
-      display: 'flex',
-      alignItems: 'center',
-      justifyContent: 'center',
-    }}>
-      <div style={{
-        backgroundColor: 'var(--bg-surface)',
-        border: '1px solid var(--border-subtle)',
-        borderRadius: '8px',
-        width: '90%',
-        maxWidth: '480px',
-        overflow: 'hidden',
-      }}>
-        <div style={{ padding: '14px 20px', borderBottom: '1px solid var(--border-subtle)', fontWeight: 700, fontSize: '14px', display: 'flex', justifyContent: 'space-between' }}>
-          <span>Acknowledge Safety Incident #{alertId}</span>
-          <button className="btn" onClick={onClose}>&times;</button>
+    <div className="modal-overlay" onClick={onClose}>
+      <div className="modal" onClick={e => e.stopPropagation()}>
+        <div className="modal-header">
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+            <h3>Acknowledge Alert #{alertId}</h3>
+            <button className="btn btn-ghost" onClick={onClose} style={{ padding: '2px 8px', fontSize: '16px' }}>
+              &times;
+            </button>
+          </div>
         </div>
-        <div style={{ padding: '20px', display: 'flex', flexDirection: 'column', gap: '14px' }}>
-          <p style={{ fontSize: '13px', color: 'var(--text-muted)' }}>
-            Acknowledging marks this incident as under active triage by safety operations.
+
+        <div className="modal-body">
+          <p style={{ fontSize: '13px', color: 'var(--text-2)' }}>
+            Acknowledging marks this incident as under active review by safety dispatch.
           </p>
           <div>
-            <label style={{ display: 'block', fontSize: '11px', fontWeight: 700, textTransform: 'uppercase', color: 'var(--text-muted)', marginBottom: '6px' }}>
-              Safety Officer Name
-            </label>
+            <label className="form-label">Safety Officer Name</label>
             <input
               type="text"
               className="form-input"
               value={officerName}
               onChange={e => setOfficerName(e.target.value)}
               placeholder="e.g. Moses Banda"
+              autoFocus
             />
           </div>
         </div>
-        <div style={{ padding: '12px 20px', backgroundColor: 'rgba(0, 0, 0, 0.2)', borderTop: '1px solid var(--border-subtle)', display: 'flex', justifyContent: 'flex-end', gap: '10px' }}>
-          <button className="btn" onClick={onClose}>Cancel</button>
-          <button className="btn btn-warning" onClick={handleSubmit}>Confirm Acknowledged</button>
+
+        <div className="modal-footer">
+          <button className="btn btn-ghost" onClick={onClose}>
+            Cancel
+          </button>
+          <button className="btn btn-primary" onClick={handleSubmit}>
+            Confirm Acknowledgment
+          </button>
         </div>
       </div>
     </div>
@@ -77,7 +70,7 @@ interface ResolveModalProps {
 
 export const ResolveModal: React.FC<ResolveModalProps> = ({ isOpen, alertId, onClose, onSubmit }) => {
   const [officerName, setOfficerName] = useState(() => localStorage.getItem('officer_name') || '');
-  const [notes, setNotes] = useState('Ventilation restored; miner inspected and uninjured.');
+  const [notes, setNotes] = useState('Ventilation restored; personnel safe and accounted for.');
 
   if (!isOpen || alertId === null) return null;
 
@@ -89,45 +82,31 @@ export const ResolveModal: React.FC<ResolveModalProps> = ({ isOpen, alertId, onC
   };
 
   return (
-    <div style={{
-      position: 'fixed',
-      inset: 0,
-      backgroundColor: 'rgba(0, 0, 0, 0.75)',
-      backdropFilter: 'blur(2px)',
-      zIndex: 1000,
-      display: 'flex',
-      alignItems: 'center',
-      justifyContent: 'center',
-    }}>
-      <div style={{
-        backgroundColor: 'var(--bg-surface)',
-        border: '1px solid var(--border-subtle)',
-        borderRadius: '8px',
-        width: '90%',
-        maxWidth: '480px',
-        overflow: 'hidden',
-      }}>
-        <div style={{ padding: '14px 20px', borderBottom: '1px solid var(--border-subtle)', fontWeight: 700, fontSize: '14px', display: 'flex', justifyContent: 'space-between' }}>
-          <span>Resolve Safety Incident #{alertId}</span>
-          <button className="btn" onClick={onClose}>&times;</button>
+    <div className="modal-overlay" onClick={onClose}>
+      <div className="modal" onClick={e => e.stopPropagation()}>
+        <div className="modal-header">
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+            <h3>Resolve Alert #{alertId}</h3>
+            <button className="btn btn-ghost" onClick={onClose} style={{ padding: '2px 8px', fontSize: '16px' }}>
+              &times;
+            </button>
+          </div>
         </div>
-        <div style={{ padding: '20px', display: 'flex', flexDirection: 'column', gap: '14px' }}>
+
+        <div className="modal-body">
           <div>
-            <label style={{ display: 'block', fontSize: '11px', fontWeight: 700, textTransform: 'uppercase', color: 'var(--text-muted)', marginBottom: '6px' }}>
-              Resolving Officer Name
-            </label>
+            <label className="form-label">Resolving Officer Name</label>
             <input
               type="text"
               className="form-input"
               value={officerName}
               onChange={e => setOfficerName(e.target.value)}
               placeholder="e.g. Moses Banda"
+              autoFocus
             />
           </div>
           <div>
-            <label style={{ display: 'block', fontSize: '11px', fontWeight: 700, textTransform: 'uppercase', color: 'var(--text-muted)', marginBottom: '6px' }}>
-              Corrective Action &amp; Incident Notes
-            </label>
+            <label className="form-label">Resolution Notes &amp; Actions Taken</label>
             <textarea
               className="form-textarea"
               rows={3}
@@ -137,9 +116,14 @@ export const ResolveModal: React.FC<ResolveModalProps> = ({ isOpen, alertId, onC
             />
           </div>
         </div>
-        <div style={{ padding: '12px 20px', backgroundColor: 'rgba(0, 0, 0, 0.2)', borderTop: '1px solid var(--border-subtle)', display: 'flex', justifyContent: 'flex-end', gap: '10px' }}>
-          <button className="btn" onClick={onClose}>Cancel</button>
-          <button className="btn btn-success" onClick={handleSubmit}>Close Incident</button>
+
+        <div className="modal-footer">
+          <button className="btn btn-ghost" onClick={onClose}>
+            Cancel
+          </button>
+          <button className="btn btn-primary" onClick={handleSubmit}>
+            Resolve Incident
+          </button>
         </div>
       </div>
     </div>

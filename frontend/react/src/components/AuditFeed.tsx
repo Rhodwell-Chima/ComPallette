@@ -7,44 +7,32 @@ interface AuditFeedProps {
 
 export const AuditFeed: React.FC<AuditFeedProps> = ({ logs }) => {
   return (
-    <div style={{ marginTop: '14px' }}>
-      <div style={{ fontSize: '11px', fontWeight: 700, color: 'var(--text-muted)', textTransform: 'uppercase', marginBottom: '8px' }}>
-        Safety Incident &amp; Audit Trail
-      </div>
-      <div style={{
-        display: 'flex',
-        flexDirection: 'column',
-        gap: '8px',
-        maxHeight: '380px',
-        overflowY: 'auto',
-        fontFamily: 'var(--font-mono)',
-        fontSize: '11px',
-      }}>
+    <div style={{ marginTop: '12px' }}>
+      <div className="audit-title">Safety &amp; System Audit Log</div>
+      <div className="audit-list">
         {logs.length === 0 ? (
-          <div style={{ color: 'var(--text-dim)', padding: '12px', textAlign: 'center' }}>No audit events logged.</div>
+          <div style={{ color: 'var(--text-3)', padding: '16px', textAlign: 'center', fontSize: '11px' }}>
+            No incident or audit events recorded.
+          </div>
         ) : (
           logs.map(l => {
             const dateStr = new Date(l.timestamp).toTimeString().split(' ')[0];
-            const borderCol = l.action === 'ALERT_TRIGGERED' ? 'var(--color-crit)'
-              : l.action === 'ALERT_ACKNOWLEDGED' ? 'var(--color-warn)'
-              : l.action === 'ALERT_RESOLVED' ? 'var(--color-safe)'
-              : 'var(--color-info)';
+            const accentClass =
+              l.action === 'ALERT_TRIGGERED'
+                ? 'audit-accent-crit'
+                : l.action === 'ALERT_ACKNOWLEDGED'
+                ? 'audit-accent-warn'
+                : l.action === 'ALERT_RESOLVED'
+                ? 'audit-accent-safe'
+                : 'audit-accent-info';
 
             return (
-              <div key={l.id} style={{
-                backgroundColor: 'var(--bg-card)',
-                borderLeft: `3px solid ${borderCol}`,
-                padding: '6px 10px',
-                borderRadius: '0 3px 3px 0',
-                display: 'flex',
-                flexDirection: 'column',
-                gap: '2px',
-              }}>
-                <div style={{ display: 'flex', justifyContent: 'space-between', color: 'var(--text-dim)', fontSize: '10px' }}>
-                  <span>{l.action} &bull; {l.actor}</span>
-                  <span>{dateStr}</span>
+              <div key={l.id} className={`audit-item ${accentClass}`}>
+                <div className="audit-meta">
+                  <span style={{ fontWeight: 600 }}>{l.action} &bull; {l.actor}</span>
+                  <span className="mono">{dateStr}</span>
                 </div>
-                <div style={{ color: 'var(--text-main)' }}>{l.details}</div>
+                <div style={{ color: 'var(--text-1)', fontSize: '11px' }}>{l.details}</div>
               </div>
             );
           })

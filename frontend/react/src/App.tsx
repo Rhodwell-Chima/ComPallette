@@ -21,6 +21,11 @@ import {
 import { SystemSummary, NodeItem, AlertItem, TelemetryItem, AuditItem } from './types';
 
 export const App: React.FC = () => {
+  const [theme, setTheme] = useState<'dark' | 'light'>(() => {
+    const saved = localStorage.getItem('compallette-theme');
+    return saved === 'light' ? 'light' : 'dark';
+  });
+
   const [summary, setSummary] = useState<SystemSummary | null>(null);
   const [nodes, setNodes] = useState<NodeItem[]>([]);
   const [alerts, setAlerts] = useState<AlertItem[]>([]);
@@ -32,6 +37,15 @@ export const App: React.FC = () => {
   const [audioArmed, setAudioArmed] = useState<boolean>(true);
   const [ackModalId, setAckModalId] = useState<number | null>(null);
   const [resModalId, setResModalId] = useState<number | null>(null);
+
+  useEffect(() => {
+    document.documentElement.setAttribute('data-theme', theme);
+    localStorage.setItem('compallette-theme', theme);
+  }, [theme]);
+
+  const toggleTheme = () => {
+    setTheme(prev => (prev === 'dark' ? 'light' : 'dark'));
+  };
 
   const isGatewayOnline = Boolean(
     summary?.last_packet_received_ms &&
@@ -76,7 +90,6 @@ export const App: React.FC = () => {
     }
   }, [selectedMinerId]);
 
-  // Handle miner selection from any component
   const handleSelectMiner = (nodeId: string) => {
     setSelectedMinerId(nodeId);
   };
@@ -103,16 +116,18 @@ export const App: React.FC = () => {
   };
 
   return (
-    <div className="scada-app-layout">
-      {/* SCADA Global Header */}
+    <div className="app-layout">
+      {/* Global Header */}
       <Header
         isGatewayOnline={isGatewayOnline}
         audioArmed={audioArmed}
+        theme={theme}
+        onToggleTheme={toggleTheme}
         onToggleAudio={() => setAudioArmed(prev => !prev)}
         onRefresh={loadData}
       />
 
-      {/* Emergency Alarm Banner */}
+      {/* Emergency Banner */}
       <EmergencyBanner
         alerts={alerts}
         audioArmed={audioArmed}
@@ -120,54 +135,49 @@ export const App: React.FC = () => {
         onOpenResolve={id => setResModalId(id)}
       />
 
-      {/* Main SCADA Command Body */}
-      <main className="scada-main-container">
-        {/* KPI Telemetry Header Grid */}
+      {/* Main Content */}
+      <main className="main-content">
+        {/* KPI Metrics */}
         <KpiMetrics summary={summary} />
 
-        {/* Core Tactical Workspaces Grid */}
-        <div className="scada-cockpit-grid">
-          {/* Left / Center Major Panel: Tracking & Simulation */}
-          <section className="scada-panel scada-tracking-panel">
-            {/* Tabbed Navigation Bar */}
-            <div className="scada-panel-header">
-              <div className="panel-title-group">
-                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+        {/* Main Workspace Grid */}
+        <div className="main-grid">
+          {/* Main Visual/Tracking Panel */}
+          <section className="panel">
+            <div className="panel-header">
+              <div className="panel-title">
+                <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
                   <polygon points="1 6 1 22 8 18 16 22 23 18 23 2 16 6 8 2 1 6" />
                   <line x1="8" y1="2" x2="8" y2="18" />
                   <line x1="16" y1="6" x2="16" y2="22" />
                 </svg>
-                <span className="panel-title-text">SUBTERRANEAN PERSONNEL TRACKING</span>
+                <span>Personnel Tracking</span>
               </div>
 
               {/* View Selector Tabs */}
-              <div className="scada-tab-group">
+              <div className="tab-bar">
                 <button
-                  className={`scada-tab-btn ${activeTab === 'model' ? 'tab-active' : ''}`}
+                  className={`tab-btn ${activeTab === 'model' ? 'tab-active' : ''}`}
                   onClick={() => setActiveTab('model')}
                 >
-                  <span className="tab-indicator" />
-                  <span>2.5D DIGITAL TWIN</span>
+                  Digital Twin
                 </button>
                 <button
-                  className={`scada-tab-btn ${activeTab === 'table' ? 'tab-active' : ''}`}
+                  className={`tab-btn ${activeTab === 'table' ? 'tab-active' : ''}`}
                   onClick={() => setActiveTab('table')}
                 >
-                  <span className="tab-indicator" />
-                  <span>PERSONNEL ROSTER</span>
+                  Roster
                 </button>
                 <button
-                  className={`scada-tab-btn ${activeTab === 'zones' ? 'tab-active' : ''}`}
+                  className={`tab-btn ${activeTab === 'zones' ? 'tab-active' : ''}`}
                   onClick={() => setActiveTab('zones')}
                 >
-                  <span className="tab-indicator" />
-                  <span>ZONE CLUSTERS</span>
+                  Zones
                 </button>
               </div>
             </div>
 
-            {/* Tab Body View */}
-            <div className="scada-panel-content">
+            <div className="panel-body">
               {activeTab === 'model' && (
                 <DigitalMineTwin
                   nodes={nodes}
@@ -194,20 +204,20 @@ export const App: React.FC = () => {
             </div>
           </section>
 
-          {/* Right Panel: Selected Miner Telemetry & Live Incident Ledger */}
-          <section className="scada-panel scada-sidebar-panel">
-            <div className="scada-panel-header">
-              <div className="panel-title-group">
-                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+          {/* Sidebar Panel: Selected Miner Telemetry & Audit Feed */}
+          <section className="panel">
+            <div className="panel-header">
+              <div className="panel-title">
+                <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
                   <polyline points="22 12 18 12 15 21 9 3 6 12 2 12" />
                 </svg>
-                <span className="panel-title-text">TELEMETRY &amp; AUDIT FEED</span>
+                <span>Telemetry &amp; Audit</span>
               </div>
 
-              {/* Miner Selector Dropdown with Quick Inspect Button */}
+              {/* Miner Selector & Details Button */}
               <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
                 <select
-                  className="scada-select"
+                  className="select"
                   value={selectedMinerId}
                   onChange={e => handleSelectMiner(e.target.value)}
                 >
@@ -219,16 +229,16 @@ export const App: React.FC = () => {
                 </select>
 
                 <button
-                  className="scada-quick-btn"
+                  className="btn btn-primary btn-sm"
                   onClick={() => setIsDrawerOpen(true)}
-                  title="Open miner dossier"
+                  title="View detailed miner info"
                 >
-                  DOSSIER ↗
+                  Details ↗
                 </button>
               </div>
             </div>
 
-            <div className="scada-panel-content">
+            <div className="panel-body">
               <TelemetryChart minerId={selectedMinerId} history={history} />
               <AuditFeed logs={auditLogs} />
             </div>
@@ -236,7 +246,7 @@ export const App: React.FC = () => {
         </div>
       </main>
 
-      {/* Individual Miner Detailed Inspector Drawer */}
+      {/* Individual Miner Details Drawer */}
       <MinerDetailsDrawer
         isOpen={isDrawerOpen}
         minerId={selectedMinerId}

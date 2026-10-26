@@ -14,87 +14,62 @@ export const EmergencyBanner: React.FC<EmergencyBannerProps> = ({
   onOpenAck,
   onOpenResolve,
 }) => {
-  const activeUnack = alerts.filter(a => a.status === 'NEW');
-  const critical = activeUnack.find(a => a.severity === 'CRITICAL');
-  const targetAlert = critical || activeUnack[0];
+  const unacked = alerts.filter(a => a.status === 'NEW');
+  const critical = unacked.find(a => a.severity === 'CRITICAL');
+  const target = critical || unacked[0];
 
   useEffect(() => {
     if (!critical || !audioArmed) return;
 
-    let audioCtx: AudioContext | null = null;
+    let ctx: AudioContext | null = null;
     try {
-      const AudioClass = window.AudioContext || (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext;
-      audioCtx = new AudioClass();
-    } catch {
-      return;
-    }
+      const AC = window.AudioContext || (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext;
+      ctx = new AC();
+    } catch { return; }
 
-    const interval = setInterval(() => {
-      if (!audioCtx) return;
+    const iv = setInterval(() => {
+      if (!ctx) return;
       try {
-        if (audioCtx.state === 'suspended') audioCtx.resume();
-        const osc = audioCtx.createOscillator();
-        const gain = audioCtx.createGain();
+        if (ctx.state === 'suspended') ctx.resume();
+        const osc = ctx.createOscillator();
+        const gain = ctx.createGain();
         osc.type = 'sawtooth';
-        osc.frequency.setValueAtTime(880, audioCtx.currentTime);
-        osc.frequency.exponentialRampToValueAtTime(440, audioCtx.currentTime + 0.3);
-        gain.gain.setValueAtTime(0.12, audioCtx.currentTime);
-        gain.gain.exponentialRampToValueAtTime(0.01, audioCtx.currentTime + 0.3);
+        osc.frequency.setValueAtTime(880, ctx.currentTime);
+        osc.frequency.exponentialRampToValueAtTime(440, ctx.currentTime + 0.3);
+        gain.gain.setValueAtTime(0.1, ctx.currentTime);
+        gain.gain.exponentialRampToValueAtTime(0.01, ctx.currentTime + 0.3);
         osc.connect(gain);
-        gain.connect(audioCtx.destination);
+        gain.connect(ctx.destination);
         osc.start();
-        osc.stop(audioCtx.currentTime + 0.3);
-      } catch {
-        // Ignore audio context error
-      }
+        osc.stop(ctx.currentTime + 0.3);
+      } catch { /* audio context error */ }
     }, 3000);
 
     return () => {
-      clearInterval(interval);
-      if (audioCtx && audioCtx.state !== 'closed') audioCtx.close();
+      clearInterval(iv);
+      if (ctx && ctx.state !== 'closed') ctx.close();
     };
   }, [critical, audioArmed]);
 
-  if (!targetAlert) return null;
+  if (!target) return null;
 
   return (
-    <div style={{
-      background: 'linear-gradient(90deg, #7f1d1d, #991b1b, #7f1d1d)',
-      borderBottom: '2px solid #ef4444',
-      padding: '12px 24px',
-    }}>
-      <div style={{
-        display: 'flex',
-        alignItems: 'center',
-        justifyContent: 'space-between',
-        maxWidth: '1600px',
-        margin: '0 auto',
-      }}>
-        <div style={{ display: 'flex', alignItems: 'center', gap: '16px' }}>
-          <span style={{ fontSize: '24px', lineHeight: 1 }}>⚠️</span>
-          <div>
-            <div style={{
-              fontWeight: 800,
-              fontSize: '14px',
-              letterSpacing: '1px',
-              color: '#fff',
-              textTransform: 'uppercase',
-            }}>
-              [{targetAlert.severity}] {targetAlert.alert_code} &bull; {targetAlert.node_id} @ {targetAlert.zone || 'UNKNOWN DRIFT'}
-            </div>
-            <div style={{ fontSize: '13px', color: '#fecaca' }}>
-              {targetAlert.details} (Triggered value: {targetAlert.trigger_value.toFixed(1)})
-            </div>
-          </div>
+    <div className="emergency-bar">
+      <div className="emergency-content">
+        <div className="emergency-info">
+          <span className={`severity-badge severity-${target.severity.toLowerCase()}`}>
+            {target.severity}
+          </span>
+          <span className="emergency-text">
+            <strong>{target.alert_code}</strong>
+            {' — '}
+            {target.node_id} at {target.zone || 'unknown zone'}
+            {target.details && ` · ${target.details}`}
+          </span>
         </div>
-
-        <div style={{ display: 'flex', gap: '10px' }}>
-          <button className="btn btn-warning" onClick={() => onOpenAck(targetAlert.id)}>
-            ACKNOWLEDGE INCIDENT
-          </button>
-          <button className="btn btn-success" onClick={() => onOpenResolve(targetAlert.id)}>
-            RESOLVE
-          </button>
+        <div className="emergency-actions">
+          <button className="btn btn-ghost" onClick={() => onOpenAck(target.id)}>Acknowledge</button>
+          <button className="btn btn-ghost" onClick={() => onOpenResolve(target.id)}>Resolve</button>
         </div>
       </div>
     </div>

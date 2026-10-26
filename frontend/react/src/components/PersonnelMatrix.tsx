@@ -42,60 +42,65 @@ export const PersonnelMatrix: React.FC<PersonnelMatrixProps> = ({
   });
 
   return (
-    <div className="personnel-matrix-container">
-      {/* Search & Filter Control Bar */}
-      <div className="matrix-toolbar">
-        <div className="matrix-search-box">
+    <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
+      {/* Search & Filter Controls */}
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '8px' }}>
+        <div className="search-box">
           <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
             <circle cx="11" cy="11" r="8" />
             <line x1="21" y1="21" x2="16.65" y2="16.65" />
           </svg>
           <input
             type="text"
-            className="matrix-search-input"
-            placeholder="Filter by badge, name, or underground zone..."
+            className="search-input"
+            placeholder="Search badge, name, or zone..."
             value={searchTerm}
             onChange={e => setSearchTerm(e.target.value)}
           />
           {searchTerm && (
-            <button className="matrix-search-clear" onClick={() => setSearchTerm('')}>×</button>
+            <button
+              onClick={() => setSearchTerm('')}
+              style={{ background: 'none', border: 'none', color: 'var(--text-3)', cursor: 'pointer', fontSize: '14px' }}
+            >
+              ×
+            </button>
           )}
         </div>
 
-        <div className="matrix-filter-pills">
+        <div className="filter-pills">
           <button
             className={`filter-pill ${statusFilter === 'ALL' ? 'active' : ''}`}
             onClick={() => setStatusFilter('ALL')}
           >
-            All Miners ({wearableMiners.length})
+            All ({wearableMiners.length})
           </button>
           <button
-            className={`filter-pill pill-warn ${statusFilter === 'WARN' ? 'active' : ''}`}
+            className={`filter-pill ${statusFilter === 'WARN' ? 'active' : ''}`}
             onClick={() => setStatusFilter('WARN')}
           >
-            Gas Warning ({wearableMiners.filter(m => m.latest_co >= 25 && m.latest_co < 50).length})
+            Warning ({wearableMiners.filter(m => m.latest_co >= 25 && m.latest_co < 50).length})
           </button>
           <button
-            className={`filter-pill pill-crit ${statusFilter === 'CRIT' ? 'active' : ''}`}
+            className={`filter-pill ${statusFilter === 'CRIT' ? 'active' : ''}`}
             onClick={() => setStatusFilter('CRIT')}
           >
-            Evacuation Alert ({wearableMiners.filter(m => m.latest_co >= 50).length})
+            Evacuation ({wearableMiners.filter(m => m.latest_co >= 50).length})
           </button>
         </div>
       </div>
 
-      {/* Industrial Roster Table */}
-      <div className="table-responsive">
-        <table className="scada-table">
+      {/* Roster Table */}
+      <div style={{ overflowX: 'auto' }}>
+        <table className="data-table">
           <thead>
             <tr>
-              <th>Personnel / Badge</th>
+              <th>Personnel</th>
               <th>Assignment</th>
-              <th>Subterranean Zone</th>
+              <th>Underground Zone</th>
               <th>CO Concentration</th>
               <th>Climate</th>
-              <th>Battery (LiPo)</th>
-              <th>Link Status</th>
+              <th>Battery</th>
+              <th>Status</th>
               <th style={{ textAlign: 'right' }}>Actions</th>
             </tr>
           </thead>
@@ -110,78 +115,70 @@ export const PersonnelMatrix: React.FC<PersonnelMatrixProps> = ({
               return (
                 <tr
                   key={m.node_id}
-                  className={`scada-row ${isSelected ? 'row-selected' : ''} ${isCrit ? 'row-crit' : isWarn ? 'row-warn' : ''}`}
+                  className={`${isSelected ? 'row-selected' : ''} ${isCrit ? 'row-crit' : ''}`}
                   onClick={() => {
                     onSelectMiner(m.node_id);
                     onOpenDrawer(m.node_id);
                   }}
                 >
-                  {/* Badge & Personnel Name */}
+                  {/* Name and ID */}
                   <td>
-                    <div className="miner-cell">
-                      <div className="miner-cell-avatar">
-                        <span className={`status-micro-dot ${m.status === 'ONLINE' ? 'dot-online' : 'dot-offline'}`} />
-                      </div>
-                      <div>
-                        <div className="miner-cell-name">{name}</div>
-                        <div className="miner-cell-id font-mono">{m.node_id}</div>
-                      </div>
+                    <div>
+                      <div className="cell-name">{name}</div>
+                      <div className="cell-id mono">{m.node_id}</div>
                     </div>
                   </td>
 
                   {/* Role */}
                   <td>
-                    <span className="badge-role">{m.role}</span>
+                    <span style={{ fontSize: '11px', color: 'var(--text-2)' }}>{m.role}</span>
                   </td>
 
-                  {/* Current Zone */}
+                  {/* Zone */}
                   <td>
-                    <span className="zone-tag">
-                      {m.current_zone || 'UNASSIGNED'}
+                    <span style={{ fontSize: '11px', fontWeight: 500, color: 'var(--brand-text)' }}>
+                      {m.current_zone || 'Unassigned'}
                     </span>
                   </td>
 
-                  {/* CO Concentration with Visual Bar */}
-                  <td>
-                    <div className="co-cell">
-                      <div className="co-readout">
-                        <span className={`font-mono font-bold ${isCrit ? 'text-crit' : isWarn ? 'text-warn' : 'text-safe'}`}>
-                          {co.toFixed(1)} ppm
-                        </span>
-                        <span className="co-label-micro">
-                          {isCrit ? 'CRITICAL' : isWarn ? 'WARNING' : 'SAFE'}
-                        </span>
-                      </div>
-                      <div className="mini-progress-track">
-                        <div
-                          className="mini-progress-fill"
-                          style={{
-                            width: `${Math.min(100, (co / 60) * 100)}%`,
-                            backgroundColor: isCrit ? '#ff3344' : isWarn ? '#f59e0b' : '#10b981',
-                          }}
-                        />
-                      </div>
+                  {/* CO Reading & Progress */}
+                  <td style={{ minWidth: '130px' }}>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '3px' }}>
+                      <span className={`mono ${isCrit ? 'text-crit' : isWarn ? 'text-warn' : 'text-safe'}`} style={{ fontWeight: 600 }}>
+                        {co.toFixed(1)} ppm
+                      </span>
+                      <span style={{ fontSize: '9px', fontWeight: 600, color: isCrit ? 'var(--crit)' : isWarn ? 'var(--warn)' : 'var(--safe)' }}>
+                        {isCrit ? 'CRITICAL' : isWarn ? 'WARNING' : 'SAFE'}
+                      </span>
+                    </div>
+                    <div className="progress-sm">
+                      <div
+                        className="progress-fill"
+                        style={{
+                          width: `${Math.min(100, (co / 60) * 100)}%`,
+                          backgroundColor: isCrit ? 'var(--crit)' : isWarn ? 'var(--warn)' : 'var(--safe)',
+                        }}
+                      />
                     </div>
                   </td>
 
-                  {/* Micro-Climate */}
+                  {/* Climate */}
                   <td>
-                    <span className="font-mono climate-text">
+                    <span className="mono" style={{ fontSize: '11px', color: 'var(--text-2)' }}>
                       {m.latest_temp.toFixed(1)}°C &bull; {m.latest_hum.toFixed(0)}% RH
                     </span>
                   </td>
 
                   {/* Battery */}
                   <td>
-                    <div className="battery-cell font-mono">
-                      <span className="battery-icon">🔋</span>
-                      <span>{m.battery_v.toFixed(2)} V</span>
-                    </div>
+                    <span className="mono" style={{ fontSize: '11px' }}>
+                      {m.battery_v.toFixed(2)} V
+                    </span>
                   </td>
 
                   {/* Status */}
                   <td>
-                    <span className={`status-chip ${m.status === 'ONLINE' ? 'chip-online' : m.status === 'STALE' ? 'chip-stale' : 'chip-offline'}`}>
+                    <span className={`cell-status ${m.status === 'ONLINE' ? 'st-online' : m.status === 'STALE' ? 'st-stale' : 'st-offline'}`}>
                       {m.status}
                     </span>
                   </td>
@@ -189,15 +186,14 @@ export const PersonnelMatrix: React.FC<PersonnelMatrixProps> = ({
                   {/* Action */}
                   <td style={{ textAlign: 'right' }}>
                     <button
-                      className="btn btn-inspect"
+                      className="btn btn-sm btn-ghost"
                       onClick={(e) => {
                         e.stopPropagation();
                         onSelectMiner(m.node_id);
                         onOpenDrawer(m.node_id);
                       }}
                     >
-                      <span>INSPECT DOSSIER</span>
-                      <span>→</span>
+                      Details →
                     </button>
                   </td>
                 </tr>
@@ -206,8 +202,8 @@ export const PersonnelMatrix: React.FC<PersonnelMatrixProps> = ({
 
             {filteredMiners.length === 0 && (
               <tr>
-                <td colSpan={8} className="empty-table-cell">
-                  No active miner tags matching current search or status filter.
+                <td colSpan={8} style={{ textAlign: 'center', padding: '24px', color: 'var(--text-3)' }}>
+                  No personnel matching current filters.
                 </td>
               </tr>
             )}

@@ -12,380 +12,201 @@ interface MinerDetailsDrawerProps {
   onOpenAck: (alertId: number) => void;
 }
 
-// Known miner personnel directory for Zambian underground operations
-const PERSONNEL_DIRECTORY: Record<string, {
-  name: string;
-  roleTitle: string;
-  shift: string;
-  team: string;
-  bloodGroup: string;
-  emergencyContact: string;
-  certifications: string[];
-}> = {
-  'MINER-101': {
-    name: 'Moses Banda',
-    roleTitle: 'Haulage Drill Operator',
-    shift: 'Shift A (06:00 - 14:00 CAT)',
-    team: 'Drift Section 2 Alpha',
-    bloodGroup: 'O+',
-    emergencyContact: '+260 97 712 3456 (Spouse)',
-    certifications: ['Blasting Certificate #4412', 'Mine Rescue Level 2', 'First Aid Certified'],
-  },
-  'MINER-106': {
-    name: 'Chileshe Phiri',
-    roleTitle: 'Underground Geologist / Stope Surveyor',
-    shift: 'Shift A (06:00 - 14:00 CAT)',
-    team: 'Deep Stope Geotechnical Crew',
-    bloodGroup: 'A+',
-    emergencyContact: '+260 96 688 1234 (Brother)',
-    certifications: ['Ventilation Gas Specialist', 'Deep Shaft Fall Arrest', 'Confined Space Lead'],
-  },
-  'MINER-112': {
-    name: 'Peter Mwape',
-    roleTitle: 'Ventilation & Dewatering Technician',
-    shift: 'Shift A (06:00 - 14:00 CAT)',
-    team: 'Level 2 Infrastructure Team',
-    bloodGroup: 'B+',
-    emergencyContact: '+260 95 544 9876 (Sister)',
-    certifications: ['Subterranean Pumping Tech', 'Hazardous Atmosphere Response'],
-  },
-  'MINER-DANGER': {
-    name: 'Kabwe Lungu',
-    roleTitle: 'Active Stope Loader Operator',
-    shift: 'Shift B (14:00 - 22:00 CAT)',
-    team: 'Stope Extraction Unit #4',
-    bloodGroup: 'O-',
-    emergencyContact: '+260 97 123 7890 (Clinic Liaison)',
-    certifications: ['Heavy Machinery Operator', 'Emergency Evacuation Lead'],
-  },
+const NAMES: Record<string, { name: string; role: string; shift: string; team: string; blood: string; contact: string; certs: string[] }> = {
+  'MINER-101': { name: 'Moses Banda', role: 'Drill Operator', shift: 'A · 06:00–14:00', team: 'Drift 2 Alpha', blood: 'O+', contact: '+260 97 712 3456', certs: ['Blasting #4412', 'Mine Rescue L2', 'First Aid'] },
+  'MINER-106': { name: 'Chileshe Phiri', role: 'Geologist / Surveyor', shift: 'A · 06:00–14:00', team: 'Deep Stope Crew', blood: 'A+', contact: '+260 96 688 1234', certs: ['Gas Specialist', 'Fall Arrest', 'Confined Space'] },
+  'MINER-112': { name: 'Peter Mwape', role: 'Ventilation Tech', shift: 'A · 06:00–14:00', team: 'L2 Infrastructure', blood: 'B+', contact: '+260 95 544 9876', certs: ['Pumping Tech', 'Hazmat Response'] },
+  'MINER-DANGER': { name: 'Kabwe Lungu', role: 'Loader Operator', shift: 'B · 14:00–22:00', team: 'Stope Unit #4', blood: 'O-', contact: '+260 97 123 7890', certs: ['Heavy Machinery', 'Evac Lead'] },
 };
 
-export const MinerDetailsDrawer: React.FC<MinerDetailsDrawerProps> = ({
-  isOpen,
-  minerId,
-  nodes,
-  alerts,
-  history,
-  onClose,
-  onLocateOnMap,
-  onOpenAck,
-}) => {
+function depthFromZone(zone?: string): string {
+  if (!zone) return '0m';
+  if (zone.includes('LEVEL-3')) return '-450m';
+  if (zone.includes('LEVEL-2')) return '-250m';
+  if (zone.includes('LEVEL-1')) return '-100m';
+  return '0m';
+}
+
+export const MinerDetailsDrawer: React.FC<MinerDetailsDrawerProps> = ({ isOpen, minerId, nodes, alerts, history, onClose, onLocateOnMap, onOpenAck }) => {
   if (!isOpen || !minerId) return null;
 
   const node = nodes.find(n => n.node_id === minerId);
-  const personnel = PERSONNEL_DIRECTORY[minerId] || {
-    name: `Operator ${minerId.replace('MINER-', '#')}`,
-    roleTitle: 'Underground Mine Specialist',
-    shift: 'Active Production Shift',
-    team: 'Mining Operations Division',
-    bloodGroup: 'Unknown',
-    emergencyContact: 'Central Surface Dispatch (Ext. 201)',
-    certifications: ['Underground Safety Induction (Zambia Mining Act)'],
-  };
+  const p = NAMES[minerId] || { name: `Operator ${minerId.replace('MINER-', '#')}`, role: 'Mine Worker', shift: 'Active', team: 'Operations', blood: '—', contact: 'Surface dispatch', certs: ['Safety Induction'] };
 
-  const co = node?.latest_co ?? 0.0;
-  const temp = node?.latest_temp ?? 0.0;
-  const hum = node?.latest_hum ?? 0.0;
-  const batt = node?.battery_v ?? 4.0;
-  const isOnline = node?.status === 'ONLINE';
-  const isStale = node?.status === 'STALE';
+  const co = node?.latest_co ?? 0;
+  const temp = node?.latest_temp ?? 0;
+  const hum = node?.latest_hum ?? 0;
+  const batt = node?.battery_v ?? 0;
+  const isCrit = co >= 50;
+  const isWarn = co >= 25 && co < 50;
+  const coColor = isCrit ? 'var(--color-crit)' : isWarn ? 'var(--color-warn)' : 'var(--color-safe)';
 
-  const isCoCrit = co >= 50.0;
-  const isCoWarn = co >= 25.0 && co < 50.0;
-  const gasStatusLabel = isCoCrit ? 'CRITICAL EVACUATION' : isCoWarn ? 'WARNING THRESHOLD' : 'ATMOSPHERE SAFE';
-  const gasStatusColor = isCoCrit ? '#ff3344' : isCoWarn ? '#f59e0b' : '#10b981';
-
-  // Miner-specific active alerts
   const minerAlerts = alerts.filter(a => a.node_id === minerId && a.status !== 'RESOLVED');
 
-  // Sparkline generator for CO
-  const sparklinePoints = history.slice(0, 20).reverse();
-  const maxCo = Math.max(60, ...sparklinePoints.map(p => p.co_ppm));
-  const svgWidth = 320;
-  const svgHeight = 60;
-  const polylineCoords = sparklinePoints.map((pt, i) => {
-    const x = (i / Math.max(1, sparklinePoints.length - 1)) * svgWidth;
-    const y = svgHeight - (pt.co_ppm / maxCo) * (svgHeight - 10) - 5;
+  // Sparkline data
+  const pts = history.slice(0, 20).reverse();
+  const maxCo = Math.max(60, ...pts.map(p => p.co_ppm));
+  const svgW = 400;
+  const svgH = 56;
+  const coords = pts.map((pt, i) => {
+    const x = pts.length > 1 ? (i / (pts.length - 1)) * svgW : svgW / 2;
+    const y = svgH - (pt.co_ppm / maxCo) * (svgH - 8) - 4;
     return `${x},${y}`;
   }).join(' ');
 
   return (
     <div className="drawer-overlay" onClick={onClose}>
-      <aside
-        className="miner-drawer"
-        onClick={e => e.stopPropagation()}
-        aria-label={`Detailed telemetry dossier for ${minerId}`}
-      >
-        {/* Drawer Header */}
-        <div className="drawer-header">
-          <div className="drawer-header-left">
-            <div className="miner-avatar">
-              <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                <path d="M12 2a5 5 0 0 0-5 5v2H5a2 2 0 0 0-2 2v9a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-9a2 2 0 0 0-2-2h-2V7a5 5 0 0 0-5-5z" />
-                <circle cx="12" cy="6" r="1.5" />
-              </svg>
-              <span className={`status-indicator-dot ${isOnline ? 'dot-online' : isStale ? 'dot-stale' : 'dot-offline'}`} />
+      <aside className="drawer" onClick={e => e.stopPropagation()}>
+        {/* Header */}
+        <div className="drawer-head">
+          <div>
+            <div className="drawer-title">
+              <h2>{p.name}</h2>
+              <span className="mono text-accent">{minerId}</span>
             </div>
-            <div>
-              <div className="drawer-title-row">
-                <h2 className="miner-name">{personnel.name}</h2>
-                <span className="miner-id-tag">{minerId}</span>
-              </div>
-              <p className="miner-role-subtitle">{personnel.roleTitle} &bull; {personnel.team}</p>
-            </div>
+            <p className="drawer-subtitle">{p.role} · {p.team}</p>
           </div>
-
-          <button className="drawer-close-btn" onClick={onClose} title="Close dossier (Esc)">
-            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-              <line x1="18" y1="6" x2="6" y2="18" />
-              <line x1="6" y1="6" x2="18" y2="18" />
-            </svg>
-          </button>
+          <button className="btn btn-ghost drawer-close" onClick={onClose}>✕</button>
         </div>
 
-        {/* Drawer Scrollable Body */}
+        {/* Body */}
         <div className="drawer-body">
-          {/* Active Hazard Warning Banner (if any) */}
+          {/* Active alerts */}
           {minerAlerts.length > 0 && (
-            <div className="drawer-hazard-alert">
-              <div className="drawer-hazard-title">
-                <span className="pulse-hazard-icon">⚠️</span>
-                <span>ACTIVE SAFETY ALARM TRIGGERED ({minerAlerts.length})</span>
-              </div>
+            <div className="drawer-alert-block">
+              <p className="drawer-alert-heading">{minerAlerts.length} active alert{minerAlerts.length > 1 ? 's' : ''}</p>
               {minerAlerts.map(a => (
-                <div key={a.id} className="drawer-alert-item">
-                  <div className="drawer-alert-meta">
-                    <span className="alert-badge-crit">{a.severity}</span>
-                    <span className="alert-code-text">{a.alert_code}</span>
-                  </div>
-                  <div className="alert-details-text">{a.details || 'Environmental or motion threshold exceeded'}</div>
+                <div key={a.id} className="drawer-alert-row">
+                  <span className={`severity-badge severity-${a.severity.toLowerCase()}`}>{a.severity}</span>
+                  <span className="mono">{a.alert_code}</span>
+                  <span className="text-dim">{a.details || 'Threshold exceeded'}</span>
                   {a.status === 'NEW' && (
-                    <button
-                      className="btn btn-warning btn-sm"
-                      style={{ marginTop: '8px', width: '100%' }}
-                      onClick={() => onOpenAck(a.id)}
-                    >
-                      Acknowledge Hazard Incident
-                    </button>
+                    <button className="btn btn-sm" onClick={() => onOpenAck(a.id)}>Acknowledge</button>
                   )}
                 </div>
               ))}
             </div>
           )}
 
-          {/* Location & Spatial Positioning Card */}
-          <div className="dossier-card">
-            <div className="card-section-label">
-              <span>📍</span> SUBTERRANEAN SPATIAL TRACKING
-            </div>
-            <div className="grid-2col">
-              <div className="metric-box">
-                <span className="metric-caption">CURRENT MINING ZONE</span>
-                <span className="metric-val-highlight">{node?.current_zone || 'UNASSIGNED'}</span>
+          {/* Location */}
+          <section className="drawer-section">
+            <h3 className="section-title">Location</h3>
+            <div className="detail-grid cols-2">
+              <div className="detail-cell">
+                <span className="detail-label">Zone</span>
+                <span className="detail-value mono">{node?.current_zone || 'Unassigned'}</span>
               </div>
-              <div className="metric-box">
-                <span className="metric-caption">ELEVATION / DEPTH</span>
-                <span className="metric-val">
-                  {node?.current_zone?.includes('LEVEL-3') ? '-450m (Deep Stope)' :
-                   node?.current_zone?.includes('LEVEL-2') ? '-250m (Haulage Drift)' :
-                   node?.current_zone?.includes('LEVEL-1') ? '-100m (Sub-Station)' : '0m (Surface Portal)'}
+              <div className="detail-cell">
+                <span className="detail-label">Depth</span>
+                <span className="detail-value mono">{depthFromZone(node?.current_zone)}</span>
+              </div>
+              <div className="detail-cell">
+                <span className="detail-label">Status</span>
+                <span className={`detail-value mono ${node?.status === 'ONLINE' ? 'text-safe' : 'text-warn'}`}>
+                  {node?.status || 'Unknown'}
                 </span>
               </div>
-              <div className="metric-box">
-                <span className="metric-caption">COMMUNICATION LINK</span>
-                <span className="metric-val font-mono">
-                  {node?.is_simulated ? 'Mesh Link: 2 Hops (Nominal)' : 'Direct Mesh Bridge'}
-                </span>
-              </div>
-              <div className="metric-box">
-                <span className="metric-caption">DEVICE STATUS</span>
-                <span className={`metric-val font-mono ${isOnline ? 'text-safe' : 'text-warn'}`}>
-                  {node?.status || 'UNKNOWN'} (Seq #{node?.last_seq || 0})
-                </span>
+              <div className="detail-cell">
+                <span className="detail-label">Last sequence</span>
+                <span className="detail-value mono">#{node?.last_seq || 0}</span>
               </div>
             </div>
-
-            <button
-              className="btn btn-locate"
-              onClick={() => onLocateOnMap(minerId)}
-            >
-              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                <circle cx="12" cy="12" r="10" />
-                <line x1="22" y1="12" x2="18" y2="12" />
-                <line x1="6" y1="12" x2="2" y2="12" />
-                <line x1="12" y1="6" x2="12" y2="2" />
-                <line x1="12" y1="22" x2="12" y2="18" />
-              </svg>
-              <span>FOCUS &amp; TRACK ON 2.5D DIGITAL TWIN</span>
+            <button className="btn btn-primary btn-block" onClick={() => onLocateOnMap(minerId)}>
+              Show on map
             </button>
-          </div>
+          </section>
 
-          {/* Real-Time Environmental & Biometric Telemetry */}
-          <div className="dossier-card">
-            <div className="card-section-label">
-              <span>⚡</span> REAL-TIME SENSOR METRICS (WEARABLE ESP32)
-            </div>
-
-            {/* CO Gas Gauge Meter */}
-            <div className="gas-gauge-block">
-              <div className="gas-gauge-header">
-                <span className="gas-title">CARBON MONOXIDE (CO) CONCENTRATION</span>
-                <span className="gas-value" style={{ color: gasStatusColor }}>
-                  {co.toFixed(1)} <span className="unit">ppm</span>
-                </span>
+          {/* Gas & Environment */}
+          <section className="drawer-section">
+            <h3 className="section-title">Environment</h3>
+            {/* CO gauge */}
+            <div className="gauge-row">
+              <div className="gauge-info">
+                <span className="gauge-label">CO concentration</span>
+                <span className="gauge-value mono" style={{ color: coColor }}>{co.toFixed(1)} ppm</span>
               </div>
-
-              <div className="gas-bar-track">
-                <div
-                  className="gas-bar-fill"
-                  style={{
-                    width: `${Math.min(100, (co / 60) * 100)}%`,
-                    backgroundColor: gasStatusColor,
-                    boxShadow: `0 0 12px ${gasStatusColor}`,
-                  }}
-                />
-                {/* Visual Threshold Ticks */}
-                <span className="threshold-tick" style={{ left: '41.6%' }} title="25 ppm OSHA Warning" />
-                <span className="threshold-tick tick-crit" style={{ left: '83.3%' }} title="50 ppm Evac Ceiling" />
+              <div className="gauge-track">
+                <div className="gauge-fill" style={{ width: `${Math.min(100, (co / 60) * 100)}%`, backgroundColor: coColor }} />
+                <span className="gauge-tick" style={{ left: '41.7%' }} />
+                <span className="gauge-tick tick-red" style={{ left: '83.3%' }} />
               </div>
-
-              <div className="gas-bar-legend">
-                <span>0 ppm (Clean)</span>
-                <span>25 ppm (Warning)</span>
-                <span>50 ppm (Evacuate)</span>
-              </div>
-
-              <div className="gas-status-badge" style={{ backgroundColor: `${gasStatusColor}18`, borderColor: `${gasStatusColor}40`, color: gasStatusColor }}>
-                <span className="pulse-dot" style={{ backgroundColor: gasStatusColor, boxShadow: `0 0 6px ${gasStatusColor}` }} />
-                <span>STATUS: {gasStatusLabel}</span>
+              <div className="gauge-legend">
+                <span>0</span><span>25 (warn)</span><span>50 (evac)</span>
               </div>
             </div>
 
-            {/* Micro-Climate & Motion Grid */}
-            <div className="grid-3col" style={{ marginTop: '16px' }}>
-              <div className="metric-box">
-                <span className="metric-caption">AMBIENT TEMP</span>
-                <span className="metric-val">{temp.toFixed(1)}°C</span>
-                <span className="metric-subtext">Thermal Index Nominal</span>
+            <div className="detail-grid cols-3">
+              <div className="detail-cell">
+                <span className="detail-label">Temperature</span>
+                <span className="detail-value mono">{temp.toFixed(1)}°C</span>
               </div>
-              <div className="metric-box">
-                <span className="metric-caption">HUMIDITY</span>
-                <span className="metric-val">{hum.toFixed(0)}%</span>
-                <span className="metric-subtext">Underground Drift</span>
+              <div className="detail-cell">
+                <span className="detail-label">Humidity</span>
+                <span className="detail-value mono">{hum.toFixed(0)}%</span>
               </div>
-              <div className="metric-box">
-                <span className="metric-caption">MOTION / GYRO</span>
-                <span className="metric-val text-safe">NORMAL</span>
-                <span className="metric-subtext">No Fall Detected</span>
+              <div className="detail-cell">
+                <span className="detail-label">Motion</span>
+                <span className="detail-value text-safe">Normal</span>
               </div>
             </div>
 
-            {/* Battery & Hardware Status */}
-            <div className="grid-2col" style={{ marginTop: '12px' }}>
-              <div className="metric-box">
-                <span className="metric-caption">BATTERY VOLTAGE</span>
-                <span className="metric-val font-mono">{batt.toFixed(2)} V</span>
-                <span className="metric-subtext">LiPo Est. ~88% Remaining</span>
+            <div className="detail-grid cols-2" style={{ marginTop: '8px' }}>
+              <div className="detail-cell">
+                <span className="detail-label">Battery</span>
+                <span className="detail-value mono">{batt.toFixed(2)} V</span>
               </div>
-              <div className="metric-box">
-                <span className="metric-caption">SENSOR HEALTH</span>
-                <span className="metric-val text-safe font-mono">ALL NOMINAL</span>
-                <span className="metric-subtext">I2C + MQ-7 + MPU6050</span>
+              <div className="detail-cell">
+                <span className="detail-label">Sensors</span>
+                <span className="detail-value text-safe">OK</span>
               </div>
             </div>
-          </div>
+          </section>
 
-          {/* Historical Trend Sparkline */}
-          <div className="dossier-card">
-            <div className="card-section-label">
-              <span>📊</span> 20-POINT CO TELEMETRY STREAM
-            </div>
-            {sparklinePoints.length > 1 ? (
-              <div className="sparkline-wrapper">
-                <svg width="100%" height="70" viewBox={`0 0 ${svgWidth} ${svgHeight}`} preserveAspectRatio="none">
-                  {/* Warning line at 25 ppm */}
-                  <line
-                    x1="0"
-                    y1={svgHeight - (25 / maxCo) * (svgHeight - 10) - 5}
-                    x2={svgWidth}
-                    y2={svgHeight - (25 / maxCo) * (svgHeight - 10) - 5}
-                    stroke="rgba(245, 158, 11, 0.4)"
-                    strokeDasharray="4 4"
-                    strokeWidth="1"
-                  />
-                  {/* Critical line at 50 ppm */}
-                  <line
-                    x1="0"
-                    y1={svgHeight - (50 / maxCo) * (svgHeight - 10) - 5}
-                    x2={svgWidth}
-                    y2={svgHeight - (50 / maxCo) * (svgHeight - 10) - 5}
-                    stroke="rgba(239, 68, 68, 0.4)"
-                    strokeDasharray="4 4"
-                    strokeWidth="1"
-                  />
-                  {/* Polyline */}
-                  <polyline
-                    fill="none"
-                    stroke="#38bdf8"
-                    strokeWidth="2"
-                    points={polylineCoords}
-                  />
+          {/* CO trend */}
+          <section className="drawer-section">
+            <h3 className="section-title">CO trend (last 20 readings)</h3>
+            {pts.length > 1 ? (
+              <div className="sparkline-box">
+                <svg width="100%" height="60" viewBox={`0 0 ${svgW} ${svgH}`} preserveAspectRatio="none">
+                  <line x1="0" y1={svgH - (25/maxCo)*(svgH-8)-4} x2={svgW} y2={svgH - (25/maxCo)*(svgH-8)-4} stroke="rgba(234,179,8,0.3)" strokeDasharray="4 4" strokeWidth="1" />
+                  <line x1="0" y1={svgH - (50/maxCo)*(svgH-8)-4} x2={svgW} y2={svgH - (50/maxCo)*(svgH-8)-4} stroke="rgba(239,68,68,0.3)" strokeDasharray="4 4" strokeWidth="1" />
+                  <polyline fill="none" stroke="#22d3ee" strokeWidth="1.5" points={coords} />
                 </svg>
-                <div className="sparkline-footer">
-                  <span>-20 Packets Ago</span>
-                  <span style={{ color: '#38bdf8' }}>Current: {co.toFixed(1)} ppm</span>
-                  <span>Latest (Now)</span>
+                <div className="sparkline-labels">
+                  <span>Oldest</span>
+                  <span className="mono" style={{ color: coColor }}>{co.toFixed(1)} ppm</span>
+                  <span>Now</span>
                 </div>
               </div>
             ) : (
-              <p className="no-history-text">Awaiting streaming telemetry packets from ESP32 mesh...</p>
+              <p className="text-dim" style={{ padding: '12px 0', textAlign: 'center', fontSize: '12px' }}>
+                Waiting for telemetry data…
+              </p>
             )}
-          </div>
+          </section>
 
-          {/* Worker Profile & Safety Qualifications */}
-          <div className="dossier-card">
-            <div className="card-section-label">
-              <span>📋</span> PERSONNEL PROFILE &amp; EMERGENCY DISPATCH
+          {/* Personnel info */}
+          <section className="drawer-section">
+            <h3 className="section-title">Personnel</h3>
+            <div className="info-rows">
+              <div className="info-row"><span className="info-key">Shift</span><span>{p.shift}</span></div>
+              <div className="info-row"><span className="info-key">Emergency contact</span><span>{p.contact}</span></div>
+              <div className="info-row"><span className="info-key">Blood group</span><span className="mono">{p.blood}</span></div>
             </div>
-            <div className="profile-row">
-              <span className="profile-key">Shift Schedule:</span>
-              <span className="profile-val">{personnel.shift}</span>
+            <div className="cert-list">
+              {p.certs.map((c, i) => <span key={i} className="cert-pill">{c}</span>)}
             </div>
-            <div className="profile-row">
-              <span className="profile-key">Emergency Contact:</span>
-              <span className="profile-val">{personnel.emergencyContact}</span>
-            </div>
-            <div className="profile-row">
-              <span className="profile-key">Blood Group:</span>
-              <span className="profile-val font-mono">{personnel.bloodGroup}</span>
-            </div>
-            <div className="profile-cert-list">
-              <span className="profile-key" style={{ marginBottom: '6px', display: 'block' }}>Qualifications:</span>
-              <div className="cert-tags">
-                {personnel.certifications.map((c, i) => (
-                  <span key={i} className="cert-tag">{c}</span>
-                ))}
-              </div>
-            </div>
-          </div>
+          </section>
         </div>
 
-        {/* Drawer Footer Actions */}
-        <div className="drawer-footer">
-          <button
-            className="btn btn-danger"
-            style={{ flex: 1, padding: '10px' }}
-            onClick={() => alert(`🚨 EMERGENCY EVACUATION SIGNAL TRANSMITTED TO ${minerId}!\nBadge buzzer and strobe LED triggered via mesh broadcast.`)}
+        {/* Footer */}
+        <div className="drawer-foot">
+          <button className="btn btn-danger" style={{ flex: 1 }}
+            onClick={() => alert(`Evacuation signal sent to ${minerId}`)}
           >
-            <span>📢</span> TRIGGER BADGE EVACUATION ALARM
+            Send evacuation alert
           </button>
-          <button
-            className="btn"
-            style={{ padding: '10px 16px' }}
-            onClick={onClose}
-          >
-            DISMISS
-          </button>
+          <button className="btn btn-ghost" onClick={onClose}>Close</button>
         </div>
       </aside>
     </div>
