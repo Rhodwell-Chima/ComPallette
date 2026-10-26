@@ -13,87 +13,111 @@ export const Header: React.FC<HeaderProps> = ({
   onToggleAudio,
   onRefresh,
 }) => {
-  const [timeStr, setTimeStr] = useState<string>('--:--:--');
+  const [catTime, setCatTime] = useState<string>('--:--:--');
+  const [utcTime, setUtcTime] = useState<string>('--:--:--');
 
   useEffect(() => {
-    const timer = setInterval(() => {
+    const update = () => {
       const now = new Date();
-      setTimeStr(now.toTimeString().split(' ')[0] + ' (UTC+2)');
-    }, 1000);
+      // Central Africa Time (CAT = UTC+2)
+      const catDate = new Date(now.getTime() + (2 * 3600 * 1000));
+      setCatTime(catDate.toISOString().slice(11, 19));
+      setUtcTime(now.toISOString().slice(11, 19));
+    };
+    update();
+    const timer = setInterval(update, 1000);
     return () => clearInterval(timer);
   }, []);
 
   return (
-    <header style={{
-      backgroundColor: 'var(--bg-surface)',
-      borderBottom: '1px solid var(--border-subtle)',
-      padding: '12px 24px',
-      display: 'flex',
-      justifyContent: 'space-between',
-      alignItems: 'center',
-      position: 'sticky',
-      top: 0,
-      zIndex: 100,
-    }}>
-      <div style={{ display: 'flex', alignItems: 'center', gap: '14px' }}>
-        <span style={{
-          background: 'linear-gradient(135deg, #1e293b, #0f172a)',
-          border: '1px solid var(--border-subtle)',
-          color: '#38bdf8',
-          fontFamily: 'var(--font-mono)',
-          fontWeight: 700,
-          fontSize: '13px',
-          letterSpacing: '1.5px',
-          padding: '4px 10px',
-          borderRadius: '4px',
-        }}>
-          COMPALLETTE
-        </span>
-        <div>
-          <div style={{ fontSize: '16px', fontWeight: 700, letterSpacing: '0.5px', color: '#fff' }}>
-            Subterranean Safety Operations Center
+    <header className="scada-header">
+      {/* Brand & System Title */}
+      <div className="header-brand-group">
+        <div className="brand-logo-badge">
+          <div className="brand-icon">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
+              <polygon points="12 2 2 7 12 12 22 7 12 2" />
+              <polyline points="2 17 12 22 22 17" />
+              <polyline points="2 12 12 17 22 12" />
+            </svg>
           </div>
-          <div style={{ fontSize: '12px', color: 'var(--text-muted)' }}>
-            MineMesh Zambia &bull; Enterprise Scalable Stack (Django + React)
+          <div className="brand-text">
+            <span className="brand-title">COMPALLETTE</span>
+            <span className="brand-sub">SUBTERRANEAN OPS</span>
+          </div>
+        </div>
+
+        <div className="header-divider-v" />
+
+        <div className="header-facility-meta">
+          <div className="facility-title">ZAMBIA UNDERGROUND MINING SAFETY COMMAND</div>
+          <div className="facility-subtitle font-mono">
+            <span>SECTOR: COPPERBELT DEEP EXTRACTION</span>
+            <span className="meta-sep">&bull;</span>
+            <span>WIRELESS MESH: MineMesh_Zambia (5555)</span>
           </div>
         </div>
       </div>
 
-      <div style={{ display: 'flex', alignItems: 'center', gap: '16px' }}>
-        <span style={{
-          display: 'inline-flex',
-          alignItems: 'center',
-          gap: '6px',
-          padding: '4px 10px',
-          borderRadius: '9999px',
-          fontFamily: 'var(--font-mono)',
-          fontSize: '11px',
-          fontWeight: 600,
-          background: isGatewayOnline ? 'var(--color-safe-bg)' : 'var(--color-warn-bg)',
-          color: isGatewayOnline ? 'var(--color-safe)' : 'var(--color-warn)',
-          border: `1px solid ${isGatewayOnline ? 'rgba(16, 185, 129, 0.3)' : 'rgba(245, 158, 11, 0.3)'}`,
-        }}>
-          <span className="pulse-dot"></span>
-          <span>{isGatewayOnline ? 'GATEWAY ONLINE' : 'GATEWAY SILENT'}</span>
-        </span>
+      {/* Center Link Status & Protocol Telemetry */}
+      <div className="header-center-status">
+        <div className={`gateway-pill ${isGatewayOnline ? 'gateway-active' : 'gateway-silent'}`}>
+          <span className="pulse-dot-scada" />
+          <span className="font-mono">
+            {isGatewayOnline ? 'GATEWAY UPLINK: NOMINAL (2.0s)' : 'GATEWAY UPLINK: SILENT / BUFFERING'}
+          </span>
+        </div>
+      </div>
 
+      {/* Right Controls & Timestamps */}
+      <div className="header-controls-group">
+        {/* Siren Trigger / Toggle */}
         <button
-          className={`btn ${!audioArmed ? 'btn-danger' : ''}`}
+          className={`scada-btn-toggle ${audioArmed ? 'btn-siren-armed' : 'btn-siren-muted'}`}
           onClick={onToggleAudio}
-          title="Toggle audio alarm tone"
+          title="Toggle audio alarm synthesizer"
         >
-          <span>{audioArmed ? '🔊' : '🔇'}</span>
-          <span>{audioArmed ? 'SIREN: ARMED' : 'SIREN: MUTED'}</span>
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+            {audioArmed ? (
+              <>
+                <polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5" />
+                <path d="M19.07 4.93a10 10 0 0 1 0 14.14M15.54 8.46a5 5 0 0 1 0 7.07" />
+              </>
+            ) : (
+              <>
+                <polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5" />
+                <line x1="23" y1="9" x2="17" y2="15" />
+                <line x1="17" y1="9" x2="23" y2="15" />
+              </>
+            )}
+          </svg>
+          <span className="font-mono">{audioArmed ? 'SIREN ARMED' : 'SIREN MUTED'}</span>
         </button>
 
-        <button className="btn" onClick={onRefresh}>
-          <span>↻</span>
-          <span>REFRESH</span>
+        {/* Sync / Refresh */}
+        <button
+          className="scada-icon-btn"
+          onClick={onRefresh}
+          title="Manual poll refresh"
+        >
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+            <polyline points="23 4 23 10 17 10" />
+            <polyline points="1 20 1 14 7 14" />
+            <path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15" />
+          </svg>
         </button>
 
-        <span style={{ fontFamily: 'var(--font-mono)', fontWeight: 600, fontSize: '13px', color: '#38bdf8' }}>
-          {timeStr}
-        </span>
+        {/* Dual Clock (CAT / UTC) */}
+        <div className="header-clocks font-mono">
+          <div className="clock-item">
+            <span className="clock-label">CAT (LUSAKA)</span>
+            <span className="clock-val-active">{catTime}</span>
+          </div>
+          <div className="clock-item">
+            <span className="clock-label">UTC SYNC</span>
+            <span className="clock-val-dim">{utcTime}</span>
+          </div>
+        </div>
       </div>
     </header>
   );

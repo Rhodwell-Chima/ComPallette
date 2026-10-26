@@ -7,6 +7,7 @@ import { SpatialZones } from './components/SpatialZones';
 import { PersonnelMatrix } from './components/PersonnelMatrix';
 import { TelemetryChart } from './components/TelemetryChart';
 import { AuditFeed } from './components/AuditFeed';
+import { MinerDetailsDrawer } from './components/MinerDetailsDrawer';
 import { AckModal, ResolveModal } from './components/Modals';
 import {
   fetchSummary,
@@ -25,8 +26,9 @@ export const App: React.FC = () => {
   const [alerts, setAlerts] = useState<AlertItem[]>([]);
   const [auditLogs, setAuditLogs] = useState<AuditItem[]>([]);
   const [selectedMinerId, setSelectedMinerId] = useState<string>('MINER-106');
+  const [isDrawerOpen, setIsDrawerOpen] = useState<boolean>(false);
   const [history, setHistory] = useState<TelemetryItem[]>([]);
-  const [activeTab, setActiveTab] = useState<'model' | 'zones' | 'table'>('model');
+  const [activeTab, setActiveTab] = useState<'model' | 'table' | 'zones'>('model');
   const [audioArmed, setAudioArmed] = useState<boolean>(true);
   const [ackModalId, setAckModalId] = useState<number | null>(null);
   const [resModalId, setResModalId] = useState<number | null>(null);
@@ -74,8 +76,20 @@ export const App: React.FC = () => {
     }
   }, [selectedMinerId]);
 
+  // Handle miner selection from any component
   const handleSelectMiner = (nodeId: string) => {
     setSelectedMinerId(nodeId);
+  };
+
+  const handleOpenDrawer = (nodeId: string) => {
+    setSelectedMinerId(nodeId);
+    setIsDrawerOpen(true);
+  };
+
+  const handleLocateOnMap = (minerId: string) => {
+    setSelectedMinerId(minerId);
+    setActiveTab('model');
+    setIsDrawerOpen(false);
   };
 
   const handleAckSubmit = async (alertId: number, officerName: string) => {
@@ -89,7 +103,8 @@ export const App: React.FC = () => {
   };
 
   return (
-    <div style={{ minHeight: '100vh', display: 'flex', flexDirection: 'column' }}>
+    <div className="scada-app-layout">
+      {/* SCADA Global Header */}
       <Header
         isGatewayOnline={isGatewayOnline}
         audioArmed={audioArmed}
@@ -97,6 +112,7 @@ export const App: React.FC = () => {
         onRefresh={loadData}
       />
 
+      {/* Emergency Alarm Banner */}
       <EmergencyBanner
         alerts={alerts}
         audioArmed={audioArmed}
@@ -104,115 +120,115 @@ export const App: React.FC = () => {
         onOpenResolve={id => setResModalId(id)}
       />
 
-      <main style={{ flex: 1, padding: '20px 24px', maxWidth: '1700px', margin: '0 auto', width: '100%', display: 'flex', flexDirection: 'column', gap: '20px' }}>
+      {/* Main SCADA Command Body */}
+      <main className="scada-main-container">
+        {/* KPI Telemetry Header Grid */}
         <KpiMetrics summary={summary} />
 
-        <div style={{ display: 'grid', gridTemplateColumns: '2fr 1fr', gap: '20px' }}>
-          {/* Left Panel: Simulation / Spatial Tracking */}
-          <section style={{ backgroundColor: 'var(--bg-surface)', border: '1px solid var(--border-subtle)', borderRadius: '6px', display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
-            <div style={{ padding: '12px 18px', borderBottom: '1px solid var(--border-subtle)', display: 'flex', justifyContent: 'space-between', alignItems: 'center', backgroundColor: 'rgba(22, 31, 51, 0.6)' }}>
-              <div style={{ fontSize: '13px', fontWeight: 700, letterSpacing: '0.5px', textTransform: 'uppercase', color: '#fff', display: 'flex', alignItems: 'center', gap: '8px' }}>
-                <span>🗺️</span> Subterranean Personnel Tracking
+        {/* Core Tactical Workspaces Grid */}
+        <div className="scada-cockpit-grid">
+          {/* Left / Center Major Panel: Tracking & Simulation */}
+          <section className="scada-panel scada-tracking-panel">
+            {/* Tabbed Navigation Bar */}
+            <div className="scada-panel-header">
+              <div className="panel-title-group">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                  <polygon points="1 6 1 22 8 18 16 22 23 18 23 2 16 6 8 2 1 6" />
+                  <line x1="8" y1="2" x2="8" y2="18" />
+                  <line x1="16" y1="6" x2="16" y2="22" />
+                </svg>
+                <span className="panel-title-text">SUBTERRANEAN PERSONNEL TRACKING</span>
               </div>
 
-              <div style={{ display: 'flex', gap: '4px', backgroundColor: 'var(--bg-base)', padding: '3px', borderRadius: '4px', border: '1px solid var(--border-subtle)' }}>
+              {/* View Selector Tabs */}
+              <div className="scada-tab-group">
                 <button
-                  className="tab-btn"
-                  style={{
-                    backgroundColor: activeTab === 'model' ? 'var(--bg-card)' : 'transparent',
-                    color: activeTab === 'model' ? '#38bdf8' : 'var(--text-muted)',
-                    border: 'none',
-                    padding: '4px 10px',
-                    fontSize: '11px',
-                    fontWeight: 700,
-                    borderRadius: '3px',
-                    cursor: 'pointer',
-                  }}
+                  className={`scada-tab-btn ${activeTab === 'model' ? 'tab-active' : ''}`}
                   onClick={() => setActiveTab('model')}
                 >
-                  DIGITAL MINE TWIN
+                  <span className="tab-indicator" />
+                  <span>2.5D DIGITAL TWIN</span>
                 </button>
                 <button
-                  className="tab-btn"
-                  style={{
-                    backgroundColor: activeTab === 'zones' ? 'var(--bg-card)' : 'transparent',
-                    color: activeTab === 'zones' ? '#38bdf8' : 'var(--text-muted)',
-                    border: 'none',
-                    padding: '4px 10px',
-                    fontSize: '11px',
-                    fontWeight: 700,
-                    borderRadius: '3px',
-                    cursor: 'pointer',
-                  }}
-                  onClick={() => setActiveTab('zones')}
-                >
-                  ZONES (CARDS)
-                </button>
-                <button
-                  className="tab-btn"
-                  style={{
-                    backgroundColor: activeTab === 'table' ? 'var(--bg-card)' : 'transparent',
-                    color: activeTab === 'table' ? '#38bdf8' : 'var(--text-muted)',
-                    border: 'none',
-                    padding: '4px 10px',
-                    fontSize: '11px',
-                    fontWeight: 700,
-                    borderRadius: '3px',
-                    cursor: 'pointer',
-                  }}
+                  className={`scada-tab-btn ${activeTab === 'table' ? 'tab-active' : ''}`}
                   onClick={() => setActiveTab('table')}
                 >
-                  PERSONNEL MATRIX
+                  <span className="tab-indicator" />
+                  <span>PERSONNEL ROSTER</span>
+                </button>
+                <button
+                  className={`scada-tab-btn ${activeTab === 'zones' ? 'tab-active' : ''}`}
+                  onClick={() => setActiveTab('zones')}
+                >
+                  <span className="tab-indicator" />
+                  <span>ZONE CLUSTERS</span>
                 </button>
               </div>
             </div>
 
-            <div style={{ padding: '16px', flex: 1 }}>
+            {/* Tab Body View */}
+            <div className="scada-panel-content">
               {activeTab === 'model' && (
                 <DigitalMineTwin
                   nodes={nodes}
                   selectedMinerId={selectedMinerId}
                   onSelectMiner={handleSelectMiner}
+                  onOpenDrawer={handleOpenDrawer}
+                />
+              )}
+              {activeTab === 'table' && (
+                <PersonnelMatrix
+                  nodes={nodes}
+                  selectedMinerId={selectedMinerId}
+                  onSelectMiner={handleSelectMiner}
+                  onOpenDrawer={handleOpenDrawer}
                 />
               )}
               {activeTab === 'zones' && (
                 <SpatialZones
                   nodes={nodes}
                   onSelectMiner={handleSelectMiner}
-                />
-              )}
-              {activeTab === 'table' && (
-                <PersonnelMatrix
-                  nodes={nodes}
-                  onSelectMiner={handleSelectMiner}
+                  onOpenDrawer={handleOpenDrawer}
                 />
               )}
             </div>
           </section>
 
-          {/* Right Panel: Telemetry Chart & Audit Ledger */}
-          <section style={{ backgroundColor: 'var(--bg-surface)', border: '1px solid var(--border-subtle)', borderRadius: '6px', display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
-            <div style={{ padding: '12px 18px', borderBottom: '1px solid var(--border-subtle)', display: 'flex', justifyContent: 'space-between', alignItems: 'center', backgroundColor: 'rgba(22, 31, 51, 0.6)' }}>
-              <div style={{ fontSize: '13px', fontWeight: 700, letterSpacing: '0.5px', textTransform: 'uppercase', color: '#fff', display: 'flex', alignItems: 'center', gap: '8px' }}>
-                <span>📈</span> Telemetry Trend &amp; Audit Log
+          {/* Right Panel: Selected Miner Telemetry & Live Incident Ledger */}
+          <section className="scada-panel scada-sidebar-panel">
+            <div className="scada-panel-header">
+              <div className="panel-title-group">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                  <polyline points="22 12 18 12 15 21 9 3 6 12 2 12" />
+                </svg>
+                <span className="panel-title-text">TELEMETRY &amp; AUDIT FEED</span>
               </div>
-              <div>
+
+              {/* Miner Selector Dropdown with Quick Inspect Button */}
+              <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
                 <select
-                  className="form-input"
-                  style={{ padding: '3px 8px', fontSize: '11px', width: 'auto' }}
+                  className="scada-select"
                   value={selectedMinerId}
-                  onChange={e => setSelectedMinerId(e.target.value)}
+                  onChange={e => handleSelectMiner(e.target.value)}
                 >
                   {nodes.filter(n => n.role === 'WEARABLE').map(m => (
                     <option key={m.node_id} value={m.node_id}>
-                      {m.node_id} ({m.current_zone})
+                      {m.node_id} ({m.current_zone || 'TRANSIT'})
                     </option>
                   ))}
                 </select>
+
+                <button
+                  className="scada-quick-btn"
+                  onClick={() => setIsDrawerOpen(true)}
+                  title="Open miner dossier"
+                >
+                  DOSSIER ↗
+                </button>
               </div>
             </div>
 
-            <div style={{ padding: '16px', flex: 1 }}>
+            <div className="scada-panel-content">
               <TelemetryChart minerId={selectedMinerId} history={history} />
               <AuditFeed logs={auditLogs} />
             </div>
@@ -220,6 +236,19 @@ export const App: React.FC = () => {
         </div>
       </main>
 
+      {/* Individual Miner Detailed Inspector Drawer */}
+      <MinerDetailsDrawer
+        isOpen={isDrawerOpen}
+        minerId={selectedMinerId}
+        nodes={nodes}
+        alerts={alerts}
+        history={history}
+        onClose={() => setIsDrawerOpen(false)}
+        onLocateOnMap={handleLocateOnMap}
+        onOpenAck={id => setAckModalId(id)}
+      />
+
+      {/* Incident Workflow Modals */}
       <AckModal
         isOpen={ackModalId !== null}
         alertId={ackModalId}

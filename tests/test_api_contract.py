@@ -21,6 +21,15 @@ API_KEY = "compallette-mining-secret-key-v1"
 class BackendContractTestSuite(unittest.TestCase):
     base_url = "http://127.0.0.1:8000"
 
+    @classmethod
+    def setUpClass(cls):
+        try:
+            req = urllib.request.Request(f"{cls.base_url}/health")
+            with urllib.request.urlopen(req, timeout=0.8):
+                pass
+        except Exception:
+            raise unittest.SkipTest(f"Live backend server is not running at {cls.base_url} (skip contract test during offline test discovery)")
+
     def _request(self, method, endpoint, body=None, headers=None):
         url = self.base_url.rstrip("/") + endpoint
         data = json.dumps(body).encode("utf-8") if body is not None else None

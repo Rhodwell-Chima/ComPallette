@@ -15,96 +15,103 @@ export const KpiMetrics: React.FC<KpiMetricsProps> = ({ summary }) => {
   const inProgressAlerts = summary?.acknowledged_in_progress ?? 0;
 
   return (
-    <section style={{
-      display: 'grid',
-      gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))',
-      gap: '16px',
-    }}>
-      <div className="kpi-card" style={{
-        backgroundColor: 'var(--bg-surface)',
-        border: '1px solid var(--border-subtle)',
-        borderLeft: '4px solid var(--color-safe)',
-        borderRadius: '6px',
-        padding: '14px 18px',
-      }}>
-        <div style={{ fontSize: '11px', fontWeight: 700, letterSpacing: '0.8px', textTransform: 'uppercase', color: 'var(--text-muted)' }}>
-          Active Miners Underground
+    <section className="kpi-grid">
+      {/* 1. Personnel Deployment */}
+      <div className="scada-kpi-card border-accent-safe">
+        <div className="kpi-header">
+          <span className="kpi-label">PERSONNEL UNDERGROUND</span>
+          <span className="kpi-tag-safe">ACTIVE</span>
         </div>
-        <div style={{ fontFamily: 'var(--font-mono)', fontSize: '28px', fontWeight: 700, color: '#fff', display: 'flex', alignItems: 'baseline', gap: '8px' }}>
-          <span>{onlineMiners}</span>
-          <span style={{ fontSize: '12px', color: 'var(--text-dim)' }}>/ {totalNodes} Total Nodes</span>
+        <div className="kpi-value-row">
+          <span className="kpi-number font-mono">{onlineMiners}</span>
+          <span className="kpi-fraction font-mono">/ {totalNodes} TAGS</span>
         </div>
-      </div>
-
-      <div className="kpi-card" style={{
-        backgroundColor: 'var(--bg-surface)',
-        border: '1px solid var(--border-subtle)',
-        borderLeft: '4px solid var(--color-crit)',
-        borderRadius: '6px',
-        padding: '14px 18px',
-      }}>
-        <div style={{ fontSize: '11px', fontWeight: 700, letterSpacing: '0.8px', textTransform: 'uppercase', color: 'var(--text-muted)' }}>
-          Critical Emergencies
-        </div>
-        <div style={{ fontFamily: 'var(--font-mono)', fontSize: '28px', fontWeight: 700, color: critEmergencies > 0 ? '#ef4444' : '#fff' }}>
-          {critEmergencies}
-        </div>
-        <div style={{ fontSize: '12px', color: 'var(--text-dim)' }}>
-          Man-Down &bull; Critical Gas Ceiling
+        <div className="kpi-footer-metric">
+          <div className="mini-meter-track">
+            <div
+              className="mini-meter-fill fill-safe"
+              style={{ width: `${totalNodes > 0 ? (onlineMiners / totalNodes) * 100 : 0}%` }}
+            />
+          </div>
+          <span className="kpi-subtext">Active Mesh Wearable Nodes</span>
         </div>
       </div>
 
-      <div className="kpi-card" style={{
-        backgroundColor: 'var(--bg-surface)',
-        border: '1px solid var(--border-subtle)',
-        borderLeft: '4px solid var(--color-warn)',
-        borderRadius: '6px',
-        padding: '14px 18px',
-      }}>
-        <div style={{ fontSize: '11px', fontWeight: 700, letterSpacing: '0.8px', textTransform: 'uppercase', color: 'var(--text-muted)' }}>
-          Gas Exposure Warnings
+      {/* 2. Critical Evacuations */}
+      <div className={`scada-kpi-card ${critEmergencies > 0 ? 'border-accent-crit card-flash-crit' : 'border-accent-neutral'}`}>
+        <div className="kpi-header">
+          <span className="kpi-label">CRITICAL EMERGENCIES</span>
+          {critEmergencies > 0 ? (
+            <span className="kpi-tag-crit">ALARM</span>
+          ) : (
+            <span className="kpi-tag-dim">CLEAR</span>
+          )}
         </div>
-        <div style={{ fontFamily: 'var(--font-mono)', fontSize: '28px', fontWeight: 700, color: gasHazards > 0 ? '#fbbf24' : '#fff' }}>
-          {gasHazards}
+        <div className="kpi-value-row">
+          <span className={`kpi-number font-mono ${critEmergencies > 0 ? 'text-crit' : ''}`}>
+            {critEmergencies}
+          </span>
+          <span className="kpi-unit">INCIDENTS</span>
         </div>
-        <div style={{ fontSize: '12px', color: 'var(--text-dim)' }}>
-          &gt; 25.0 ppm CO OSHA Limit
-        </div>
-      </div>
-
-      <div className="kpi-card" style={{
-        backgroundColor: 'var(--bg-surface)',
-        border: '1px solid var(--border-subtle)',
-        borderLeft: '4px solid var(--color-warn)',
-        borderRadius: '6px',
-        padding: '14px 18px',
-      }}>
-        <div style={{ fontSize: '11px', fontWeight: 700, letterSpacing: '0.8px', textTransform: 'uppercase', color: 'var(--text-muted)' }}>
-          Silent / Stale Miners
-        </div>
-        <div style={{ fontFamily: 'var(--font-mono)', fontSize: '28px', fontWeight: 700, color: staleNodes > 0 ? '#fcd34d' : '#fff' }}>
-          {staleNodes}
-        </div>
-        <div style={{ fontSize: '12px', color: 'var(--text-dim)' }}>
-          No check-in &gt; 20 seconds
+        <div className="kpi-footer-metric">
+          <span className="kpi-subtext">CO &ge; 50 ppm &bull; Man-Down Inactivity</span>
         </div>
       </div>
 
-      <div className="kpi-card" style={{
-        backgroundColor: 'var(--bg-surface)',
-        border: '1px solid var(--border-subtle)',
-        borderLeft: '4px solid var(--color-info)',
-        borderRadius: '6px',
-        padding: '14px 18px',
-      }}>
-        <div style={{ fontSize: '11px', fontWeight: 700, letterSpacing: '0.8px', textTransform: 'uppercase', color: 'var(--text-muted)' }}>
-          Unresolved Incidents
+      {/* 3. Hazardous Gas Atmosphere */}
+      <div className={`scada-kpi-card ${gasHazards > 0 ? 'border-accent-warn' : 'border-accent-neutral'}`}>
+        <div className="kpi-header">
+          <span className="kpi-label">GAS HAZARD EXPOSURE</span>
+          {gasHazards > 0 ? (
+            <span className="kpi-tag-warn">WARNING</span>
+          ) : (
+            <span className="kpi-tag-dim">NOMINAL</span>
+          )}
         </div>
-        <div style={{ fontFamily: 'var(--font-mono)', fontSize: '28px', fontWeight: 700, color: '#fff' }}>
-          {unackAlerts}
+        <div className="kpi-value-row">
+          <span className={`kpi-number font-mono ${gasHazards > 0 ? 'text-warn' : ''}`}>
+            {gasHazards}
+          </span>
+          <span className="kpi-unit">MINERS</span>
         </div>
-        <div style={{ fontSize: '12px', color: 'var(--text-dim)' }}>
-          {inProgressAlerts} In Progress
+        <div className="kpi-footer-metric">
+          <span className="kpi-subtext">&gt; 25.0 ppm CO OSHA Warning Floor</span>
+        </div>
+      </div>
+
+      {/* 4. Mesh Link Health */}
+      <div className={`scada-kpi-card ${staleNodes > 0 ? 'border-accent-warn' : 'border-accent-safe'}`}>
+        <div className="kpi-header">
+          <span className="kpi-label">SILENT / STALE NODES</span>
+          {staleNodes > 0 ? (
+            <span className="kpi-tag-warn">DEGRADED</span>
+          ) : (
+            <span className="kpi-tag-safe">HEALTHY</span>
+          )}
+        </div>
+        <div className="kpi-value-row">
+          <span className={`kpi-number font-mono ${staleNodes > 0 ? 'text-warn' : ''}`}>
+            {staleNodes}
+          </span>
+          <span className="kpi-unit">DROPPED</span>
+        </div>
+        <div className="kpi-footer-metric">
+          <span className="kpi-subtext">Mesh Watchdog Threshold: 20s / 45s</span>
+        </div>
+      </div>
+
+      {/* 5. Incident Queue */}
+      <div className="scada-kpi-card border-accent-info">
+        <div className="kpi-header">
+          <span className="kpi-label">SAFETY INCIDENT QUEUE</span>
+          <span className="kpi-tag-info font-mono">{inProgressAlerts} IN PROGRESS</span>
+        </div>
+        <div className="kpi-value-row">
+          <span className="kpi-number font-mono">{unackAlerts}</span>
+          <span className="kpi-unit">UNACKED</span>
+        </div>
+        <div className="kpi-footer-metric">
+          <span className="kpi-subtext">Mandatory Operator Sign-Off</span>
         </div>
       </div>
     </section>
