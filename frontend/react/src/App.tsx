@@ -3,6 +3,7 @@ import { Header } from './components/Header';
 import { EmergencyBanner } from './components/EmergencyBanner';
 import { KpiMetrics } from './components/KpiMetrics';
 import { DigitalMineTwin } from './components/DigitalMineTwin';
+import { MineSpatial3D } from './components/MineSpatial3D';
 import { SpatialZones } from './components/SpatialZones';
 import { PersonnelMatrix } from './components/PersonnelMatrix';
 import { TelemetryChart } from './components/TelemetryChart';
@@ -33,7 +34,7 @@ export const App: React.FC = () => {
   const [selectedMinerId, setSelectedMinerId] = useState<string>('MINER-106');
   const [isDrawerOpen, setIsDrawerOpen] = useState<boolean>(false);
   const [history, setHistory] = useState<TelemetryItem[]>([]);
-  const [activeTab, setActiveTab] = useState<'model' | 'table' | 'zones'>('model');
+  const [activeTab, setActiveTab] = useState<'model' | '3d' | 'table' | 'zones'>('model');
   const [audioArmed, setAudioArmed] = useState<boolean>(true);
   const [ackModalId, setAckModalId] = useState<number | null>(null);
   const [resModalId, setResModalId] = useState<number | null>(null);
@@ -101,7 +102,9 @@ export const App: React.FC = () => {
 
   const handleLocateOnMap = (minerId: string) => {
     setSelectedMinerId(minerId);
-    setActiveTab('model');
+    if (activeTab !== 'model' && activeTab !== '3d') {
+      setActiveTab('3d');
+    }
     setIsDrawerOpen(false);
   };
 
@@ -160,7 +163,13 @@ export const App: React.FC = () => {
                   className={`tab-btn ${activeTab === 'model' ? 'tab-active' : ''}`}
                   onClick={() => setActiveTab('model')}
                 >
-                  Digital Twin
+                  2.5D Twin
+                </button>
+                <button
+                  className={`tab-btn ${activeTab === '3d' ? 'tab-active' : ''}`}
+                  onClick={() => setActiveTab('3d')}
+                >
+                  3D View
                 </button>
                 <button
                   className={`tab-btn ${activeTab === 'table' ? 'tab-active' : ''}`}
@@ -184,6 +193,15 @@ export const App: React.FC = () => {
                   selectedMinerId={selectedMinerId}
                   onSelectMiner={handleSelectMiner}
                   onOpenDrawer={handleOpenDrawer}
+                />
+              )}
+              {activeTab === '3d' && (
+                <MineSpatial3D
+                  nodes={nodes}
+                  selectedMinerId={selectedMinerId}
+                  onSelectMiner={handleSelectMiner}
+                  onOpenDrawer={handleOpenDrawer}
+                  theme={theme}
                 />
               )}
               {activeTab === 'table' && (
