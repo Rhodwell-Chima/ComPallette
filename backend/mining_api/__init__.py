@@ -1,0 +1,3 @@
+"""
+Mining API Application Package
+"""

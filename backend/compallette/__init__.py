@@ -1,0 +1,3 @@
+"""
+Compallette Django Project Package
+"""

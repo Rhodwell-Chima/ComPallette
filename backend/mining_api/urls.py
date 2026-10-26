@@ -1,0 +1,32 @@
+from django.urls import re_path
+from .views import (
+    HealthCheckView,
+    TelemetryIngestView,
+    AlertIngestView,
+    HeartbeatIngestView,
+    SystemSummaryView,
+    NodeListView,
+    NodeDetailView,
+    NodeHistoryView,
+    AlertListView,
+    AlertDetailView,
+    AlertAcknowledgeView,
+    AlertResolveView,
+    AuditListView,
+)
+
+urlpatterns = [
+    re_path(r'^(?:api/v1/)?health/?$', HealthCheckView.as_view(), name='health'),
+    re_path(r'^api/v1/telemetry/?$', TelemetryIngestView.as_view(), name='telemetry-ingest'),
+    re_path(r'^api/v1/alert/?$', AlertIngestView.as_view(), name='alert-ingest'),
+    re_path(r'^api/v1/heartbeat/?$', HeartbeatIngestView.as_view(), name='heartbeat-ingest'),
+    re_path(r'^api/v1/system/summary/?$', SystemSummaryView.as_view(), name='system-summary'),
+    re_path(r'^api/v1/nodes/?$', NodeListView.as_view(), name='node-list'),
+    re_path(r'^api/v1/nodes/(?P<node_id>[^/]+)/history/?$', NodeHistoryView.as_view(), name='node-history'),
+    re_path(r'^api/v1/nodes/(?P<node_id>[^/]+)/?$', NodeDetailView.as_view(), name='node-detail'),
+    re_path(r'^api/v1/alerts/?$', AlertListView.as_view(), name='alert-list'),
+    re_path(r'^api/v1/alerts/(?P<alert_id>\d+)/(?:ack|acknowledge)/?$', AlertAcknowledgeView.as_view(), name='alert-ack'),
+    re_path(r'^api/v1/alerts/(?P<alert_id>\d+)/resolve/?$', AlertResolveView.as_view(), name='alert-resolve'),
+    re_path(r'^api/v1/alerts/(?P<alert_id>\d+)/?$', AlertDetailView.as_view(), name='alert-detail'),
+    re_path(r'^api/v1/audit/?$', AuditListView.as_view(), name='audit-list'),
+]
