@@ -7,8 +7,8 @@
 // COMPALLETTE - SYSTEM CONFIGURATION & NODE PROFILE
 // ============================================================================
 // This configuration file centralizes all network parameters, node identity,
-// timing, threshold limits, hardware pin mappings, gateway settings,
-// and offline store-and-forward buffer policies.
+// timing, threshold limits, hardware pin mappings, sensor calibration constants,
+// gateway settings, and offline store-and-forward buffer policies.
 
 // ----------------------------------------------------------------------------
 // 1. Mesh Network Configuration
@@ -57,6 +57,7 @@ enum NodeRole {
 #define CO_THRESHOLD_CRITICAL_PPM  50.0f   // Immediate evacuation threshold
 
 // Battery monitoring (1S Li-Ion / LiPo 18650 cell):
+#define BATTERY_VOLTAGE_FULL       4.20f   // Maximum 100% cell voltage
 #define BATTERY_VOLTAGE_NOMINAL    3.70f   // Nominal cell voltage
 #define BATTERY_VOLTAGE_LOW        3.35f   // Low battery warning threshold
 #define BATTERY_VOLTAGE_EMPTY      3.00f   // Critical shutdown / brownout threshold
@@ -64,21 +65,44 @@ enum NodeRole {
 // ----------------------------------------------------------------------------
 // 5. Hardware Interface Pin Definitions (ESP32)
 // ----------------------------------------------------------------------------
-// Reserved GPIO assignments for future physical sensor and actuator integration
-#define PIN_STATUS_LED          2          // Onboard / external status LED (GPIO 2)
-#define PIN_BUZZER              18         // Active emergency alarm buzzer
-#define PIN_SOS_BUTTON          19         // Emergency panic button (active LOW, pull-up)
-#define PIN_GAS_ANALOG          34         // ADC pin for analog gas sensor (input only)
-#define PIN_I2C_SDA             21         // I2C SDA for environmental sensors / IMU
-#define PIN_I2C_SCL             22         // I2C SCL for environmental sensors / IMU
+// Pin assignments for physical sensors and actuators (using ADC1 pins safe with Wi-Fi)
+#define PIN_STATUS_LED          2          // Onboard status LED (GPIO 2)
+#define PIN_BUZZER              18         // Active emergency alarm buzzer (GPIO 18)
+#define PIN_SOS_BUTTON          19         // Emergency panic button (GPIO 19, active LOW, pull-up)
+#define PIN_GAS_ANALOG          34         // ADC1_CH6 analog gas sensor pin (GPIO 34, input only)
+#define PIN_BATTERY_ADC         35         // ADC1_CH7 battery divider pin (GPIO 35, input only)
+#define PIN_I2C_SDA             21         // I2C SDA for MPU6050 IMU & sensors (GPIO 21)
+#define PIN_I2C_SCL             22         // I2C SCL for MPU6050 IMU & sensors (GPIO 22)
 
 // ----------------------------------------------------------------------------
-// 6. Sensor Simulation & Integrity Flag
+// 6. Sensor Calibration Constants (Phase 5 Hardware Abstraction Layer)
 // ----------------------------------------------------------------------------
-// IMPORTANT: Mark whether sensor readings originate from physical hardware
-// or synthetic test data generators to prevent unvalidated lab data from being
-// mistaken for real-world mine readings.
-#define SIMULATE_SENSORS        true
+// Auto-detect hardware: if sensors are missing or disconnected, gracefully
+// falls back to safe/synthetic mode without blocking or halting node operations.
+#define SENSOR_AUTO_DETECT      true
+
+// Force simulation flag (if true, bypasses hardware even if sensors are attached):
+#define SIMULATE_SENSORS        false
+
+// Battery ADC Voltage Divider Calibration:
+// Default assuming R1 = 100k, R2 = 100k divider (ratio = (100k+100k)/100k = 2.0)
+#define BATTERY_DIVIDER_RATIO      2.0f
+#define BATTERY_ADC_CALIBRATION    1.035f     // Trimming factor for ESP32 ADC non-linearity
+
+// MQ-7 Carbon Monoxide Gas Sensor Calibration:
+#define MQ7_RL_VALUE               10000.0f   // Load resistor on module (10k ohms)
+#define MQ7_RO_CLEAN_AIR           10000.0f   // Baseline sensor resistance R0 in clean air
+#define MQ7_CURVE_A                99.04f     // Power-law regression scale parameter (CO)
+#define MQ7_CURVE_B                -1.518f    // Power-law regression exponent (CO)
+#define MQ7_VREF                   3.3f       // ESP32 ADC reference voltage
+#define MQ7_PREHEAT_TIME_MS        60000      // 60-second recommended preheat duration
+
+// MPU6050 Fall Detection ("Man Down") Parameters:
+#define MPU6050_I2C_ADDR           0x68       // Default I2C address (AD0 low)
+#define MPU6050_I2C_ADDR_ALT       0x69       // Alternate address (AD0 high)
+#define FALL_FREE_FALL_G           0.50f      // Acceleration threshold indicating free fall (<0.50g)
+#define FALL_IMPACT_G              2.60f      // Acceleration threshold indicating impact (>2.60g)
+#define FALL_INACTIVITY_MS         1500       // Post-impact stillness window (ms) to confirm fall
 
 // ----------------------------------------------------------------------------
 // 7. Gateway & Upstream Infrastructure Configuration

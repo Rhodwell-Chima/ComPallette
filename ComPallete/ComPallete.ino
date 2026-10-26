@@ -3,6 +3,7 @@
 #include "Config.h"
 #include "Protocol.h"
 #include "GatewayManager.h"
+#include "SensorHAL.h"
 
 // ============================================================================
 // COMPALLETTE - SUBTERRANEAN MESH MONITORING NODE FIRMWARE
@@ -207,35 +208,37 @@ void sendTelemetryTask() {
   strncpy(env.zone_id, ACTIVE_ZONE_ID, sizeof(env.zone_id) - 1);
   env.uptime_ms = millis();
 
+  // Sample sensor hardware via Hardware Abstraction Layer
+  SensorReadings readings = sensorHAL.read();
+
   TelemetryData data;
-  if (SIMULATE_SENSORS) {
-    // Simulated sensor readings with probabilistic hazard events
-    data.co_ppm = (float)random(100, 320) / 10.0f; // 10.0 to 32.0 ppm
-    data.temp_c = 26.0f + (float)random(0, 80) / 10.0f; // 26.0 to 34.0 °C
-    data.humidity_pct = 70.0f + (float)random(0, 250) / 10.0f; // 70% to 95%
-    data.fall_detected = (random(0, 100) > 97); // 3% random fall trigger
-    data.battery_v = 3.85f - ((float)(millis() % 3600000) / 3600000.0f) * 0.2f;
-    data.is_simulated = true;
-    data.sensor_ok = true;
-  } else {
-    // Reserved for physical hardware sensor sampling in Phase 5
-    data.co_ppm = 0.0f;
-    data.temp_c = 0.0f;
-    data.humidity_pct = 0.0f;
-    data.fall_detected = false;
-    data.battery_v = 3.7f;
-    data.is_simulated = false;
-    data.sensor_ok = false;
+  data.co_ppm = readings.co_ppm;
+  data.temp_c = readings.temp_c;
+  data.humidity_pct = readings.humidity_pct;
+  data.fall_detected = readings.fall_detected;
+  data.battery_v = readings.battery_v;
+  data.is_simulated = readings.is_simulated;
+  data.sensor_ok = readings.sensor_ok;
+
+  // Check physical emergency panic button
+  if (readings.panic_pressed) {
+    sensorHAL.setAlarmIndication(true, SEVERITY_CRITICAL);
+    sendAlertEvent(SEVERITY_CRITICAL, "PANIC_SOS", "Miner triggered physical SOS panic button", 1.0f);
   }
 
   // Check for immediate emergency threshold breaches
   if (data.fall_detected) {
-    sendAlertEvent(SEVERITY_CRITICAL, "MAN_DOWN", "Miner fall detected via accelerometer", 1.0f);
+    sensorHAL.setAlarmIndication(true, SEVERITY_CRITICAL);
+    sendAlertEvent(SEVERITY_CRITICAL, "MAN_DOWN", "Miner fall confirmed via IMU (impact + inactivity)", readings.accel_magnitude);
   }
   if (data.co_ppm >= CO_THRESHOLD_CRITICAL_PPM) {
+    sensorHAL.setAlarmIndication(true, SEVERITY_CRITICAL);
     sendAlertEvent(SEVERITY_CRITICAL, "GAS_CO_CRITICAL", "Dangerous CO concentration detected", data.co_ppm);
   } else if (data.co_ppm >= CO_THRESHOLD_WARNING_PPM) {
+    sensorHAL.setAlarmIndication(true, SEVERITY_WARNING);
     sendAlertEvent(SEVERITY_WARNING, "GAS_CO_HIGH", "CO concentration exceeded warning limit", data.co_ppm);
+  } else if (!data.fall_detected && !readings.panic_pressed) {
+    sensorHAL.setAlarmIndication(false);
   }
 
   String packet;
@@ -285,6 +288,9 @@ void setup() {
   Serial.printf("  Data Mode        : %s\n", SIMULATE_SENSORS ? "SYNTHETIC SIMULATION" : "PHYSICAL HARDWARE");
   Serial.println("==============================================================");
 
+  // Initialize Hardware Abstraction Layer (HAL) for sensors & actuators
+  sensorHAL.begin();
+
   // Initialize painlessMesh
   mesh.setDebugMsgTypes(ERROR | STARTUP);
   mesh.init(MESH_PREFIX, MESH_PASSWORD, &userScheduler, MESH_PORT);
@@ -318,6 +324,12 @@ void setup() {
 void loop() {
   // Drives mesh packet routing, heartbeat timers, and task scheduling
   mesh.update();
+
+  // Instantaneous event-driven emergency SOS panic button check
+  if (CURRENT_ROLE == ROLE_WEARABLE && sensorHAL.checkPanicButton()) {
+    sensorHAL.setAlarmIndication(true, SEVERITY_CRITICAL);
+    sendAlertEvent(SEVERITY_CRITICAL, "PANIC_SOS", "Miner activated emergency panic button", 1.0f);
+  }
 
 #if (CURRENT_ROLE == ROLE_GATEWAY)
   // Drives Wi-Fi uplink state machine, backoff retries, and offline buffer flushes
