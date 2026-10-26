@@ -1,5 +1,5 @@
 from rest_framework import serializers
-from .models import Node, TelemetryRecord, SafetyAlert, AuditEntry
+from .models import Node, TelemetryRecord, SafetyAlert, AuditEntry, ProvisioningRequest
 
 class NodeSerializer(serializers.ModelSerializer):
     class Meta:
@@ -36,3 +36,9 @@ class AuditEntrySerializer(serializers.ModelSerializer):
     class Meta:
         model = AuditEntry
         fields = ['id', 'timestamp', 'actor', 'action', 'details']
+
+
+class ProvisioningRequestSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = ProvisioningRequest
+        fields = '__all__'

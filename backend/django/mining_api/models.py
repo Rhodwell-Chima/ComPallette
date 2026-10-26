@@ -21,6 +21,11 @@ class AlertStatus(models.TextChoices):
     ACKNOWLEDGED = 'ACKNOWLEDGED', 'Under Investigation'
     RESOLVED = 'RESOLVED', 'Cleared & Closed'
 
+class ProvisioningStatus(models.TextChoices):
+    PENDING = 'PENDING', 'Pending Assignment'
+    ASSIGNED = 'ASSIGNED', 'Assigned & Dispatched'
+    CONFIRMED = 'CONFIRMED', 'Commissioned & Active'
+
 
 class Node(models.Model):
     """Represents any tracked physical or simulated node in the mine network."""
@@ -124,3 +129,32 @@ class AuditEntry(models.Model):
 
     def __str__(self):
         return f"{self.action} by {self.actor} @ {self.timestamp}"
+
+
+class ProvisioningRequest(models.Model):
+    """Tracks uncommissioned physical ESP32 nodes discovered via Option 1 mesh beacons."""
+    chip_id = models.CharField(max_length=16, primary_key=True)
+    chip_mac = models.CharField(max_length=24, blank=True, default='')
+    mesh_node_id = models.BigIntegerField(default=0)
+    fw_version = models.CharField(max_length=16, default='1.1.0')
+    battery_v = models.FloatField(default=0.0)
+    mq_healthy = models.BooleanField(default=False)
+    mpu_healthy = models.BooleanField(default=False)
+    status = models.CharField(max_length=16, choices=ProvisioningStatus.choices, default=ProvisioningStatus.PENDING)
+
+    # Assigned fields once dispatcher commissions the node
+    assigned_id = models.CharField(max_length=32, blank=True, default='')
+    assigned_role = models.CharField(max_length=24, choices=NodeRole.choices, default=NodeRole.WEARABLE)
+    assigned_zone = models.CharField(max_length=64, blank=True, default='')
+    assigned_by = models.CharField(max_length=64, blank=True, default='')
+
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ['-updated_at']
+        verbose_name = 'Provisioning Request'
+        verbose_name_plural = 'Provisioning Requests'
+
+    def __str__(self):
+        return f"Chip #{self.chip_id} ({self.status}) -> {self.assigned_id or 'Unassigned'}"

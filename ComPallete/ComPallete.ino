@@ -4,9 +4,11 @@
 #include "Protocol.h"
 #include "GatewayManager.h"
 #include "SensorHAL.h"
+#include "NodeConfigManager.h"
+#include "CaptivePortalManager.h"
 
 // ============================================================================
-// COMPALLETTE - SUBTERRANEAN MESH MONITORING NODE FIRMWARE
+// COMPALLETTE - SUBTERRANEAN MESH MONITORING NODE FIRMWARE (Dynamic Provisioning)
 // ============================================================================
 
 // --- GLOBAL INSTANCES ---
@@ -17,35 +19,36 @@ Scheduler userScheduler;
 GatewayManager gatewayManager;
 #endif
 
-// Backward-compatibility alias for legacy code references
-const bool NODE_IS_STATIONARY = (CURRENT_ROLE != ROLE_WEARABLE);
-const String MINER_ID = ACTIVE_DEVICE_ID;
-
 // Monotonic sequence counter for packets emitted by this node
 static uint32_t g_messageSequence = 0;
 
 // Track mesh network topology
 int lastNodeCount = 0;
 
+// Factory reset button tracking (hold SOS button >= 6s to erase NVS and enter Setup)
+static uint32_t g_buttonHoldStartTime = 0;
+static bool     g_resetArmed = false;
+
 // Task declarations
 void sendTelemetryTask();
 void sendHeartbeatTask();
+void sendProvRequestTask();
 
 Task taskSendTelemetry(TELEMETRY_INTERVAL_MS, TASK_FOREVER, &sendTelemetryTask);
 Task taskSendHeartbeat(HEARTBEAT_INTERVAL_MS, TASK_FOREVER, &sendHeartbeatTask);
+Task taskSendProvRequest(8000, TASK_FOREVER, &sendProvRequestTask);
 
 // ----------------------------------------------------------------------------
 // IMMEDIATE ALERT DISPATCHER (Event-Driven)
 // ----------------------------------------------------------------------------
-// Bypasses regular telemetry timer to instantly dispatch critical alerts.
 void sendAlertEvent(AlertSeverity severity, const char* code, const char* details, float triggerVal) {
   MessageEnvelope env;
   env.version = PROTOCOL_VERSION;
   env.msg_type = MSG_ALERT;
   env.seq = ++g_messageSequence;
-  strncpy(env.sender_id, ACTIVE_DEVICE_ID, sizeof(env.sender_id) - 1);
-  strncpy(env.role, nodeRoleToString(CURRENT_ROLE), sizeof(env.role) - 1);
-  strncpy(env.zone_id, ACTIVE_ZONE_ID, sizeof(env.zone_id) - 1);
+  strncpy(env.sender_id, nodeConfigManager.getDeviceId(), sizeof(env.sender_id) - 1);
+  strncpy(env.role, nodeRoleToString(nodeConfigManager.getRole()), sizeof(env.role) - 1);
+  strncpy(env.zone_id, nodeConfigManager.getZoneId(), sizeof(env.zone_id) - 1);
   env.uptime_ms = millis();
 
   AlertData alert;
@@ -56,21 +59,20 @@ void sendAlertEvent(AlertSeverity severity, const char* code, const char* detail
 
   String packet;
   if (serializeAlert(env, alert, packet)) {
-    // For critical alerts, burst retransmit to maximize probability of arrival
     int burstCount = (severity == SEVERITY_CRITICAL) ? ALERT_BURST_COUNT : 1;
     for (int i = 0; i < burstCount; i++) {
       mesh.sendBroadcast(packet);
       if (i < burstCount - 1) {
-        delay(20); // Small backoff between burst packets
+        delay(20);
       }
     }
 
     Serial.println("\n**************************************************************");
     Serial.printf("[ALERT TX] Dispatched %s emergency event!\n", alertSeverityToString(severity));
+    Serial.printf("   |-- Origin  : %s (%s) @ %s\n", env.sender_id, env.role, env.zone_id);
     Serial.printf("   |-- Code    : %s\n", alert.alert_code);
     Serial.printf("   |-- Value   : %.2f\n", alert.trigger_value);
     Serial.printf("   |-- Details : %s\n", alert.details);
-    Serial.printf("   |-- Raw JSON: %s\n", packet.c_str());
     Serial.println("**************************************************************");
   }
 }
@@ -78,16 +80,12 @@ void sendAlertEvent(AlertSeverity severity, const char* code, const char* detail
 // ----------------------------------------------------------------------------
 // NETWORK EVENT CALLBACKS
 // ----------------------------------------------------------------------------
-
-// 1. EVENT: New physical device joins the tunnel mesh
 void newConnectionCallback(uint32_t nodeId) {
   Serial.println("\n==============================================");
-  Serial.printf("[ALERT] New device has JOINED the mesh network!\n");
-  Serial.printf("--> Connected Node ID: %u\n", nodeId);
+  Serial.printf("[ALERT] New device joined the mesh network! Node ID: %u\n", nodeId);
   Serial.println("==============================================");
 }
 
-// 2. EVENT: Mesh topology / routing table changes
 void changedConnectionCallback() {
   SimpleList<uint32_t> nodeList = mesh.getNodeList();
   int currentNodeCount = nodeList.size();
@@ -100,22 +98,11 @@ void changedConnectionCallback() {
     Serial.println("[ALERT] A node has DISCONNECTED or dropped out of range!");
   } else if (currentNodeCount > lastNodeCount) {
     Serial.println("[INFO] Mesh layout expanded with a new link.");
-  } else {
-    Serial.println("[ROAMING] A wearable node just re-routed its path.");
   }
-
-  Serial.print("--> Active Node Directory: ");
-  SimpleList<uint32_t>::iterator node = nodeList.begin();
-  while (node != nodeList.end()) {
-    Serial.printf("[%u] ", *node);
-    node++;
-  }
-  Serial.println("\n----------------------------------------------");
 
   lastNodeCount = currentNodeCount;
 }
 
-// 3. EVENT: Incoming packet received from mesh
 void receivedCallback(uint32_t from, String &msg) {
   MessageEnvelope env;
   TelemetryData telem;
@@ -125,65 +112,86 @@ void receivedCallback(uint32_t from, String &msg) {
 
   bool ok = deserializePacket(msg, env, telem, alert, hb, isLegacy);
   if (!ok) {
-    Serial.printf("\n[ERROR] Malformed or unparseable packet from Node %u: %s\n", from, msg.c_str());
+    Serial.printf("\n[ERROR] Malformed or unparseable packet from Node %u\n", from);
     return;
   }
 
 #if (CURRENT_ROLE == ROLE_GATEWAY)
-  // If operating as the surface/shaft gateway bridge, forward packet to buffer
+  // If operating as gateway bridge, forward packet to upstream backend
   gatewayManager.handleIncomingMeshPacket(from, msg);
 #endif
 
-  // Handle Legacy format packets
-  if (isLegacy) {
-    Serial.println("\n[DATA PACKET - LEGACY FORMAT]");
-    Serial.printf("   |-- Origin Node ID : %u\n", from);
-    Serial.printf("   |-- Personnel ID   : %s\n", env.sender_id);
-    Serial.printf("   |-- Gas Monitor    : CO %.1f ppm (Simulated: YES)\n", telem.co_ppm);
-    Serial.printf("   |-- Fall Sensor    : %s\n", telem.fall_detected ? "!! ALERT: MAN DOWN !!" : "OK");
-    Serial.println("----------------------------------------------");
+  // Handle Option 1: Downlink Provisioning Assignment from Gateway
+  if (env.msg_type == MSG_PROV_ASSIGN) {
+    ProvisioningAssignData assign;
+    if (deserializeProvAssign(msg, assign)) {
+      if (strcmp(assign.target_chip, nodeConfigManager.getChipId()) == 0) {
+        Serial.println("\n==============================================================");
+        Serial.printf("[PROV] OTA Mesh Assignment Received for Chip #%s!\n", assign.target_chip);
+        Serial.printf("  |-- Assigned ID  : %s\n", assign.assigned_id);
+        Serial.printf("  |-- Target Role  : %s\n", assign.role);
+        Serial.printf("  |-- Target Zone  : %s\n", assign.zone_id);
+        Serial.println("==============================================================");
+
+        NodeRole r = (strcmp(assign.role, "GATEWAY") == 0) ? ROLE_GATEWAY :
+                     (strcmp(assign.role, "ANCHOR") == 0) ? ROLE_STATIONARY_ANCHOR : ROLE_WEARABLE;
+
+        nodeConfigManager.setAssignment(assign.assigned_id, r, assign.zone_id, assign.co_warn, assign.co_crit);
+
+        // Stop captive portal since node is now successfully provisioned
+        captivePortal.stop();
+
+        // Transmit confirmation back across mesh
+        MessageEnvelope confEnv;
+        confEnv.version = PROTOCOL_VERSION;
+        confEnv.msg_type = MSG_PROV_CONFIRM;
+        confEnv.seq = ++g_messageSequence;
+        strncpy(confEnv.sender_id, assign.assigned_id, sizeof(confEnv.sender_id) - 1);
+        strncpy(confEnv.role, assign.role, sizeof(confEnv.role) - 1);
+        strncpy(confEnv.zone_id, assign.zone_id, sizeof(confEnv.zone_id) - 1);
+        confEnv.uptime_ms = millis();
+
+        ProvisioningConfirmData conf;
+        strncpy(conf.chip_id, assign.target_chip, sizeof(conf.chip_id) - 1);
+        strncpy(conf.status, "SUCCESS_COMMISSIONED", sizeof(conf.status) - 1);
+
+        String confPkt;
+        if (serializeProvConfirm(confEnv, conf, confPkt)) {
+          mesh.sendBroadcast(confPkt);
+        }
+
+        if (assign.reboot_now) {
+          Serial.println("[PROV] Rebooting node in 1 second to enter production mode...");
+          delay(1000);
+          ESP.restart();
+        }
+      }
+    }
     return;
   }
 
   // Handle Standard v1 protocol packets
   switch (env.msg_type) {
     case MSG_TELEMETRY:
-      Serial.printf("\n[TELEMETRY v%u | Seq #%u] From: %s (%s) @ Node: %u\n",
-                    env.version, env.seq, env.sender_id, env.role, from);
-      Serial.printf("   |-- Last Known Zone : %s\n", env.zone_id[0] ? env.zone_id : "N/A");
-      Serial.printf("   |-- CO Gas Level    : %.1f ppm %s\n",
-                    telem.co_ppm,
-                    telem.co_ppm >= CO_THRESHOLD_CRITICAL_PPM ? "[CRITICAL!]" :
-                    telem.co_ppm >= CO_THRESHOLD_WARNING_PPM ? "[WARNING]" : "[NORMAL]");
-      Serial.printf("   |-- Ambient Climate : %.1f °C | %.1f%% RH\n", telem.temp_c, telem.humidity_pct);
-      Serial.printf("   |-- Fall Status     : %s\n", telem.fall_detected ? "!! MAN DOWN DETECTED !!" : "Normal");
-      Serial.printf("   |-- Battery Voltage : %.2f V\n", telem.battery_v);
-      Serial.printf("   |-- Sensor Health   : %s (Data source: %s)\n",
-                    telem.sensor_ok ? "HEALTHY" : "FAULT",
-                    telem.is_simulated ? "SIMULATED" : "HARDWARE");
-      Serial.printf("   |-- Node Uptime     : %u s\n", env.uptime_ms / 1000);
-      Serial.println("----------------------------------------------");
+      Serial.printf("\n[TELEMETRY v%u | Seq #%u] %s (%s) @ %s | CO: %.1f ppm | Batt: %.2f V\n",
+                    env.version, env.seq, env.sender_id, env.role, env.zone_id, telem.co_ppm, telem.battery_v);
       break;
 
     case MSG_ALERT:
       Serial.println("\n**************************************************************");
-      Serial.printf(" [EMERGENCY ALERT] Severity: %s\n", alertSeverityToString(alert.severity));
-      Serial.printf("   |-- Origin Device   : %s (Role: %s, Node ID: %u)\n", env.sender_id, env.role, from);
-      Serial.printf("   |-- Reported Zone   : %s\n", env.zone_id[0] ? env.zone_id : "UNKNOWN");
-      Serial.printf("   |-- Alert Code      : %s\n", alert.alert_code);
-      Serial.printf("   |-- Trigger Value   : %.2f\n", alert.trigger_value);
-      Serial.printf("   |-- Details         : %s\n", alert.details);
-      Serial.printf("   |-- Message Seq #   : %u\n", env.seq);
+      Serial.printf(" [EMERGENCY ALERT] Severity: %s | Origin: %s @ %s\n",
+                    alertSeverityToString(alert.severity), env.sender_id, env.zone_id);
+      Serial.printf("   |-- Code    : %s\n", alert.alert_code);
+      Serial.printf("   |-- Details : %s\n", alert.details);
       Serial.println("**************************************************************");
       break;
 
     case MSG_HEARTBEAT:
-      Serial.printf("\n[HEARTBEAT] Node: %s (%s) | Free Heap: %u bytes | Visible Peers: %d | Batt: %.2f V\n",
-                    env.sender_id, env.role, hb.free_heap, hb.mesh_node_count, hb.battery_v);
+      Serial.printf("\n[HEARTBEAT] Node: %s (%s) | Free Heap: %u B | Peers: %d\n",
+                    env.sender_id, env.role, hb.free_heap, hb.mesh_node_count);
       break;
 
     default:
-      Serial.printf("\n[PACKET] Received unsupported message type: %s\n", messageTypeToString(env.msg_type));
       break;
   }
 }
@@ -192,10 +200,9 @@ void receivedCallback(uint32_t from, String &msg) {
 // SCHEDULED TASKS
 // ----------------------------------------------------------------------------
 
-// Regular Telemetry Broadcast Task (runs on wearable tags)
+// Periodic Telemetry Task (runs on wearable miner tags)
 void sendTelemetryTask() {
-  if (CURRENT_ROLE != ROLE_WEARABLE) {
-    // Stationary infrastructure and gateway nodes route packets; they do not emit miner telemetry
+  if (nodeConfigManager.getRole() != ROLE_WEARABLE) {
     return;
   }
 
@@ -203,12 +210,11 @@ void sendTelemetryTask() {
   env.version = PROTOCOL_VERSION;
   env.msg_type = MSG_TELEMETRY;
   env.seq = ++g_messageSequence;
-  strncpy(env.sender_id, ACTIVE_DEVICE_ID, sizeof(env.sender_id) - 1);
-  strncpy(env.role, nodeRoleToString(CURRENT_ROLE), sizeof(env.role) - 1);
-  strncpy(env.zone_id, ACTIVE_ZONE_ID, sizeof(env.zone_id) - 1);
+  strncpy(env.sender_id, nodeConfigManager.getDeviceId(), sizeof(env.sender_id) - 1);
+  strncpy(env.role, nodeRoleToString(nodeConfigManager.getRole()), sizeof(env.role) - 1);
+  strncpy(env.zone_id, nodeConfigManager.getZoneId(), sizeof(env.zone_id) - 1);
   env.uptime_ms = millis();
 
-  // Sample sensor hardware via Hardware Abstraction Layer
   SensorReadings readings = sensorHAL.read();
 
   TelemetryData data;
@@ -220,21 +226,21 @@ void sendTelemetryTask() {
   data.is_simulated = readings.is_simulated;
   data.sensor_ok = readings.sensor_ok;
 
-  // Check physical emergency panic button
+  // Emergency panic button
   if (readings.panic_pressed) {
     sensorHAL.setAlarmIndication(true, SEVERITY_CRITICAL);
     sendAlertEvent(SEVERITY_CRITICAL, "PANIC_SOS", "Miner triggered physical SOS panic button", 1.0f);
   }
 
-  // Check for immediate emergency threshold breaches
+  // Threshold alerts
   if (data.fall_detected) {
     sensorHAL.setAlarmIndication(true, SEVERITY_CRITICAL);
     sendAlertEvent(SEVERITY_CRITICAL, "MAN_DOWN", "Miner fall confirmed via IMU (impact + inactivity)", readings.accel_magnitude);
   }
-  if (data.co_ppm >= CO_THRESHOLD_CRITICAL_PPM) {
+  if (data.co_ppm >= nodeConfigManager.get().co_critical_ppm) {
     sensorHAL.setAlarmIndication(true, SEVERITY_CRITICAL);
     sendAlertEvent(SEVERITY_CRITICAL, "GAS_CO_CRITICAL", "Dangerous CO concentration detected", data.co_ppm);
-  } else if (data.co_ppm >= CO_THRESHOLD_WARNING_PPM) {
+  } else if (data.co_ppm >= nodeConfigManager.get().co_warning_ppm) {
     sensorHAL.setAlarmIndication(true, SEVERITY_WARNING);
     sendAlertEvent(SEVERITY_WARNING, "GAS_CO_HIGH", "CO concentration exceeded warning limit", data.co_ppm);
   } else if (!data.fall_detected && !readings.panic_pressed) {
@@ -248,27 +254,61 @@ void sendTelemetryTask() {
   }
 }
 
-// Keep-Alive & Health Heartbeat Task (runs on all active nodes)
+// Keep-Alive Heartbeat Task
 void sendHeartbeatTask() {
   MessageEnvelope env;
   env.version = PROTOCOL_VERSION;
   env.msg_type = MSG_HEARTBEAT;
   env.seq = ++g_messageSequence;
-  strncpy(env.sender_id, ACTIVE_DEVICE_ID, sizeof(env.sender_id) - 1);
-  strncpy(env.role, nodeRoleToString(CURRENT_ROLE), sizeof(env.role) - 1);
-  strncpy(env.zone_id, ACTIVE_ZONE_ID, sizeof(env.zone_id) - 1);
+  strncpy(env.sender_id, nodeConfigManager.getDeviceId(), sizeof(env.sender_id) - 1);
+  strncpy(env.role, nodeRoleToString(nodeConfigManager.getRole()), sizeof(env.role) - 1);
+  strncpy(env.zone_id, nodeConfigManager.getZoneId(), sizeof(env.zone_id) - 1);
   env.uptime_ms = millis();
 
   HeartbeatData hb;
   hb.free_heap = ESP.getFreeHeap();
   hb.mesh_node_count = mesh.getNodeList().size();
-  hb.battery_v = 3.80f;
+  hb.battery_v = sensorHAL.read().battery_v;
 
   String packet;
   if (serializeHeartbeat(env, hb, packet)) {
     mesh.sendBroadcast(packet);
-    Serial.printf("\n[TX HEARTBEAT #%u] Free Heap: %u B | Mesh Peers: %d\n",
-                  env.seq, hb.free_heap, hb.mesh_node_count);
+    Serial.printf("\n[TX HEARTBEAT #%u] %s (%s) | Free Heap: %u B | Peers: %d\n",
+                  env.seq, env.sender_id, env.role, hb.free_heap, hb.mesh_node_count);
+  }
+}
+
+// Provisioning Request Announcement Task (Option 1: runs on unprovisioned nodes)
+void sendProvRequestTask() {
+  if (nodeConfigManager.isProvisioned()) {
+    taskSendProvRequest.disable();
+    return;
+  }
+
+  MessageEnvelope env;
+  env.version = PROTOCOL_VERSION;
+  env.msg_type = MSG_PROV_REQ;
+  env.seq = ++g_messageSequence;
+  strncpy(env.sender_id, nodeConfigManager.getDeviceId(), sizeof(env.sender_id) - 1);
+  strncpy(env.role, "UNASSIGNED", sizeof(env.role) - 1);
+  strncpy(env.zone_id, "UNASSIGNED", sizeof(env.zone_id) - 1);
+  env.uptime_ms = millis();
+
+  SensorReadings s = sensorHAL.read();
+
+  ProvisioningRequestData req;
+  strncpy(req.chip_mac, nodeConfigManager.getChipMac(), sizeof(req.chip_mac) - 1);
+  strncpy(req.chip_id, nodeConfigManager.getChipId(), sizeof(req.chip_id) - 1);
+  req.mesh_node_id = mesh.getNodeId();
+  strncpy(req.fw_version, "1.1.0", sizeof(req.fw_version) - 1);
+  req.battery_v = s.battery_v;
+  req.mq_healthy = s.mq_healthy;
+  req.mpu_healthy = s.mpu_healthy;
+
+  String packet;
+  if (serializeProvRequest(env, req, packet)) {
+    mesh.sendBroadcast(packet);
+    Serial.printf("\n[PROV TX BEACON] Emitted enrollment announcement for Chip #%s over mesh\n", req.chip_id);
   }
 }
 
@@ -279,60 +319,93 @@ void setup() {
   Serial.begin(115200);
   delay(1000);
 
-  Serial.println("\n==============================================================");
-  Serial.println("         COMPALLETTE - UNDERGROUND MESH SAFETY NODE           ");
-  Serial.printf("  Firmware Version : 1.0.0 (Protocol v%u)\n", PROTOCOL_VERSION);
-  Serial.printf("  Device ID        : %s\n", ACTIVE_DEVICE_ID);
-  Serial.printf("  Assigned Role    : %s\n", nodeRoleToString(CURRENT_ROLE));
-  Serial.printf("  Tunnel Zone      : %s\n", ACTIVE_ZONE_ID);
-  Serial.printf("  Data Mode        : %s\n", SIMULATE_SENSORS ? "SYNTHETIC SIMULATION" : "PHYSICAL HARDWARE");
-  Serial.println("==============================================================");
+  // 1. Initialize Dynamic NVS Configuration Subsystem
+  nodeConfigManager.begin();
 
-  // Initialize Hardware Abstraction Layer (HAL) for sensors & actuators
+  // 2. Initialize Hardware Abstraction Layer (MQ-7, MPU6050, Battery ADC)
   sensorHAL.begin();
 
-  // Initialize painlessMesh
-  mesh.setDebugMsgTypes(ERROR | STARTUP);
-  mesh.init(MESH_PREFIX, MESH_PASSWORD, &userScheduler, MESH_PORT);
+  // 3. Option 3: If node is uncommissioned, launch local Wi-Fi Captive Portal
+  if (!nodeConfigManager.isProvisioned()) {
+    captivePortal.begin();
+  }
 
-  // Bind mesh event triggers
+  // 4. Initialize Mesh Network using dynamic credentials from NVS
+  mesh.setDebugMsgTypes(ERROR | STARTUP);
+  mesh.init(nodeConfigManager.getMeshPrefix(),
+            nodeConfigManager.getMeshPassword(),
+            &userScheduler,
+            nodeConfigManager.getMeshChannel());
+
   mesh.onReceive(&receivedCallback);
   mesh.onNewConnection(&newConnectionCallback);
   mesh.onChangedConnections(&changedConnectionCallback);
 
-  // Register scheduled tasks
+  // 5. Register scheduled tasks
   userScheduler.addTask(taskSendHeartbeat);
   taskSendHeartbeat.enable();
 
-  if (CURRENT_ROLE == ROLE_WEARABLE) {
-    userScheduler.addTask(taskSendTelemetry);
-    taskSendTelemetry.enable();
+  if (nodeConfigManager.isProvisioned()) {
+    if (nodeConfigManager.getRole() == ROLE_WEARABLE) {
+      userScheduler.addTask(taskSendTelemetry);
+      taskSendTelemetry.enable();
+    }
+  } else {
+    // Option 1: Uncommissioned nodes periodically request dynamic enrollment
+    userScheduler.addTask(taskSendProvRequest);
+    taskSendProvRequest.enable();
   }
 
 #if (CURRENT_ROLE == ROLE_GATEWAY)
-  // Initialize uplink and offline buffering subsystem on gateway builds
   gatewayManager.begin();
 #endif
 
-  Serial.printf("[INIT] Mesh online. Unique Chip Mesh ID: %u\n", mesh.getNodeId());
-  Serial.println("==============================================================\n");
+  Serial.printf("[INIT] Mesh online. Chip Mesh Node ID: %u\n", mesh.getNodeId());
 }
 
 // ----------------------------------------------------------------------------
 // MAIN LOOP
 // ----------------------------------------------------------------------------
 void loop() {
-  // Drives mesh packet routing, heartbeat timers, and task scheduling
+  // Drives mesh packet routing & scheduler
   mesh.update();
 
-  // Instantaneous event-driven emergency SOS panic button check
-  if (CURRENT_ROLE == ROLE_WEARABLE && sensorHAL.checkPanicButton()) {
+  // Option 3: Handle captive portal client requests if setup AP is active
+  if (captivePortal.isActive()) {
+    captivePortal.update();
+  }
+
+  // Check physical emergency panic button
+  if (sensorHAL.checkPanicButton()) {
     sensorHAL.setAlarmIndication(true, SEVERITY_CRITICAL);
     sendAlertEvent(SEVERITY_CRITICAL, "PANIC_SOS", "Miner activated emergency panic button", 1.0f);
   }
 
+  // Hardware Safety Override: Long-press SOS button (>= 6s) triggers Factory Reset
+  if (digitalRead(PIN_SOS_BUTTON) == LOW) {
+    if (g_buttonHoldStartTime == 0) {
+      g_buttonHoldStartTime = millis();
+    } else if (millis() - g_buttonHoldStartTime >= 6000 && !g_resetArmed) {
+      g_resetArmed = true;
+      Serial.println("\n[HAL] FACTORY RESET TRIGGERED! Wiping NVS configuration...");
+      // Strobe LED and buzzer to warn operator
+      for (int i = 0; i < 5; i++) {
+        digitalWrite(PIN_STATUS_LED, HIGH);
+        digitalWrite(PIN_BUZZER, HIGH);
+        delay(80);
+        digitalWrite(PIN_STATUS_LED, LOW);
+        digitalWrite(PIN_BUZZER, LOW);
+        delay(80);
+      }
+      nodeConfigManager.clear();
+      delay(500);
+      ESP.restart();
+    }
+  } else {
+    g_buttonHoldStartTime = 0;
+  }
+
 #if (CURRENT_ROLE == ROLE_GATEWAY)
-  // Drives Wi-Fi uplink state machine, backoff retries, and offline buffer flushes
   gatewayManager.update();
 #endif
 }

@@ -10,16 +10,19 @@ import { TelemetryChart } from './components/TelemetryChart';
 import { AuditFeed } from './components/AuditFeed';
 import { MinerDetailsDrawer } from './components/MinerDetailsDrawer';
 import { AckModal, ResolveModal } from './components/Modals';
+import { ProvisioningModal } from './components/ProvisioningModal';
 import {
   fetchSummary,
   fetchNodes,
   fetchAlerts,
   fetchNodeHistory,
   fetchAudit,
+  fetchPendingProvisioning,
   acknowledgeAlert,
   resolveAlert,
+  assignNodeProvisioning,
 } from './services/api';
-import { SystemSummary, NodeItem, AlertItem, TelemetryItem, AuditItem } from './types';
+import { SystemSummary, NodeItem, AlertItem, TelemetryItem, AuditItem, ProvisioningRequest } from './types';
 
 export const App: React.FC = () => {
   const [theme, setTheme] = useState<'dark' | 'light'>(() => {
@@ -38,6 +41,8 @@ export const App: React.FC = () => {
   const [audioArmed, setAudioArmed] = useState<boolean>(true);
   const [ackModalId, setAckModalId] = useState<number | null>(null);
   const [resModalId, setResModalId] = useState<number | null>(null);
+  const [pendingNodes, setPendingNodes] = useState<ProvisioningRequest[]>([]);
+  const [isProvModalOpen, setIsProvModalOpen] = useState(false);
 
   useEffect(() => {
     document.documentElement.setAttribute('data-theme', theme);
@@ -55,14 +60,16 @@ export const App: React.FC = () => {
 
   const loadData = useCallback(async () => {
     try {
-      const [sumData, nodesData, alertsData, auditData] = await Promise.all([
+      const [sumData, nodesData, alertsData, auditData, provData] = await Promise.all([
         fetchSummary().catch(() => null),
         fetchNodes().catch(() => []),
         fetchAlerts().catch(() => []),
         fetchAudit().catch(() => []),
+        fetchPendingProvisioning().catch(() => []),
       ]);
 
       if (sumData) setSummary(sumData);
+      if (provData) setPendingNodes(provData);
       if (nodesData) {
         setNodes(nodesData);
         if (!selectedMinerId && nodesData.length > 0) {
@@ -118,6 +125,17 @@ export const App: React.FC = () => {
     loadData();
   };
 
+  const handleAssignNode = async (
+    chipId: string,
+    deviceId: string,
+    role: string,
+    zoneId: string,
+    officerName: string
+  ) => {
+    await assignNodeProvisioning(chipId, deviceId, role, zoneId, officerName);
+    loadData();
+  };
+
   return (
     <div className="app-layout">
       {/* Global Header */}
@@ -125,6 +143,8 @@ export const App: React.FC = () => {
         isGatewayOnline={isGatewayOnline}
         audioArmed={audioArmed}
         theme={theme}
+        pendingProvisioningCount={pendingNodes.length}
+        onOpenProvisioning={() => setIsProvModalOpen(true)}
         onToggleTheme={toggleTheme}
         onToggleAudio={() => setAudioArmed(prev => !prev)}
         onRefresh={loadData}
@@ -289,6 +309,14 @@ export const App: React.FC = () => {
         alertId={resModalId}
         onClose={() => setResModalId(null)}
         onSubmit={handleResolveSubmit}
+      />
+
+      {/* Dynamic Node Provisioning Modal (Option 1: OTA Mesh Enrollment) */}
+      <ProvisioningModal
+        isOpen={isProvModalOpen}
+        pendingNodes={pendingNodes}
+        onClose={() => setIsProvModalOpen(false)}
+        onAssign={handleAssignNode}
       />
     </div>
   );

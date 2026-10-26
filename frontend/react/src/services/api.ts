@@ -1,4 +1,4 @@
-import { SystemSummary, NodeItem, AlertItem, TelemetryItem, AuditItem } from '../types';
+import { SystemSummary, NodeItem, AlertItem, TelemetryItem, AuditItem, ProvisioningRequest } from '../types';
 
 const API_BASE = '';
 
@@ -54,4 +54,33 @@ export async function resolveAlert(alertId: number, officerName: string, notes: 
     body: JSON.stringify({ officer_name: officerName, notes })
   });
   if (!resp.ok) throw new Error('Failed to resolve alert');
+}
+
+export async function fetchPendingProvisioning(): Promise<ProvisioningRequest[]> {
+  const resp = await fetch(`${API_BASE}/api/v1/provision/pending`);
+  if (!resp.ok) throw new Error('Failed to fetch pending provisioning requests');
+  const data = await resp.json();
+  return data.pending_nodes || [];
+}
+
+export async function assignNodeProvisioning(
+  chipId: string,
+  deviceId: string,
+  role: string,
+  zoneId: string,
+  officerName: string = 'Safety_Officer'
+): Promise<any> {
+  const resp = await fetch(`${API_BASE}/api/v1/provision/assign`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      chip_id: chipId,
+      device_id: deviceId,
+      role,
+      zone_id: zoneId,
+      officer_name: officerName,
+    }),
+  });
+  if (!resp.ok) throw new Error('Failed to assign node identity');
+  return resp.json();
 }

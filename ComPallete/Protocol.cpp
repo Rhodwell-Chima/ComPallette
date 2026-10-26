@@ -7,20 +7,26 @@
 
 const char* messageTypeToString(MessageType type) {
   switch (type) {
-    case MSG_HEARTBEAT: return "HEARTBEAT";
-    case MSG_TELEMETRY: return "TELEMETRY";
-    case MSG_ALERT:     return "ALERT";
-    case MSG_ACK:       return "ACK";
-    default:            return "UNKNOWN";
+    case MSG_HEARTBEAT:    return "HEARTBEAT";
+    case MSG_TELEMETRY:    return "TELEMETRY";
+    case MSG_ALERT:        return "ALERT";
+    case MSG_ACK:          return "ACK";
+    case MSG_PROV_REQ:     return "PROV_REQ";
+    case MSG_PROV_ASSIGN:  return "PROV_ASSIGN";
+    case MSG_PROV_CONFIRM: return "PROV_CONFIRM";
+    default:               return "UNKNOWN";
   }
 }
 
 MessageType stringToMessageType(const char* str) {
   if (!str) return MSG_UNKNOWN;
-  if (strcmp(str, "TELEMETRY") == 0) return MSG_TELEMETRY;
-  if (strcmp(str, "ALERT") == 0)     return MSG_ALERT;
-  if (strcmp(str, "HEARTBEAT") == 0) return MSG_HEARTBEAT;
-  if (strcmp(str, "ACK") == 0)       return MSG_ACK;
+  if (strcmp(str, "TELEMETRY") == 0)    return MSG_TELEMETRY;
+  if (strcmp(str, "ALERT") == 0)        return MSG_ALERT;
+  if (strcmp(str, "HEARTBEAT") == 0)    return MSG_HEARTBEAT;
+  if (strcmp(str, "ACK") == 0)          return MSG_ACK;
+  if (strcmp(str, "PROV_REQ") == 0)     return MSG_PROV_REQ;
+  if (strcmp(str, "PROV_ASSIGN") == 0)  return MSG_PROV_ASSIGN;
+  if (strcmp(str, "PROV_CONFIRM") == 0) return MSG_PROV_CONFIRM;
   return MSG_UNKNOWN;
 }
 
@@ -131,6 +137,70 @@ bool serializeHeartbeat(const MessageEnvelope& env, const HeartbeatData& hb, Str
   payload["heap"]  = hb.free_heap;
   payload["nodes"] = hb.mesh_node_count;
   payload["batt"]  = serialized(String(hb.battery_v, 2));
+
+  outJson = "";
+  return (serializeJson(doc, outJson) > 0);
+}
+
+bool serializeProvRequest(const MessageEnvelope& env, const ProvisioningRequestData& req, String& outJson) {
+  StaticJsonDocument<512> doc;
+  doc["ver"]    = env.version;
+  doc["type"]   = messageTypeToString(env.msg_type);
+  doc["seq"]    = env.seq;
+  doc["sender"] = env.sender_id;
+  doc["role"]   = env.role;
+  doc["zone"]   = env.zone_id;
+  doc["uptime"] = env.uptime_ms;
+
+  JsonObject payload = doc["payload"].to<JsonObject>();
+  payload["chip_mac"] = req.chip_mac;
+  payload["chip_id"]  = req.chip_id;
+  payload["mesh_id"]  = req.mesh_node_id;
+  payload["fw_ver"]   = req.fw_version;
+  payload["batt"]     = serialized(String(req.battery_v, 2));
+  payload["mq_ok"]    = req.mq_healthy;
+  payload["mpu_ok"]   = req.mpu_healthy;
+
+  outJson = "";
+  return (serializeJson(doc, outJson) > 0);
+}
+
+bool serializeProvAssign(const MessageEnvelope& env, const ProvisioningAssignData& assign, String& outJson) {
+  StaticJsonDocument<512> doc;
+  doc["ver"]    = env.version;
+  doc["type"]   = messageTypeToString(env.msg_type);
+  doc["seq"]    = env.seq;
+  doc["sender"] = env.sender_id;
+  doc["role"]   = env.role;
+  doc["zone"]   = env.zone_id;
+  doc["uptime"] = env.uptime_ms;
+
+  JsonObject payload = doc["payload"].to<JsonObject>();
+  payload["target_chip"] = assign.target_chip;
+  payload["assigned_id"] = assign.assigned_id;
+  payload["role"]        = assign.role;
+  payload["zone"]        = assign.zone_id;
+  payload["co_warn"]     = serialized(String(assign.co_warn, 1));
+  payload["co_crit"]     = serialized(String(assign.co_crit, 1));
+  payload["reboot"]      = assign.reboot_now;
+
+  outJson = "";
+  return (serializeJson(doc, outJson) > 0);
+}
+
+bool serializeProvConfirm(const MessageEnvelope& env, const ProvisioningConfirmData& conf, String& outJson) {
+  StaticJsonDocument<384> doc;
+  doc["ver"]    = env.version;
+  doc["type"]   = messageTypeToString(env.msg_type);
+  doc["seq"]    = env.seq;
+  doc["sender"] = env.sender_id;
+  doc["role"]   = env.role;
+  doc["zone"]   = env.zone_id;
+  doc["uptime"] = env.uptime_ms;
+
+  JsonObject payload = doc["payload"].to<JsonObject>();
+  payload["chip_id"] = conf.chip_id;
+  payload["status"]  = conf.status;
 
   outJson = "";
   return (serializeJson(doc, outJson) > 0);
@@ -253,7 +323,77 @@ bool deserializePacket(
       outHb.battery_v        = payload["batt"] | 0.0f;
       return true;
 
+    case MSG_PROV_REQ:
+    case MSG_PROV_ASSIGN:
+    case MSG_PROV_CONFIRM:
+      // Envelope successfully validated for provisioning messages
+      return true;
+
     default:
       return false;
   }
+}
+
+bool deserializeProvAssign(const String& jsonStr, ProvisioningAssignData& outAssign) {
+  memset(&outAssign, 0, sizeof(outAssign));
+  StaticJsonDocument<512> doc;
+  if (deserializeJson(doc, jsonStr)) return false;
+
+  JsonObject payload = doc["payload"].as<JsonObject>();
+  if (payload.isNull()) return false;
+
+  const char* target = payload["target_chip"] | "";
+  const char* id = payload["assigned_id"] | "";
+  const char* role = payload["role"] | "WEARABLE";
+  const char* zone = payload["zone"] | "UNASSIGNED";
+
+  strncpy(outAssign.target_chip, target, sizeof(outAssign.target_chip) - 1);
+  strncpy(outAssign.assigned_id, id, sizeof(outAssign.assigned_id) - 1);
+  strncpy(outAssign.role, role, sizeof(outAssign.role) - 1);
+  strncpy(outAssign.zone_id, zone, sizeof(outAssign.zone_id) - 1);
+  outAssign.co_warn = payload["co_warn"] | 25.0f;
+  outAssign.co_crit = payload["co_crit"] | 50.0f;
+  outAssign.reboot_now = payload["reboot"] | true;
+
+  return (strlen(outAssign.target_chip) > 0 && strlen(outAssign.assigned_id) > 0);
+}
+
+bool deserializeProvRequest(const String& jsonStr, ProvisioningRequestData& outReq) {
+  memset(&outReq, 0, sizeof(outReq));
+  StaticJsonDocument<512> doc;
+  if (deserializeJson(doc, jsonStr)) return false;
+
+  JsonObject payload = doc["payload"].as<JsonObject>();
+  if (payload.isNull()) return false;
+
+  const char* mac = payload["chip_mac"] | "";
+  const char* chip = payload["chip_id"] | "";
+  const char* fw = payload["fw_ver"] | "1.0.0";
+
+  strncpy(outReq.chip_mac, mac, sizeof(outReq.chip_mac) - 1);
+  strncpy(outReq.chip_id, chip, sizeof(outReq.chip_id) - 1);
+  outReq.mesh_node_id = payload["mesh_id"] | 0;
+  strncpy(outReq.fw_version, fw, sizeof(outReq.fw_version) - 1);
+  outReq.battery_v = payload["batt"] | 0.0f;
+  outReq.mq_healthy = payload["mq_ok"] | false;
+  outReq.mpu_healthy = payload["mpu_ok"] | false;
+
+  return (strlen(outReq.chip_id) > 0);
+}
+
+bool deserializeProvConfirm(const String& jsonStr, ProvisioningConfirmData& outConfirm) {
+  memset(&outConfirm, 0, sizeof(outConfirm));
+  StaticJsonDocument<384> doc;
+  if (deserializeJson(doc, jsonStr)) return false;
+
+  JsonObject payload = doc["payload"].as<JsonObject>();
+  if (payload.isNull()) return false;
+
+  const char* chip = payload["chip_id"] | "";
+  const char* status = payload["status"] | "";
+
+  strncpy(outConfirm.chip_id, chip, sizeof(outConfirm.chip_id) - 1);
+  strncpy(outConfirm.status, status, sizeof(outConfirm.status) - 1);
+
+  return (strlen(outConfirm.chip_id) > 0);
 }

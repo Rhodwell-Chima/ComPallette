@@ -4,7 +4,10 @@ from django.test import TestCase
 from django.conf import settings
 from rest_framework.test import APIClient
 from rest_framework import status
-from .models import Node, NodeRole, NodeStatus, TelemetryRecord, SafetyAlert, AlertSeverity, AlertStatus, AuditEntry
+from .models import (
+    Node, NodeRole, NodeStatus, TelemetryRecord, SafetyAlert, AlertSeverity,
+    AlertStatus, AuditEntry, ProvisioningRequest, ProvisioningStatus
+)
 
 
 class MiningApiTests(TestCase):
@@ -192,3 +195,66 @@ class MiningApiTests(TestCase):
         data = res.json()
         self.assertGreaterEqual(data['online_miners'], 1)
         self.assertGreaterEqual(data['miners_in_gas_warning'], 1)
+
+    def test_dynamic_provisioning_flow(self):
+        # 1. Gateway forwards PROV_REQ from uncommissioned chip
+        prov_pkt = {
+            "ver": 1,
+            "type": "PROV_REQ",
+            "seq": 1,
+            "sender": "PROV-8F4C2A",
+            "role": "UNASSIGNED",
+            "zone": "UNASSIGNED",
+            "uptime": 12000,
+            "payload": {
+                "chip_mac": "24:6F:28:8F:4C:2A",
+                "chip_id": "8F4C2A",
+                "mesh_id": 2408359146,
+                "fw_ver": "1.1.0",
+                "batt": 3.92,
+                "mq_ok": True,
+                "mpu_ok": True
+            }
+        }
+        res_req = self.client.post('/api/v1/provision/request', prov_pkt, format='json', **self.auth_headers)
+        self.assertEqual(res_req.status_code, status.HTTP_200_OK)
+        self.assertEqual(res_req.json()['chip_id'], '8F4C2A')
+
+        # 2. Query pending unassigned nodes for dashboard UI
+        res_pending = self.client.get('/api/v1/provision/pending')
+        self.assertEqual(res_pending.status_code, status.HTTP_200_OK)
+        pending_list = res_pending.json()['pending_nodes']
+        self.assertEqual(len(pending_list), 1)
+        self.assertEqual(pending_list[0]['chip_id'], '8F4C2A')
+        self.assertTrue(pending_list[0]['mq_healthy'])
+
+        # 3. Dispatcher commissions the node
+        assign_body = {
+            "chip_id": "8F4C2A",
+            "device_id": "MINER-106",
+            "role": "WEARABLE",
+            "zone_id": "LEVEL-3-ACTIVE-STOPE",
+            "officer_name": "Supervisor_Moses"
+        }
+        res_assign = self.client.post('/api/v1/provision/assign', assign_body, format='json')
+        self.assertEqual(res_assign.status_code, status.HTTP_200_OK)
+        assign_data = res_assign.json()
+        self.assertEqual(assign_data['assigned_id'], 'MINER-106')
+        self.assertIn('downlink_frame', assign_data)
+        downlink = assign_data['downlink_frame']
+        self.assertEqual(downlink['type'], 'PROV_ASSIGN')
+        self.assertEqual(downlink['payload']['target_chip'], '8F4C2A')
+        self.assertEqual(downlink['payload']['assigned_id'], 'MINER-106')
+
+        # Verify Node pre-created in Node table
+        node = Node.objects.get(node_id='MINER-106')
+        self.assertEqual(node.current_zone, 'LEVEL-3-ACTIVE-STOPE')
+
+        # 4. Gateway confirms node acknowledged commissioning
+        res_confirm = self.client.post('/api/v1/provision/confirm', {"chip_id": "8F4C2A"}, format='json')
+        self.assertEqual(res_confirm.status_code, status.HTTP_200_OK)
+        self.assertEqual(res_confirm.json()['status'], 'confirmed')
+
+        # Verify pending list is now empty
+        res_pending_after = self.client.get('/api/v1/provision/pending')
+        self.assertEqual(len(res_pending_after.json()['pending_nodes']), 0)

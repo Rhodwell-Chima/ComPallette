@@ -73,3 +73,18 @@ export interface SystemSummary {
   miners_in_gas_critical: number;
   last_packet_received_ms: number;
 }
+
+export interface ProvisioningRequest {
+  chip_id: string;
+  chip_mac: string;
+  mesh_node_id: number;
+  fw_version: string;
+  battery_v: number;
+  mq_healthy: boolean;
+  mpu_healthy: boolean;
+  status: 'PENDING' | 'ASSIGNED' | 'CONFIRMED';
+  assigned_id: string;
+  assigned_role: string;
+  assigned_zone: string;
+  created_at: string;
+}

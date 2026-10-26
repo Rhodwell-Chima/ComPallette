@@ -13,6 +13,10 @@ from .views import (
     AlertAcknowledgeView,
     AlertResolveView,
     AuditListView,
+    ProvisioningRequestIngestView,
+    ProvisioningPendingListView,
+    ProvisioningAssignView,
+    ProvisioningConfirmView,
 )
 
 urlpatterns = [
@@ -29,4 +33,8 @@ urlpatterns = [
     re_path(r'^api/v1/alerts/(?P<alert_id>\d+)/resolve/?$', AlertResolveView.as_view(), name='alert-resolve'),
     re_path(r'^api/v1/alerts/(?P<alert_id>\d+)/?$', AlertDetailView.as_view(), name='alert-detail'),
     re_path(r'^api/v1/audit/?$', AuditListView.as_view(), name='audit-list'),
+    re_path(r'^api/v1/provision/request/?$', ProvisioningRequestIngestView.as_view(), name='provision-request'),
+    re_path(r'^api/v1/provision/pending/?$', ProvisioningPendingListView.as_view(), name='provision-pending'),
+    re_path(r'^api/v1/provision/assign/?$', ProvisioningAssignView.as_view(), name='provision-assign'),
+    re_path(r'^api/v1/provision/confirm/?$', ProvisioningConfirmView.as_view(), name='provision-confirm'),
 ]

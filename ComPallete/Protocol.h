@@ -19,7 +19,10 @@ enum MessageType {
   MSG_HEARTBEAT,
   MSG_TELEMETRY,
   MSG_ALERT,
-  MSG_ACK
+  MSG_ACK,
+  MSG_PROV_REQ,
+  MSG_PROV_ASSIGN,
+  MSG_PROV_CONFIRM
 };
 
 enum AlertSeverity {
@@ -71,6 +74,38 @@ struct HeartbeatData {
 };
 
 // ----------------------------------------------------------------------------
+// Provisioning Wire Structures (Option 1: Over-The-Air Mesh Enrollment)
+// ----------------------------------------------------------------------------
+
+// Uncommissioned node enrollment announcement beacon (Upstream to Gateway)
+struct ProvisioningRequestData {
+  char      chip_mac[20];             // Factory IEEE MAC address
+  char      chip_id[16];              // Hardware hex chip identifier
+  uint32_t  mesh_node_id;             // painlessMesh local chip ID
+  char      fw_version[12];           // Firmware version
+  float     battery_v;                // Measured battery voltage
+  bool      mq_healthy;               // MQ gas sensor status
+  bool      mpu_healthy;              // MPU6050 IMU status
+};
+
+// Downlink provisioning assignment frame from Gateway to Node (Downstream)
+struct ProvisioningAssignData {
+  char      target_chip[16];          // Target hardware chip ID
+  char      assigned_id[24];          // Assigned badge ID (e.g. "MINER-106")
+  char      role[20];                 // "WEARABLE", "ANCHOR", "GATEWAY"
+  char      zone_id[32];              // Assigned tunnel zone
+  float     co_warn;                  // Warning limit (ppm)
+  float     co_crit;                  // Evacuation limit (ppm)
+  bool      reboot_now;               // True to trigger immediate node restart
+};
+
+// Commissioning completion confirmation (Upstream to Gateway)
+struct ProvisioningConfirmData {
+  char      chip_id[16];              // Confirmed hardware chip ID
+  char      status[24];               // "SUCCESS_COMMISSIONED"
+};
+
+// ----------------------------------------------------------------------------
 // Helper Functions: Enum-to-String Conversions
 // ----------------------------------------------------------------------------
 const char* messageTypeToString(MessageType type);
@@ -87,6 +122,9 @@ const char* nodeRoleToString(NodeRole role);
 bool serializeTelemetry(const MessageEnvelope& env, const TelemetryData& data, String& outJson);
 bool serializeAlert(const MessageEnvelope& env, const AlertData& alert, String& outJson);
 bool serializeHeartbeat(const MessageEnvelope& env, const HeartbeatData& hb, String& outJson);
+bool serializeProvRequest(const MessageEnvelope& env, const ProvisioningRequestData& req, String& outJson);
+bool serializeProvAssign(const MessageEnvelope& env, const ProvisioningAssignData& assign, String& outJson);
+bool serializeProvConfirm(const MessageEnvelope& env, const ProvisioningConfirmData& conf, String& outJson);
 
 // ----------------------------------------------------------------------------
 // Deserialization & Validation Functions
@@ -101,6 +139,10 @@ bool deserializePacket(
   HeartbeatData& outHb,
   bool& outIsLegacy
 );
+
+bool deserializeProvAssign(const String& jsonStr, ProvisioningAssignData& outAssign);
+bool deserializeProvRequest(const String& jsonStr, ProvisioningRequestData& outReq);
+bool deserializeProvConfirm(const String& jsonStr, ProvisioningConfirmData& outConfirm);
 
 // Validates essential envelope headers (sender_id non-empty, valid version, valid type)
 bool validateEnvelope(const MessageEnvelope& env);

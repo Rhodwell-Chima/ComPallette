@@ -4,6 +4,8 @@ interface HeaderProps {
   isGatewayOnline: boolean;
   audioArmed: boolean;
   theme: 'dark' | 'light';
+  pendingProvisioningCount?: number;
+  onOpenProvisioning?: () => void;
   onToggleTheme: () => void;
   onToggleAudio: () => void;
   onRefresh: () => void;
@@ -13,6 +15,8 @@ export const Header: React.FC<HeaderProps> = ({
   isGatewayOnline,
   audioArmed,
   theme,
+  pendingProvisioningCount = 0,
+  onOpenProvisioning,
   onToggleTheme,
   onToggleAudio,
   onRefresh,
@@ -34,11 +38,29 @@ export const Header: React.FC<HeaderProps> = ({
         <span className="header-context">Underground Safety Monitor</span>
       </div>
 
-      <div className="header-center">
+      <div className="header-center" style={{ gap: '10px' }}>
         <span className={`status-pill ${isGatewayOnline ? 'status-ok' : 'status-warn'}`}>
           <span className="status-dot" />
           {isGatewayOnline ? 'Gateway connected' : 'Gateway offline'}
         </span>
+
+        {pendingProvisioningCount > 0 && (
+          <button
+            className="status-pill"
+            style={{
+              background: 'var(--brand-subtle)',
+              borderColor: 'var(--brand-light)',
+              color: 'var(--brand-light)',
+              cursor: 'pointer',
+              fontWeight: 600,
+            }}
+            onClick={onOpenProvisioning}
+            title="Uncommissioned nodes detected. Click to assign."
+          >
+            <span className="status-dot" style={{ background: 'var(--brand-light)' }} />
+            {pendingProvisioningCount} {pendingProvisioningCount === 1 ? 'New Node' : 'New Nodes'} (Assign)
+          </button>
+        )}
       </div>
 
       <div className="header-right">

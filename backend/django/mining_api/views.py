@@ -6,8 +6,14 @@ from rest_framework import status
 from rest_framework.views import APIView
 from rest_framework.response import Response
 
-from .models import Node, NodeRole, NodeStatus, TelemetryRecord, SafetyAlert, AlertSeverity, AlertStatus, AuditEntry
-from .serializers import NodeSerializer, TelemetryRecordSerializer, SafetyAlertSerializer, AuditEntrySerializer
+from .models import (
+    Node, NodeRole, NodeStatus, TelemetryRecord, SafetyAlert, AlertSeverity,
+    AlertStatus, AuditEntry, ProvisioningRequest, ProvisioningStatus
+)
+from .serializers import (
+    NodeSerializer, TelemetryRecordSerializer, SafetyAlertSerializer,
+    AuditEntrySerializer, ProvisioningRequestSerializer
+)
 
 
 def verify_api_key(request):
@@ -419,3 +425,149 @@ class AuditListView(APIView):
         entries = AuditEntry.objects.all().order_by('-timestamp')[:limit]
         serializer = AuditEntrySerializer(entries, many=True)
         return Response({"audit_log": serializer.data, "count": len(serializer.data)})
+
+
+# ============================================================================
+# DYNAMIC PROVISIONING VIEWS (Option 1: Over-The-Air Mesh Enrollment)
+# ============================================================================
+
+class ProvisioningRequestIngestView(APIView):
+    """Handles uncommissioned node announcement beacons forwarded by the mesh gateway."""
+    def post(self, request):
+        if not verify_api_key(request):
+            return Response({"error": "Unauthorized: Invalid X-API-Key header"}, status=status.HTTP_401_UNAUTHORIZED)
+
+        data = request.data
+        payload = data.get("payload", {})
+        chip_id = payload.get("chip_id") or data.get("sender", "").replace("PROV-", "")
+
+        if not chip_id:
+            return Response({"error": "Missing chip_id in provisioning payload"}, status=status.HTTP_400_BAD_REQUEST)
+
+        chip_mac = payload.get("chip_mac", "")
+        mesh_id = payload.get("mesh_id", 0)
+        fw_ver = payload.get("fw_ver", "1.1.0")
+        batt = float(payload.get("batt", 0.0))
+        mq_ok = bool(payload.get("mq_ok", False))
+        mpu_ok = bool(payload.get("mpu_ok", False))
+
+        req, created = ProvisioningRequest.objects.update_or_create(
+            chip_id=chip_id,
+            defaults={
+                "chip_mac": chip_mac,
+                "mesh_node_id": mesh_id,
+                "fw_version": fw_ver,
+                "battery_v": batt,
+                "mq_healthy": mq_ok,
+                "mpu_healthy": mpu_ok,
+                "status": ProvisioningStatus.PENDING,
+            }
+        )
+
+        AuditEntry.objects.create(
+            timestamp=int(time.time() * 1000),
+            actor='GATEWAY',
+            action='NODE_DISCOVERED',
+            details=f"Unassigned node beacon detected: Chip #{chip_id} (MAC: {chip_mac})"
+        )
+
+        return Response({"status": "recorded", "chip_id": chip_id, "created": created})
+
+
+class ProvisioningPendingListView(APIView):
+    """Returns all uncommissioned nodes waiting for dispatcher assignment."""
+    def get(self, request):
+        pending = ProvisioningRequest.objects.filter(status=ProvisioningStatus.PENDING).order_by('-updated_at')
+        serializer = ProvisioningRequestSerializer(pending, many=True)
+        return Response({"pending_nodes": serializer.data, "count": len(serializer.data)})
+
+
+class ProvisioningAssignView(APIView):
+    """Dispatcher commissions an unassigned node by binding an ID, role, and underground zone."""
+    def post(self, request):
+        chip_id = request.data.get("chip_id")
+        device_id = request.data.get("device_id")
+        role = request.data.get("role", "WEARABLE")
+        zone_id = request.data.get("zone_id", "SURFACE-PORTAL")
+        officer = request.data.get("officer_name", "Safety_Officer")
+
+        if not chip_id or not device_id:
+            return Response({"error": "chip_id and device_id are required"}, status=status.HTTP_400_BAD_REQUEST)
+
+        req = get_object_or_404(ProvisioningRequest, chip_id=chip_id)
+        req.status = ProvisioningStatus.ASSIGNED
+        req.assigned_id = device_id
+        req.assigned_role = role
+        req.assigned_zone = zone_id
+        req.assigned_by = officer
+        req.save()
+
+        now_ms = int(time.time() * 1000)
+
+        # Pre-seed or update the target Node in database
+        Node.objects.update_or_create(
+            node_id=device_id,
+            defaults={
+                "role": role,
+                "current_zone": zone_id,
+                "status": NodeStatus.ONLINE,
+                "last_seen_ts": now_ms,
+                "is_simulated": False,
+                "sensor_ok": True,
+            }
+        )
+
+        AuditEntry.objects.create(
+            timestamp=now_ms,
+            actor=officer,
+            action='NODE_ASSIGNED',
+            details=f"Chip #{chip_id} assigned identity '{device_id}' ({role}) @ {zone_id}"
+        )
+
+        # Generate exact downlink mesh frame for the gateway to broadcast
+        downlink_frame = {
+            "ver": 1,
+            "type": "PROV_ASSIGN",
+            "seq": 1,
+            "sender": "GW-SURFACE-01",
+            "role": "GATEWAY",
+            "zone": "SURFACE-PORTAL",
+            "uptime": 0,
+            "payload": {
+                "target_chip": chip_id,
+                "assigned_id": device_id,
+                "role": role,
+                "zone": zone_id,
+                "co_warn": 25.0,
+                "co_crit": 50.0,
+                "reboot": True
+            }
+        }
+
+        return Response({
+            "status": "assigned",
+            "chip_id": chip_id,
+            "assigned_id": device_id,
+            "downlink_frame": downlink_frame
+        })
+
+
+class ProvisioningConfirmView(APIView):
+    """Gateway reports that node received assignment and acknowledged commissioning."""
+    def post(self, request):
+        chip_id = request.data.get("chip_id")
+        if not chip_id:
+            return Response({"error": "chip_id is required"}, status=status.HTTP_400_BAD_REQUEST)
+
+        req = get_object_or_404(ProvisioningRequest, chip_id=chip_id)
+        req.status = ProvisioningStatus.CONFIRMED
+        req.save()
+
+        AuditEntry.objects.create(
+            timestamp=int(time.time() * 1000),
+            actor='GATEWAY',
+            action='NODE_COMMISSIONED',
+            details=f"Chip #{chip_id} confirmed active as '{req.assigned_id}' ({req.assigned_role})"
+        )
+
+        return Response({"status": "confirmed", "chip_id": chip_id, "device_id": req.assigned_id})

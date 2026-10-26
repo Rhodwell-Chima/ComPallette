@@ -29,13 +29,13 @@ enum NodeRole {
 
 // --- ACTIVE NODE CONFIGURATION ---
 // Set the operational role for this physical device build:
-#define CURRENT_ROLE            ROLE_WEARABLE
+#define CURRENT_ROLE            ROLE_STATIONARY_ANCHOR
 
 // Identifier for this node:
 // - For wearable: Unique miner badge / personnel ID (e.g., "MINER-106")
 // - For anchor: Physical tunnel zone identifier (e.g., "ANCHOR-Z02-L3")
 // - For gateway: Gateway ID (e.g., "GW-SURFACE-01")
-#define ACTIVE_DEVICE_ID        "MINER-106"
+#define ACTIVE_DEVICE_ID        "ANCHOR-Z02-L3"
 
 // Physical tunnel zone name (primarily used by stationary anchors):
 #define ACTIVE_ZONE_ID          "ZONE-B-DRIFT-04"

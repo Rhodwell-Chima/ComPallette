@@ -128,7 +128,29 @@ def generate_heartbeat_packet(node_id, role, zone, seq, uptime_ms, visible_nodes
     }
 
 
-def run_simulation(duration_seconds=30, interval_seconds=2.0, forward_to=None):
+def generate_prov_req_packet(chip_id, mac, seq, uptime_ms):
+    """Generates a v1 PROV_REQ announcement beacon from an uncommissioned node."""
+    return {
+        "ver": PROTOCOL_VERSION,
+        "type": "PROV_REQ",
+        "seq": seq,
+        "sender": f"PROV-{chip_id}",
+        "role": "UNASSIGNED",
+        "zone": "UNASSIGNED",
+        "uptime": uptime_ms,
+        "payload": {
+            "chip_mac": mac,
+            "chip_id": chip_id,
+            "mesh_id": 2408359146,
+            "fw_ver": "1.1.0",
+            "batt": 3.92,
+            "mq_ok": True,
+            "mpu_ok": True,
+        },
+    }
+
+
+def run_simulation(duration_seconds=30, interval_seconds=2.0, forward_to=None, simulate_prov=False):
     print("=" * 70)
     print("  COMPALLETTE UNDERGROUND MESH NETWORK SIMULATOR (Protocol v1)  ")
     print("=" * 70)
@@ -204,6 +226,12 @@ def run_simulation(duration_seconds=30, interval_seconds=2.0, forward_to=None):
                     print(f"[HEARTBEAT] {anchor['id']} ({anchor['zone']}) | Heap: {hb_pkt['payload']['heap']} B | Peers: {hb_pkt['payload']['nodes']}")
                     forward_packet_http(forward_to, "/api/v1/heartbeat", hb_pkt)
 
+            # 3. Simulate Uncommissioned Node Enrollment Beacon (Option 1)
+            if simulate_prov and cycle == 2:
+                prov_pkt = generate_prov_req_packet("8F4C2A", "24:6F:28:8F:4C:2A", 1, elapsed_ms)
+                print(f"[PROV_REQ TX] Uncommissioned Node #8F4C2A broadcasted enrollment beacon over mesh")
+                forward_packet_http(forward_to, "/api/v1/provision/request", prov_pkt)
+
             time.sleep(interval_seconds)
 
     except KeyboardInterrupt:
@@ -219,6 +247,12 @@ if __name__ == "__main__":
     parser.add_argument("--duration", type=int, default=10, help="Run duration in seconds")
     parser.add_argument("--interval", type=float, default=2.0, help="Packet interval in seconds")
     parser.add_argument("--forward-to", type=str, default=None, help="HTTP backend base URL (e.g. http://127.0.0.1:8080)")
+    parser.add_argument("--simulate-prov", action="store_true", help="Simulate uncommissioned node enrollment beacon")
     args = parser.parse_args()
 
-    run_simulation(duration_seconds=args.duration, interval_seconds=args.interval, forward_to=args.forward_to)
+    run_simulation(
+        duration_seconds=args.duration,
+        interval_seconds=args.interval,
+        forward_to=args.forward_to,
+        simulate_prov=args.simulate_prov
+    )
