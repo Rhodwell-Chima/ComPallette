@@ -47,15 +47,6 @@ AlertSeverity stringToAlertSeverity(const char* str) {
   return SEVERITY_NONE;
 }
 
-const char* nodeRoleToString(NodeRole role) {
-  switch (role) {
-    case ROLE_WEARABLE:          return "WEARABLE";
-    case ROLE_STATIONARY_ANCHOR: return "ANCHOR";
-    case ROLE_GATEWAY:           return "GATEWAY";
-    default:                     return "UNKNOWN";
-  }
-}
-
 // ----------------------------------------------------------------------------
 // Validation
 // ----------------------------------------------------------------------------

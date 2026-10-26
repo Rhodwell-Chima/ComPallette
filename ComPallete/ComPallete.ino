@@ -133,8 +133,7 @@ void receivedCallback(uint32_t from, String &msg) {
         Serial.printf("  |-- Target Zone  : %s\n", assign.zone_id);
         Serial.println("==============================================================");
 
-        NodeRole r = (strcmp(assign.role, "GATEWAY") == 0) ? ROLE_GATEWAY :
-                     (strcmp(assign.role, "ANCHOR") == 0) ? ROLE_STATIONARY_ANCHOR : ROLE_WEARABLE;
+        NodeRole r = stringToNodeRole(assign.role);
 
         nodeConfigManager.setAssignment(assign.assigned_id, r, assign.zone_id, assign.co_warn, assign.co_crit);
 

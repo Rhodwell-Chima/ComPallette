@@ -2,6 +2,7 @@
 #define CONFIG_H
 
 #include <Arduino.h>
+#include <string.h>
 
 // ============================================================================
 // COMPALLETTE - SYSTEM CONFIGURATION & NODE PROFILE
@@ -26,6 +27,22 @@ enum NodeRole {
   ROLE_STATIONARY_ANCHOR = 1, // Fixed underground infrastructure / location reference
   ROLE_GATEWAY = 2            // Border router bridging painlessMesh to IP infrastructure
 };
+
+inline const char* nodeRoleToString(NodeRole role) {
+  switch (role) {
+    case ROLE_WEARABLE:          return "WEARABLE";
+    case ROLE_STATIONARY_ANCHOR: return "ANCHOR";
+    case ROLE_GATEWAY:           return "GATEWAY";
+    default:                     return "UNKNOWN";
+  }
+}
+
+inline NodeRole stringToNodeRole(const char* str) {
+  if (!str) return ROLE_WEARABLE;
+  if (strcmp(str, "GATEWAY") == 0) return ROLE_GATEWAY;
+  if (strcmp(str, "ANCHOR") == 0)  return ROLE_STATIONARY_ANCHOR;
+  return ROLE_WEARABLE;
+}
 
 // --- ACTIVE NODE CONFIGURATION ---
 // Set the operational role for this physical device build:

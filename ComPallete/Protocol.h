@@ -114,7 +114,7 @@ MessageType stringToMessageType(const char* str);
 const char* alertSeverityToString(AlertSeverity sev);
 AlertSeverity stringToAlertSeverity(const char* str);
 
-const char* nodeRoleToString(NodeRole role);
+// Note: nodeRoleToString() and stringToNodeRole() are declared inline in Config.h
 
 // ----------------------------------------------------------------------------
 // Serialization Functions
