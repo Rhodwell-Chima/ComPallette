@@ -48,6 +48,9 @@ public:
   // Erase all persistent configurations (Factory Reset)
   void clear();
 
+  // Enter SoftAP setup mode (unprovisions node so portal starts, preserving current parameters)
+  void enterSetupMode();
+
   // Accessors
   const NodeConfig& get() const { return _config; }
   bool isProvisioned() const { return _config.is_provisioned; }

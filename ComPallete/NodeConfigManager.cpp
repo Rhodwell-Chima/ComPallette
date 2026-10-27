@@ -70,18 +70,38 @@ bool NodeConfigManager::load() {
     _config.co_warning_ppm = _prefs.getFloat("co_warn", CO_THRESHOLD_WARNING_PPM);
     _config.co_critical_ppm = _prefs.getFloat("co_crit", CO_THRESHOLD_CRITICAL_PPM);
   } else {
-    // Unprovisioned node defaults: derive temporary identity from chip hardware ID
-    snprintf(_config.device_id, sizeof(_config.device_id), "PROV-%s", _config.chip_id);
-    _config.role = ROLE_WEARABLE;
-    strncpy(_config.zone_id, "UNASSIGNED", sizeof(_config.zone_id) - 1);
-    strncpy(_config.mesh_prefix, MESH_PREFIX, sizeof(_config.mesh_prefix) - 1);
-    strncpy(_config.mesh_password, MESH_PASSWORD, sizeof(_config.mesh_password) - 1);
-    _config.mesh_channel = MESH_CHANNEL;
-    strncpy(_config.uplink_ssid, UPLINK_WIFI_SSID, sizeof(_config.uplink_ssid) - 1);
-    strncpy(_config.uplink_password, UPLINK_WIFI_PASSWORD, sizeof(_config.uplink_password) - 1);
-    strncpy(_config.backend_url, BACKEND_BASE_URL, sizeof(_config.backend_url) - 1);
-    _config.co_warning_ppm = CO_THRESHOLD_WARNING_PPM;
-    _config.co_critical_ppm = CO_THRESHOLD_CRITICAL_PPM;
+    // Unprovisioned node: check if previous configuration exists to pre-fill setup portal
+    String devId = _prefs.getString("dev_id", "");
+    if (devId.length() > 0) {
+      strncpy(_config.device_id, devId.c_str(), sizeof(_config.device_id) - 1);
+    } else {
+      snprintf(_config.device_id, sizeof(_config.device_id), "PROV-%s", _config.chip_id);
+    }
+
+    _config.role = (NodeRole)_prefs.getUChar("role", (uint8_t)ROLE_WEARABLE);
+
+    String zone = _prefs.getString("zone", "UNASSIGNED");
+    strncpy(_config.zone_id, zone.c_str(), sizeof(_config.zone_id) - 1);
+
+    String mSsid = _prefs.getString("m_ssid", MESH_PREFIX);
+    strncpy(_config.mesh_prefix, mSsid.c_str(), sizeof(_config.mesh_prefix) - 1);
+
+    String mPass = _prefs.getString("m_pass", MESH_PASSWORD);
+    strncpy(_config.mesh_password, mPass.c_str(), sizeof(_config.mesh_password) - 1);
+
+    _config.mesh_channel = _prefs.getUChar("m_chan", MESH_CHANNEL);
+
+    String gwSsid = _prefs.getString("gw_ssid", UPLINK_WIFI_SSID);
+    strncpy(_config.uplink_ssid, gwSsid.c_str(), sizeof(_config.uplink_ssid) - 1);
+
+    String gwPass = _prefs.getString("gw_pass", UPLINK_WIFI_PASSWORD);
+    strncpy(_config.uplink_password, gwPass.c_str(), sizeof(_config.uplink_password) - 1);
+
+    String api = _prefs.getString("api_url", BACKEND_BASE_URL);
+    strncpy(_config.backend_url, api.c_str(), sizeof(_config.backend_url) - 1);
+
+    _config.co_warning_ppm = _prefs.getFloat("co_warn", CO_THRESHOLD_WARNING_PPM);
+    _config.co_critical_ppm = _prefs.getFloat("co_crit", CO_THRESHOLD_CRITICAL_PPM);
   }
 
   return true;
@@ -136,6 +156,12 @@ void NodeConfigManager::clear() {
   _config.role = ROLE_WEARABLE;
   strncpy(_config.zone_id, "UNASSIGNED", sizeof(_config.zone_id) - 1);
   Serial.println("\n[NVS] FACTORY RESET: All persistent parameters wiped. Node uncommissioned.");
+}
+
+void NodeConfigManager::enterSetupMode() {
+  _config.is_provisioned = false;
+  _prefs.putBool("prov", false);
+  Serial.println("\n[NVS] SETUP MODE: Node uncommissioned. Preserved current configuration for SoftAP.");
 }
 
 void NodeConfigManager::printConfig() {

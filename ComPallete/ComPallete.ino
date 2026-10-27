@@ -25,9 +25,9 @@ static uint32_t g_messageSequence = 0;
 // Track mesh network topology
 int lastNodeCount = 0;
 
-// Factory reset button tracking (hold SOS button >= 6s to erase NVS and enter Setup)
-static uint32_t g_buttonHoldStartTime = 0;
-static bool     g_resetArmed = false;
+// SoftAP Setup button tracking (hold onboard BOOT button Pin 0 >= 3s to enter SoftAP Setup)
+static uint32_t g_bootButtonHoldStartTime = 0;
+static bool     g_bootSetupArmed = false;
 
 // Task declarations
 void sendTelemetryTask();
@@ -321,6 +321,14 @@ void setup() {
   // 1. Initialize Dynamic NVS Configuration Subsystem
   nodeConfigManager.begin();
 
+  // If onboard BOOT button (GPIO 0) is held during startup, force into SoftAP setup mode
+  pinMode(PIN_BOOT_BUTTON, INPUT_PULLUP);
+  if (digitalRead(PIN_BOOT_BUTTON) == LOW) {
+    Serial.println("\n[SETUP] Onboard BOOT button (GPIO 0) held during startup!");
+    Serial.println("[SETUP] Forcing direct entry into SoftAP Setup Mode (Captive Portal)...");
+    nodeConfigManager.enterSetupMode();
+  }
+
   // 2. Initialize Hardware Abstraction Layer (MQ-7, MPU6050, Battery ADC)
   sensorHAL.begin();
 
@@ -380,28 +388,31 @@ void loop() {
     sendAlertEvent(SEVERITY_CRITICAL, "PANIC_SOS", "Miner activated emergency panic button", 1.0f);
   }
 
-  // Hardware Safety Override: Long-press SOS button (>= 6s) triggers Factory Reset
-  if (digitalRead(PIN_SOS_BUTTON) == LOW) {
-    if (g_buttonHoldStartTime == 0) {
-      g_buttonHoldStartTime = millis();
-    } else if (millis() - g_buttonHoldStartTime >= 6000 && !g_resetArmed) {
-      g_resetArmed = true;
-      Serial.println("\n[HAL] FACTORY RESET TRIGGERED! Wiping NVS configuration...");
-      // Strobe LED and buzzer to warn operator
-      for (int i = 0; i < 5; i++) {
+  // SoftAP Configuration Trigger: Hold onboard BOOT button (GPIO 0) >= 3s
+  if (digitalRead(PIN_BOOT_BUTTON) == LOW) {
+    if (g_bootButtonHoldStartTime == 0) {
+      g_bootButtonHoldStartTime = millis();
+    } else if (millis() - g_bootButtonHoldStartTime >= 3000 && !g_bootSetupArmed) {
+      g_bootSetupArmed = true;
+      Serial.println("\n==============================================================");
+      Serial.println("[SETUP] Onboard BOOT button (GPIO 0) held for 3 seconds!");
+      Serial.println("[SETUP] Rebooting into SoftAP Captive Portal configuration mode...");
+      Serial.println("==============================================================");
+      // Audible and visual indication
+      for (int i = 0; i < 4; i++) {
         digitalWrite(PIN_STATUS_LED, HIGH);
         digitalWrite(PIN_BUZZER, HIGH);
-        delay(80);
+        delay(70);
         digitalWrite(PIN_STATUS_LED, LOW);
         digitalWrite(PIN_BUZZER, LOW);
-        delay(80);
+        delay(70);
       }
-      nodeConfigManager.clear();
-      delay(500);
+      nodeConfigManager.enterSetupMode();
+      delay(300);
       ESP.restart();
     }
   } else {
-    g_buttonHoldStartTime = 0;
+    g_bootButtonHoldStartTime = 0;
   }
 
 #if (CURRENT_ROLE == ROLE_GATEWAY)

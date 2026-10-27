@@ -86,6 +86,7 @@ inline NodeRole stringToNodeRole(const char* str) {
 #define PIN_STATUS_LED          2          // Onboard status LED (GPIO 2)
 #define PIN_BUZZER              18         // Active emergency alarm buzzer (GPIO 18)
 #define PIN_SOS_BUTTON          19         // Emergency panic button (GPIO 19, active LOW, pull-up)
+#define PIN_BOOT_BUTTON         0          // Onboard BOOT button for SoftAP Setup Mode (GPIO 0, active LOW, pull-up)
 #define PIN_GAS_ANALOG          34         // ADC1_CH6 analog gas sensor pin (GPIO 34, input only)
 #define PIN_BATTERY_ADC         35         // ADC1_CH7 battery divider pin (GPIO 35, input only)
 #define PIN_I2C_SDA             21         // I2C SDA for MPU6050 IMU & sensors (GPIO 21)

@@ -37,6 +37,7 @@ bool SensorHAL::begin() {
   digitalWrite(PIN_BUZZER, LOW);
 
   pinMode(PIN_SOS_BUTTON, INPUT_PULLUP);
+  pinMode(PIN_BOOT_BUTTON, INPUT_PULLUP);
 
   // 2. Configure ESP32 ADC for Analog Inputs
   // Using 12-bit resolution (0-4095) with 11dB attenuation (~0 - 3.3V range)
@@ -448,6 +449,7 @@ void SensorHAL::printDiagnostics() {
   Serial.printf("  Battery Monitor      : %s (ADC1 Pin: GPIO %d, Ratio: %.1f)\n",
                 _batteryAvailable ? "ONLINE (Healthy)" : "OFFLINE (Nominal Default)",
                 PIN_BATTERY_ADC, BATTERY_DIVIDER_RATIO);
+  Serial.printf("  Onboard BOOT Button  : READY (GPIO %d, SoftAP Setup Mode)\n", PIN_BOOT_BUTTON);
   Serial.printf("  SOS Panic Button     : READY (GPIO %d, Active LOW)\n", PIN_SOS_BUTTON);
   Serial.printf("  Emergency Strobe/Buzz: READY (LED=%d, Buzzer=%d)\n", PIN_STATUS_LED, PIN_BUZZER);
   Serial.println("--------------------------------------------------------------\n");
