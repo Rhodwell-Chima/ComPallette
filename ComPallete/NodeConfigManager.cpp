@@ -179,4 +179,5 @@ void NodeConfigManager::printConfig() {
     Serial.printf("  Backend REST URL   : %s\n", _config.backend_url);
   }
   Serial.println("==============================================================\n");
+  Serial.flush();
 }

@@ -100,6 +100,7 @@ bool SensorHAL::begin() {
   delay(50);
   digitalWrite(PIN_STATUS_LED, LOW);
 
+  Serial.flush();
   return true;
 }
 
@@ -453,4 +454,5 @@ void SensorHAL::printDiagnostics() {
   Serial.printf("  SOS Panic Button     : READY (GPIO %d, Active LOW)\n", PIN_SOS_BUTTON);
   Serial.printf("  Emergency Strobe/Buzz: READY (LED=%d, Buzzer=%d)\n", PIN_STATUS_LED, PIN_BUZZER);
   Serial.println("--------------------------------------------------------------\n");
+  Serial.flush();
 }

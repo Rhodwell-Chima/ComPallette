@@ -80,9 +80,23 @@ inline NodeRole stringToNodeRole(const char* str) {
 #define BATTERY_VOLTAGE_EMPTY      3.00f   // Critical shutdown / brownout threshold
 
 // ----------------------------------------------------------------------------
-// 5. Hardware Interface Pin Definitions (ESP32)
+// 5. Hardware Interface Pin Definitions (ESP32 / ESP32-S3 Auto-Detection)
 // ----------------------------------------------------------------------------
-// Pin assignments for physical sensors and actuators (using ADC1 pins safe with Wi-Fi)
+#if defined(CONFIG_IDF_TARGET_ESP32S3)
+// --- ESP32-S3 Pin Mapping ---
+// Note: On ESP32-S3, GPIO 19 & 20 are Native USB D-/D+ (USB Serial/JTAG).
+//       GPIO 22-37 do not exist. Pins 1-10 are ADC1.
+#define PIN_STATUS_LED          2          // Onboard status LED (GPIO 2)
+#define PIN_BUZZER              18         // Active emergency alarm buzzer (GPIO 18)
+#define PIN_SOS_BUTTON          14         // Emergency panic button (Safe GPIO 14; GPIO 19/20 reserved for USB CDC)
+#define PIN_BOOT_BUTTON         0          // Onboard BOOT button for SoftAP Setup Mode (GPIO 0, active LOW, pull-up)
+#define PIN_GAS_ANALOG          4          // ADC1_CH3 analog gas sensor pin (GPIO 4)
+#define PIN_BATTERY_ADC         5          // ADC1_CH4 battery divider pin (GPIO 5)
+#define PIN_I2C_SDA             8          // ESP32-S3 standard hardware I2C SDA (GPIO 8)
+#define PIN_I2C_SCL             9          // ESP32-S3 standard hardware I2C SCL (GPIO 9)
+
+#else
+// --- Classic ESP32 (WROOM / WROVER) Pin Mapping ---
 #define PIN_STATUS_LED          2          // Onboard status LED (GPIO 2)
 #define PIN_BUZZER              18         // Active emergency alarm buzzer (GPIO 18)
 #define PIN_SOS_BUTTON          19         // Emergency panic button (GPIO 19, active LOW, pull-up)
@@ -91,6 +105,7 @@ inline NodeRole stringToNodeRole(const char* str) {
 #define PIN_BATTERY_ADC         35         // ADC1_CH7 battery divider pin (GPIO 35, input only)
 #define PIN_I2C_SDA             21         // I2C SDA for MPU6050 IMU & sensors (GPIO 21)
 #define PIN_I2C_SCL             22         // I2C SCL for MPU6050 IMU & sensors (GPIO 22)
+#endif
 
 // ----------------------------------------------------------------------------
 // 6. Sensor Calibration Constants (Phase 5 Hardware Abstraction Layer)

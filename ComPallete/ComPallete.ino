@@ -316,14 +316,27 @@ void sendProvRequestTask() {
 // ----------------------------------------------------------------------------
 void setup() {
   Serial.begin(115200);
-  delay(1000);
+
+  // On ESP32-S3, Serial runs via native USB CDC which needs time to enumerate.
+  // Wait up to 3 seconds for the USB host to connect, or proceed headless.
+  uint32_t serialWaitStart = millis();
+  while (!Serial && (millis() - serialWaitStart < 3000)) {
+    delay(10);
+  }
+  delay(300);
+
+  Serial.println("\n[BOOT] Compallette Subterranean Node Firmware Starting...");
+  Serial.flush();
 
   // 1. Initialize Dynamic NVS Configuration Subsystem
   nodeConfigManager.begin();
+  Serial.flush();
 
-  // If onboard BOOT button (GPIO 0) is held during startup, force into SoftAP setup mode
+  // If onboard BOOT button (GPIO 0) is held during startup, force into SoftAP setup mode.
+  // Skip if already unprovisioned to prevent reboot loops (user may still be holding button).
   pinMode(PIN_BOOT_BUTTON, INPUT_PULLUP);
-  if (digitalRead(PIN_BOOT_BUTTON) == LOW) {
+  delay(50); // Debounce settle
+  if (digitalRead(PIN_BOOT_BUTTON) == LOW && nodeConfigManager.isProvisioned()) {
     Serial.println("\n[SETUP] Onboard BOOT button (GPIO 0) held during startup!");
     Serial.println("[SETUP] Forcing direct entry into SoftAP Setup Mode (Captive Portal)...");
     nodeConfigManager.enterSetupMode();
@@ -396,8 +409,9 @@ void loop() {
       g_bootSetupArmed = true;
       Serial.println("\n==============================================================");
       Serial.println("[SETUP] Onboard BOOT button (GPIO 0) held for 3 seconds!");
-      Serial.println("[SETUP] Rebooting into SoftAP Captive Portal configuration mode...");
+      Serial.println("[SETUP] Release button now... rebooting into SoftAP Setup Mode.");
       Serial.println("==============================================================");
+      Serial.flush();
       // Audible and visual indication
       for (int i = 0; i < 4; i++) {
         digitalWrite(PIN_STATUS_LED, HIGH);
@@ -408,7 +422,18 @@ void loop() {
         delay(70);
       }
       nodeConfigManager.enterSetupMode();
-      delay(300);
+
+      // Wait for user to physically release the BOOT button before restarting,
+      // otherwise ESP32-S3 re-enters download mode or triggers setup again on reboot.
+      Serial.println("[SETUP] Waiting for BOOT button release...");
+      Serial.flush();
+      while (digitalRead(PIN_BOOT_BUTTON) == LOW) {
+        delay(50);
+      }
+      delay(300); // Extra debounce after release
+      Serial.println("[SETUP] BOOT button released. Restarting now...");
+      Serial.flush();
+      delay(200);
       ESP.restart();
     }
   } else {
