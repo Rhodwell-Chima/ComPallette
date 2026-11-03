@@ -22,7 +22,7 @@ export const PersonnelMatrix: React.FC<PersonnelMatrixProps> = ({
   onOpenDrawer,
 }) => {
   const [searchTerm, setSearchTerm] = useState('');
-  const [statusFilter, setStatusFilter] = useState<'ALL' | 'CRIT' | 'WARN' | 'ONLINE'>('ALL');
+  const [statusFilter, setStatusFilter] = useState<'ALL' | 'ACTIVE' | 'INACTIVE' | 'WARN' | 'CRIT'>('ALL');
 
   const wearableMiners = nodes.filter(n => n.role === 'WEARABLE');
 
@@ -35,9 +35,10 @@ export const PersonnelMatrix: React.FC<PersonnelMatrixProps> = ({
 
     if (!matchesSearch) return false;
 
+    if (statusFilter === 'ACTIVE') return m.status === 'ONLINE';
+    if (statusFilter === 'INACTIVE') return m.status !== 'ONLINE';
     if (statusFilter === 'CRIT') return m.latest_co >= 50.0;
     if (statusFilter === 'WARN') return m.latest_co >= 25.0 && m.latest_co < 50.0;
-    if (statusFilter === 'ONLINE') return m.status === 'ONLINE';
     return true;
   });
 
@@ -67,12 +68,24 @@ export const PersonnelMatrix: React.FC<PersonnelMatrixProps> = ({
           )}
         </div>
 
-        <div className="filter-pills">
+        <div className="filter-pills" style={{ display: 'flex', gap: '4px', flexWrap: 'wrap' }}>
           <button
             className={`filter-pill ${statusFilter === 'ALL' ? 'active' : ''}`}
             onClick={() => setStatusFilter('ALL')}
           >
             All ({wearableMiners.length})
+          </button>
+          <button
+            className={`filter-pill ${statusFilter === 'ACTIVE' ? 'active' : ''}`}
+            onClick={() => setStatusFilter('ACTIVE')}
+          >
+            Active ({wearableMiners.filter(m => m.status === 'ONLINE').length})
+          </button>
+          <button
+            className={`filter-pill ${statusFilter === 'INACTIVE' ? 'active' : ''}`}
+            onClick={() => setStatusFilter('INACTIVE')}
+          >
+            Inactive ({wearableMiners.filter(m => m.status !== 'ONLINE').length})
           </button>
           <button
             className={`filter-pill ${statusFilter === 'WARN' ? 'active' : ''}`}

@@ -5,21 +5,94 @@ use rocket::serde::json::{json, Value};
 use rocket::State;
 use sqlx::PgPool;
 
-#[get("/api/v1/nodes")]
-pub async fn list_nodes(pool: &State<PgPool>) -> Value {
+#[get("/api/v1/nodes?<status>&<active>")]
+pub async fn list_nodes(
+    pool: &State<PgPool>,
+    status: Option<String>,
+    active: Option<String>,
+) -> Value {
     let _ = run_watchdog(pool.inner()).await;
 
-    let nodes: Vec<Node> = sqlx::query_as(
-        r#"
-        SELECT node_id, role, current_zone, last_seen_ts, last_seq,
-               battery_v, free_heap, status, is_simulated, sensor_ok,
-               latest_co, latest_temp, latest_hum
-        FROM mining_api_node ORDER BY node_id ASC
-        "#,
-    )
-    .fetch_all(pool.inner())
-    .await
-    .unwrap_or_default();
+    let filter_type = if let Some(s) = status {
+        let su = s.to_uppercase();
+        if su == "ACTIVE" || su == "ONLINE" {
+            Some("ACTIVE")
+        } else if su == "INACTIVE" || su == "OFFLINE" {
+            Some("INACTIVE")
+        } else if su == "STALE" {
+            Some("STALE")
+        } else {
+            None
+        }
+    } else if let Some(a) = active {
+        let al = a.to_lowercase();
+        if al == "true" || al == "1" || al == "active" {
+            Some("ACTIVE")
+        } else if al == "false" || al == "0" || al == "inactive" {
+            Some("INACTIVE")
+        } else {
+            None
+        }
+    } else {
+        None
+    };
+
+    let nodes: Vec<Node> = match filter_type {
+        Some("ACTIVE") => sqlx::query_as(
+            r#"
+            SELECT node_id, role, current_zone, last_seen_ts, last_seq,
+                   battery_v, free_heap, status, is_simulated, sensor_ok,
+                   latest_co, latest_temp, latest_hum
+            FROM mining_api_node
+            WHERE status = 'ONLINE'
+            ORDER BY node_id ASC
+            "#,
+        )
+        .fetch_all(pool.inner())
+        .await
+        .unwrap_or_default(),
+
+        Some("INACTIVE") => sqlx::query_as(
+            r#"
+            SELECT node_id, role, current_zone, last_seen_ts, last_seq,
+                   battery_v, free_heap, status, is_simulated, sensor_ok,
+                   latest_co, latest_temp, latest_hum
+            FROM mining_api_node
+            WHERE status IN ('OFFLINE', 'STALE')
+            ORDER BY node_id ASC
+            "#,
+        )
+        .fetch_all(pool.inner())
+        .await
+        .unwrap_or_default(),
+
+        Some("STALE") => sqlx::query_as(
+            r#"
+            SELECT node_id, role, current_zone, last_seen_ts, last_seq,
+                   battery_v, free_heap, status, is_simulated, sensor_ok,
+                   latest_co, latest_temp, latest_hum
+            FROM mining_api_node
+            WHERE status = 'STALE'
+            ORDER BY node_id ASC
+            "#,
+        )
+        .fetch_all(pool.inner())
+        .await
+        .unwrap_or_default(),
+
+        _ => sqlx::query_as(
+            r#"
+            SELECT node_id, role, current_zone, last_seen_ts, last_seq,
+                   battery_v, free_heap, status, is_simulated, sensor_ok,
+                   latest_co, latest_temp, latest_hum
+            FROM mining_api_node
+            ORDER BY node_id ASC
+            "#,
+        )
+        .fetch_all(pool.inner())
+        .await
+        .unwrap_or_default(),
+    };
 
     let count = nodes.len();
     json!({

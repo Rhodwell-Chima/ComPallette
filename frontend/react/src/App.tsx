@@ -43,6 +43,7 @@ export const App: React.FC = () => {
   const [resModalId, setResModalId] = useState<number | null>(null);
   const [pendingNodes, setPendingNodes] = useState<ProvisioningRequest[]>([]);
   const [isProvModalOpen, setIsProvModalOpen] = useState(false);
+  const [nodeActivityFilter, setNodeActivityFilter] = useState<'ALL' | 'ACTIVE' | 'INACTIVE'>('ALL');
 
   useEffect(() => {
     document.documentElement.setAttribute('data-theme', theme);
@@ -136,6 +137,19 @@ export const App: React.FC = () => {
     loadData();
   };
 
+  const activeCount = nodes.filter(n => n.status === 'ONLINE').length;
+  const inactiveCount = nodes.filter(n => n.status !== 'ONLINE').length;
+
+  const displayedNodes = React.useMemo(() => {
+    if (nodeActivityFilter === 'ACTIVE') {
+      return nodes.filter(n => n.status === 'ONLINE');
+    }
+    if (nodeActivityFilter === 'INACTIVE') {
+      return nodes.filter(n => n.status !== 'ONLINE');
+    }
+    return nodes;
+  }, [nodes, nodeActivityFilter]);
+
   return (
     <div className="app-layout">
       {/* Global Header */}
@@ -167,7 +181,7 @@ export const App: React.FC = () => {
         <div className="main-grid">
           {/* Main Visual/Tracking Panel */}
           <section className="panel">
-            <div className="panel-header">
+            <div className="panel-header" style={{ flexWrap: 'wrap', gap: '10px' }}>
               <div className="panel-title">
                 <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
                   <polygon points="1 6 1 22 8 18 16 22 23 18 23 2 16 6 8 2 1 6" />
@@ -175,6 +189,33 @@ export const App: React.FC = () => {
                   <line x1="16" y1="6" x2="16" y2="22" />
                 </svg>
                 <span>Personnel Tracking</span>
+              </div>
+
+              {/* Status Filter: All / Active / Inactive */}
+              <div className="filter-pills" style={{ display: 'flex', alignItems: 'center', gap: '4px' }}>
+                <button
+                  className={`filter-pill ${nodeActivityFilter === 'ALL' ? 'active' : ''}`}
+                  onClick={() => setNodeActivityFilter('ALL')}
+                  title="Show all registered nodes in system"
+                >
+                  All ({nodes.length})
+                </button>
+                <button
+                  className={`filter-pill ${nodeActivityFilter === 'ACTIVE' ? 'active' : ''}`}
+                  onClick={() => setNodeActivityFilter('ACTIVE')}
+                  title="Show only currently active/online nodes"
+                >
+                  <span style={{ display: 'inline-block', width: 6, height: 6, borderRadius: '50%', background: 'var(--safe)', marginRight: 5 }} />
+                  Active ({activeCount})
+                </button>
+                <button
+                  className={`filter-pill ${nodeActivityFilter === 'INACTIVE' ? 'active' : ''}`}
+                  onClick={() => setNodeActivityFilter('INACTIVE')}
+                  title="Show inactive / offline / stale nodes"
+                >
+                  <span style={{ display: 'inline-block', width: 6, height: 6, borderRadius: '50%', background: 'var(--text-3)', marginRight: 5 }} />
+                  Inactive ({inactiveCount})
+                </button>
               </div>
 
               {/* View Selector Tabs */}
@@ -209,7 +250,7 @@ export const App: React.FC = () => {
             <div className="panel-body">
               {activeTab === 'model' && (
                 <DigitalMineTwin
-                  nodes={nodes}
+                  nodes={displayedNodes}
                   selectedMinerId={selectedMinerId}
                   onSelectMiner={handleSelectMiner}
                   onOpenDrawer={handleOpenDrawer}
@@ -217,7 +258,7 @@ export const App: React.FC = () => {
               )}
               {activeTab === '3d' && (
                 <MineSpatial3D
-                  nodes={nodes}
+                  nodes={displayedNodes}
                   selectedMinerId={selectedMinerId}
                   onSelectMiner={handleSelectMiner}
                   onOpenDrawer={handleOpenDrawer}
@@ -226,7 +267,7 @@ export const App: React.FC = () => {
               )}
               {activeTab === 'table' && (
                 <PersonnelMatrix
-                  nodes={nodes}
+                  nodes={displayedNodes}
                   selectedMinerId={selectedMinerId}
                   onSelectMiner={handleSelectMiner}
                   onOpenDrawer={handleOpenDrawer}
@@ -234,7 +275,7 @@ export const App: React.FC = () => {
               )}
               {activeTab === 'zones' && (
                 <SpatialZones
-                  nodes={nodes}
+                  nodes={displayedNodes}
                   onSelectMiner={handleSelectMiner}
                   onOpenDrawer={handleOpenDrawer}
                 />

@@ -320,8 +320,28 @@ class SystemSummaryView(APIView):
 class NodeListView(APIView):
     def get(self, request):
         check_and_update_watchdog()
-        nodes = Node.objects.all()
-        serializer = NodeSerializer(nodes, many=True)
+        status_q = request.query_params.get("status")
+        active_q = request.query_params.get("active")
+
+        queryset = Node.objects.all().order_by('node_id')
+
+        if status_q:
+            sq = status_q.upper()
+            if sq in ['ACTIVE', 'ONLINE']:
+                queryset = queryset.filter(status=NodeStatus.ONLINE)
+            elif sq in ['INACTIVE', 'OFFLINE']:
+                queryset = queryset.filter(status__in=[NodeStatus.OFFLINE, NodeStatus.STALE])
+            elif sq == 'STALE':
+                queryset = queryset.filter(status=NodeStatus.STALE)
+            elif sq != 'ALL':
+                queryset = queryset.filter(status=sq)
+        elif active_q is not None:
+            if active_q.lower() in ['true', '1', 'active']:
+                queryset = queryset.filter(status=NodeStatus.ONLINE)
+            elif active_q.lower() in ['false', '0', 'inactive']:
+                queryset = queryset.filter(status__in=[NodeStatus.OFFLINE, NodeStatus.STALE])
+
+        serializer = NodeSerializer(queryset, many=True)
         return Response({"nodes": serializer.data, "count": len(serializer.data)})
 
 

@@ -8,8 +8,12 @@ export async function fetchSummary(): Promise<SystemSummary> {
   return resp.json();
 }
 
-export async function fetchNodes(): Promise<NodeItem[]> {
-  const resp = await fetch(`${API_BASE}/api/v1/nodes`);
+export async function fetchNodes(statusFilter?: string): Promise<NodeItem[]> {
+  let url = `${API_BASE}/api/v1/nodes`;
+  if (statusFilter && statusFilter !== 'ALL') {
+    url += `?status=${encodeURIComponent(statusFilter)}`;
+  }
+  const resp = await fetch(url);
   if (!resp.ok) throw new Error('Failed to fetch nodes');
   const data = await resp.json();
   return data.nodes || [];

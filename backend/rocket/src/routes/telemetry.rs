@@ -79,10 +79,10 @@ pub async fn ingest_telemetry(
         r#"
         INSERT INTO mining_api_node (
             node_id, role, current_zone, last_seen_ts, last_seq,
-            battery_v, status, is_simulated, sensor_ok,
+            battery_v, free_heap, status, is_simulated, sensor_ok,
             latest_co, latest_temp, latest_hum, created_at, updated_at
         )
-        VALUES ($1, $2, $3, $4, $5, $6, 'ONLINE', $7, $8, $9, $10, $11, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+        VALUES ($1, $2, $3, $4, $5, $6, 0, 'ONLINE', $7, $8, $9, $10, $11, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
         ON CONFLICT (node_id) DO UPDATE SET
             role = EXCLUDED.role,
             current_zone = EXCLUDED.current_zone,
