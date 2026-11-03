@@ -16,10 +16,7 @@
 painlessMesh mesh;
 Scheduler userScheduler;
 ZoneTracker zoneTracker;
-
-#if (CURRENT_ROLE == ROLE_GATEWAY)
 GatewayManager gatewayManager;
-#endif
 
 // Monotonic sequence counter for packets emitted by this node
 static uint32_t g_messageSequence = 0;
@@ -77,6 +74,10 @@ void sendAlertEvent(AlertSeverity severity, const char* code, const char* detail
       if (i < burstCount - 1) {
         delay(20);
       }
+    }
+
+    if (nodeConfigManager.getRole() == ROLE_GATEWAY) {
+      gatewayManager.handleIncomingMeshPacket(mesh.getNodeId(), packet);
     }
 
     Serial.println("\n**************************************************************");
@@ -160,10 +161,10 @@ void receivedCallback(uint32_t from, String &msg) {
     return;
   }
 
-#if (CURRENT_ROLE == ROLE_GATEWAY)
   // If operating as gateway bridge, forward packet to upstream backend
-  gatewayManager.handleIncomingMeshPacket(from, msg);
-#endif
+  if (nodeConfigManager.getRole() == ROLE_GATEWAY) {
+    gatewayManager.handleIncomingMeshPacket(from, msg);
+  }
 
   // Option 1 Dynamic Proximity Tracking:
   // If this device is a Wearable Miner Tag, listen for beacons/heartbeats from Stationary Anchors & Gateways
@@ -253,9 +254,9 @@ void receivedCallback(uint32_t from, String &msg) {
 // SCHEDULED TASKS
 // ----------------------------------------------------------------------------
 
-// Periodic Telemetry Task (runs on wearable miner tags)
+// Periodic Telemetry Task (runs on wearable miner tags, and gateway nodes for desk testing)
 void sendTelemetryTask() {
-  if (nodeConfigManager.getRole() != ROLE_WEARABLE) {
+  if (nodeConfigManager.getRole() != ROLE_WEARABLE && nodeConfigManager.getRole() != ROLE_GATEWAY) {
     return;
   }
 
@@ -265,7 +266,8 @@ void sendTelemetryTask() {
   env.seq = ++g_messageSequence;
   strncpy(env.sender_id, nodeConfigManager.getDeviceId(), sizeof(env.sender_id) - 1);
   strncpy(env.role, nodeRoleToString(nodeConfigManager.getRole()), sizeof(env.role) - 1);
-  strncpy(env.zone_id, zoneTracker.getCurrentZone(), sizeof(env.zone_id) - 1);
+  const char* activeTelemZone = (nodeConfigManager.getRole() == ROLE_WEARABLE) ? zoneTracker.getCurrentZone() : nodeConfigManager.getZoneId();
+  strncpy(env.zone_id, activeTelemZone, sizeof(env.zone_id) - 1);
   env.uptime_ms = millis();
 
   SensorReadings readings = sensorHAL.read();
@@ -303,8 +305,13 @@ void sendTelemetryTask() {
   String packet;
   if (serializeTelemetry(env, data, packet)) {
     mesh.sendBroadcast(packet);
-    Serial.printf("[TX TELEM #%u] CO: %.1f ppm | Temp: %.1f C | Batt: %.2f V (~%.0f%%) | IMU: %.2f g\n",
-                  env.seq, data.co_ppm, data.temp_c, data.battery_v, readings.battery_pct, readings.accel_magnitude);
+    Serial.printf("[TX TELEM #%u] %s (%s) @ %s | CO: %.1f ppm | Temp: %.1f C | Batt: %.2f V (~%.0f%%) | IMU: %.2f g\n",
+                  env.seq, env.sender_id, env.role, env.zone_id,
+                  data.co_ppm, data.temp_c, data.battery_v, readings.battery_pct, readings.accel_magnitude);
+
+    if (nodeConfigManager.getRole() == ROLE_GATEWAY) {
+      gatewayManager.handleIncomingMeshPacket(mesh.getNodeId(), packet);
+    }
   }
 }
 
@@ -330,6 +337,10 @@ void sendHeartbeatTask() {
     mesh.sendBroadcast(packet);
     Serial.printf("\n[TX HEARTBEAT #%u] %s (%s) | Free Heap: %u B | Peers: %d\n",
                   env.seq, env.sender_id, env.role, hb.free_heap, hb.mesh_node_count);
+
+    if (nodeConfigManager.getRole() == ROLE_GATEWAY) {
+      gatewayManager.handleIncomingMeshPacket(mesh.getNodeId(), packet);
+    }
   }
 }
 
@@ -426,6 +437,11 @@ void printHelpMenu() {
   Serial.println("  role <0|1|2>    - Change operational role (0:Wearable, 1:Anchor, 2:Gateway)");
   Serial.println("  id <name>       - Change device badge ID (e.g., id MINER-108)");
   Serial.println("  zone [name|auto]- Change or view subterranean zone (Wearables support 'zone auto')");
+  Serial.println("  wifi            - Display Wi-Fi station status, IP, and RSSI");
+  Serial.println("  mdns <host>     - Query Multicast DNS to resolve a .local hostname");
+  Serial.println("  testpost        - Send an immediate test heartbeat packet to backend");
+  Serial.println("  api [url]       - View or set the backend REST API URL in NVS");
+  Serial.println("  uplink [ssid] [pass] - View or set uplink Wi-Fi credentials in NVS");
   Serial.println("  reset           - Factory reset all persistent NVS settings");
   Serial.println("  reboot          - Perform a software restart of the ESP32");
   Serial.println("+--------------------------------------------------------------+\n");
@@ -609,6 +625,97 @@ void handleSerialCLI() {
             Serial.printf("[CLI] Stationary node zone updated to: %s\n", cfg.zone_id);
           }
         }
+      } else if (strcmp(cmd, "wifi") == 0) {
+        Serial.println("\n+--------------------------------------------------------------+");
+        Serial.println("|                  WI-FI & UPLINK STATUS                       |");
+        Serial.println("+--------------------------------------------------------------+");
+        Serial.printf("  Wi-Fi Status  : %s\n", (WiFi.status() == WL_CONNECTED) ? "CONNECTED" : "DISCONNECTED");
+        if (WiFi.status() == WL_CONNECTED) {
+          Serial.printf("  Connected SSID: %s\n", WiFi.SSID().c_str());
+          Serial.printf("  IP Address    : %s\n", WiFi.localIP().toString().c_str());
+          Serial.printf("  Subnet Mask   : %s\n", WiFi.subnetMask().toString().c_str());
+          Serial.printf("  Router Gateway: %s\n", WiFi.gatewayIP().toString().c_str());
+          Serial.printf("  Signal (RSSI) : %d dBm\n", WiFi.RSSI());
+        }
+        Serial.printf("  Configured GW : %s\n", nodeConfigManager.getUplinkSsid());
+        Serial.printf("  Backend URL   : %s\n", nodeConfigManager.getBackendUrl());
+        Serial.printf("  Gateway State : %s\n", gatewayManager.getStateString());
+        Serial.println("+--------------------------------------------------------------+\n");
+      } else if (strncmp(cmd, "mdns ", 5) == 0) {
+        char* host = cmd + 5;
+        while (*host == ' ') host++;
+        if (strlen(host) > 0) {
+          IPAddress ip = gatewayManager.resolveMdns(host);
+          if ((uint32_t)ip != 0) {
+            Serial.printf("[CLI] mDNS Resolution: '%s' -> %s\n", host, ip.toString().c_str());
+          } else {
+            Serial.printf("[CLI ERROR] Could not resolve '%s' via Multicast DNS.\n", host);
+          }
+        } else {
+          Serial.println("[CLI] Usage: mdns <hostname> (e.g., mdns innovation-hub03.local)");
+        }
+      } else if (strcmp(cmd, "testpost") == 0) {
+        Serial.println("\n[CLI] Generating and dispatching live test heartbeat...");
+        MessageEnvelope env;
+        env.version = PROTOCOL_VERSION;
+        env.msg_type = MSG_HEARTBEAT;
+        env.seq = ++g_messageSequence;
+        strncpy(env.sender_id, nodeConfigManager.getDeviceId(), sizeof(env.sender_id) - 1);
+        strncpy(env.role, nodeRoleToString(nodeConfigManager.getRole()), sizeof(env.role) - 1);
+        strncpy(env.zone_id, (nodeConfigManager.getRole() == ROLE_WEARABLE) ? zoneTracker.getCurrentZone() : nodeConfigManager.getZoneId(), sizeof(env.zone_id) - 1);
+        env.uptime_ms = millis();
+
+        HeartbeatData hb;
+        hb.free_heap = ESP.getFreeHeap();
+        hb.mesh_node_count = mesh.getNodeList().size();
+        hb.battery_v = sensorHAL.read().battery_v;
+
+        String packet;
+        if (serializeHeartbeat(env, hb, packet)) {
+          bool ok = gatewayManager.sendDirectTestPacket(packet, MSG_HEARTBEAT);
+          if (ok) {
+            Serial.println("[CLI] Test heartbeat successfully pushed to backend! Check dashboard.");
+          } else {
+            Serial.println("[CLI ERROR] Test heartbeat failed. Verify Wi-Fi and backend URL with 'wifi'.");
+          }
+        }
+      } else if (strncmp(cmd, "api", 3) == 0) {
+        char* newApi = cmd + 3;
+        while (*newApi == ' ') newApi++;
+        if (strlen(newApi) > 0) {
+          NodeConfig cfg = nodeConfigManager.get();
+          strncpy(cfg.backend_url, newApi, sizeof(cfg.backend_url) - 1);
+          nodeConfigManager.save(cfg);
+          Serial.printf("[CLI] Backend REST URL updated to: %s\n", cfg.backend_url);
+        } else {
+          Serial.printf("[CLI] Current Backend URL: %s\n", nodeConfigManager.getBackendUrl());
+          Serial.println("  Usage: api <url> (e.g., api http://innovation-hub03.local:8000)");
+        }
+      } else if (strncmp(cmd, "uplink", 6) == 0) {
+        char* args = cmd + 6;
+        while (*args == ' ') args++;
+        if (strlen(args) > 0) {
+          char ssidBuf[32] = {0};
+          char passBuf[64] = {0};
+          char* space = strchr(args, ' ');
+          if (space) {
+            *space = '\0';
+            strncpy(ssidBuf, args, sizeof(ssidBuf) - 1);
+            char* p = space + 1;
+            while (*p == ' ') p++;
+            strncpy(passBuf, p, sizeof(passBuf) - 1);
+          } else {
+            strncpy(ssidBuf, args, sizeof(ssidBuf) - 1);
+          }
+          NodeConfig cfg = nodeConfigManager.get();
+          strncpy(cfg.uplink_ssid, ssidBuf, sizeof(cfg.uplink_ssid) - 1);
+          strncpy(cfg.uplink_password, passBuf, sizeof(cfg.uplink_password) - 1);
+          nodeConfigManager.save(cfg);
+          Serial.printf("[CLI] Uplink Wi-Fi credentials updated: SSID='%s'\n", cfg.uplink_ssid);
+        } else {
+          Serial.printf("[CLI] Uplink Wi-Fi: SSID='%s'\n", nodeConfigManager.getUplinkSsid());
+          Serial.println("  Usage: uplink <ssid> [password]");
+        }
       } else if (strcmp(cmd, "reset") == 0) {
         Serial.println("\n[CLI] Performing factory reset (wiping NVS)...");
         nodeConfigManager.clear();
@@ -698,16 +805,21 @@ void setup() {
     }
     taskSendHeartbeat.enable();
 
-    if (nodeConfigManager.getRole() == ROLE_WEARABLE) {
+    // Enable telemetry for WEARABLE tags, or GATEWAY nodes (Desk Testing Mode)
+    if (nodeConfigManager.getRole() == ROLE_WEARABLE || nodeConfigManager.getRole() == ROLE_GATEWAY) {
       userScheduler.addTask(taskSendTelemetry);
       taskSendTelemetry.enable();
     }
 
-#if (CURRENT_ROLE == ROLE_GATEWAY)
     if (nodeConfigManager.getRole() == ROLE_GATEWAY) {
-      gatewayManager.begin();
+      gatewayManager.begin(
+        nodeConfigManager.getUplinkSsid(),
+        nodeConfigManager.getUplinkPassword(),
+        nodeConfigManager.getBackendUrl(),
+        BACKEND_API_KEY,
+        nodeConfigManager.getDeviceId()
+      );
     }
-#endif
 
     Serial.printf("[INIT] Mesh online. Chip Mesh Node ID: %u\n", mesh.getNodeId());
   }
@@ -727,11 +839,9 @@ void loop() {
     // Drives mesh packet routing & scheduler
     mesh.update();
 
-#if (CURRENT_ROLE == ROLE_GATEWAY)
     if (nodeConfigManager.getRole() == ROLE_GATEWAY) {
       gatewayManager.update();
     }
-#endif
   }
 
   // Check physical emergency panic button

@@ -5,12 +5,17 @@ GatewayManager::GatewayManager()
     m_password(UPLINK_WIFI_PASSWORD),
     m_backendUrl(BACKEND_BASE_URL),
     m_apiKey(BACKEND_API_KEY),
+    m_deviceId(ACTIVE_DEVICE_ID),
     m_state(GW_STATE_DISCONNECTED),
     m_lastStateCheckMs(0),
     m_lastTransmitMs(0),
     m_backoffStartMs(0),
     m_currentBackoffMs(GW_RECONNECT_MIN_MS),
-    m_consecutiveFailures(0) {}
+    m_consecutiveFailures(0),
+    m_mdnsInitialized(false),
+    m_cachedHost(""),
+    m_cachedIp(0, 0, 0, 0),
+    m_cacheExpireMs(0) {}
 
 GatewayManager::~GatewayManager() {}
 
@@ -18,25 +23,27 @@ bool GatewayManager::begin(
   const char* ssid,
   const char* password,
   const char* backendUrl,
-  const char* apiKey
+  const char* apiKey,
+  const char* deviceId
 ) {
-  m_ssid = ssid;
-  m_password = password;
-  m_backendUrl = backendUrl;
-  m_apiKey = apiKey;
+  m_ssid = (ssid && strlen(ssid) > 0) ? ssid : UPLINK_WIFI_SSID;
+  m_password = password ? password : UPLINK_WIFI_PASSWORD;
+  m_backendUrl = (backendUrl && strlen(backendUrl) > 0) ? backendUrl : BACKEND_BASE_URL;
+  m_apiKey = (apiKey && strlen(apiKey) > 0) ? apiKey : BACKEND_API_KEY;
+  m_deviceId = (deviceId && strlen(deviceId) > 0) ? deviceId : ACTIVE_DEVICE_ID;
 
   Serial.println("\n==============================================================");
   Serial.println("         COMPALLETTE - GATEWAY BRIDGE INITIALIZATION          ");
-  Serial.printf("  Target Uplink SSID : %s\n", m_ssid);
-  Serial.printf("  Backend URL        : %s\n", m_backendUrl.c_str());
-  Serial.printf("  Gateway ID         : %s\n", ACTIVE_DEVICE_ID);
+  Serial.printf("  Target Uplink SSID : %s\n", m_ssid.c_str());
+  Serial.printf("  Backend REST URL   : %s\n", m_backendUrl.c_str());
+  Serial.printf("  Gateway Node ID    : %s\n", m_deviceId.c_str());
   Serial.println("==============================================================");
 
   // Initialize offline buffer (mounts LittleFS or falls back to RAM)
   m_buffer.begin(BUFFER_MAX_RAM_ITEMS, BUFFER_MAX_FLASH_ITEMS);
 
-  // Start Wi-Fi station connection while preserving painlessMesh Wi-Fi AP
-  WiFi.begin(m_ssid, m_password);
+  // Initiate Wi-Fi station connection (painlessMesh continues concurrently)
+  WiFi.begin(m_ssid.c_str(), m_password.c_str());
   m_state = GW_STATE_CONNECTING;
   m_lastStateCheckMs = millis();
 
@@ -66,7 +73,7 @@ void GatewayManager::handleIncomingMeshPacket(uint32_t fromNodeId, const String&
     return;
   }
 
-  // Determine priority: All emergency alerts or legacy fall detections are high priority
+  // Priority detection: All emergency alerts or legacy fall detections get high priority
   bool isPriority = (env.msg_type == MSG_ALERT) || (isLegacy && telem.fall_detected);
 
   // Push to persistent buffer
@@ -127,23 +134,129 @@ void GatewayManager::checkConnection() {
       m_state = GW_STATE_CONNECTED;
       Serial.println("\n[GW UPLINK] Wi-Fi Station CONNECTED!");
       Serial.printf("   |-- Gateway IP Address : %s\n", WiFi.localIP().toString().c_str());
+      Serial.printf("   |-- Router Gateway IP  : %s\n", WiFi.gatewayIP().toString().c_str());
+      Serial.printf("   |-- Subnet Mask        : %s\n", WiFi.subnetMask().toString().c_str());
+      Serial.printf("   |-- Uplink RSSI        : %d dBm\n", WiFi.RSSI());
       Serial.printf("   |-- Pending Queue Size : %u packets\n", m_buffer.count());
+
+      // Initialize mDNS Responder on the ESP32
+      if (!m_mdnsInitialized) {
+        String mdnsHost = m_deviceId;
+        mdnsHost.toLowerCase();
+        mdnsHost.replace('_', '-');
+        if (mdnsHost.length() == 0) {
+          mdnsHost = "compallette-gw";
+        }
+
+        if (MDNS.begin(mdnsHost.c_str())) {
+          m_mdnsInitialized = true;
+          MDNS.addService("compallette", "tcp", 80);
+          MDNS.addServiceTxt("compallette", "tcp", "role", "gateway");
+          Serial.printf("   |-- mDNS Responder     : Active (http://%s.local)\n", mdnsHost.c_str());
+        } else {
+          Serial.println("   |-- [WARN] MDNS.begin() failed to initialize.");
+        }
+      }
     }
   } else if (status == WL_DISCONNECTED || status == WL_IDLE_STATUS || status == WL_CONNECTION_LOST) {
     if (m_state == GW_STATE_CONNECTED) {
       Serial.println("\n[GW UPLINK WARNING] Wi-Fi disconnected! Switching to offline buffering.");
     }
     m_state = GW_STATE_DISCONNECTED;
+    // Invalidate cached IP upon Wi-Fi loss
+    m_cachedIp = IPAddress(0, 0, 0, 0);
+    m_cacheExpireMs = 0;
     // Attempt non-blocking reconnection
-    WiFi.begin(m_ssid, m_password);
+    WiFi.begin(m_ssid.c_str(), m_password.c_str());
   }
+}
+
+IPAddress GatewayManager::resolveMdns(const String& hostname) {
+  if (WiFi.status() != WL_CONNECTED) {
+    Serial.println("[mDNS] Wi-Fi not connected. Cannot query mDNS.");
+    return IPAddress(0, 0, 0, 0);
+  }
+
+  // Ensure MDNS subsystem is active
+  if (!m_mdnsInitialized) {
+    MDNS.begin("compallette-gw");
+    m_mdnsInitialized = true;
+  }
+
+  String clean = hostname;
+  clean.trim();
+  if (clean.endsWith(".local") || clean.endsWith(".LOCAL")) {
+    clean = clean.substring(0, clean.length() - 6);
+  }
+
+  Serial.printf("[mDNS] Querying Multicast DNS for '%s.local'...\n", clean.c_str());
+  IPAddress ip = MDNS.queryHost(clean.c_str(), 2500);
+
+  if ((uint32_t)ip != 0) {
+    Serial.printf("[mDNS] Successfully resolved '%s.local' -> %s\n", clean.c_str(), ip.toString().c_str());
+  } else {
+    Serial.printf("[mDNS] Could not resolve '%s.local' within 2500ms.\n", clean.c_str());
+  }
+
+  return ip;
+}
+
+bool GatewayManager::resolveMdnsHost(const String& rawUrl, String& outResolvedUrl) {
+  int protoEnd = rawUrl.indexOf("://");
+  if (protoEnd == -1) {
+    outResolvedUrl = rawUrl;
+    return true;
+  }
+
+  int hostStart = protoEnd + 3;
+  int slashIdx = rawUrl.indexOf('/', hostStart);
+  int colonIdx = rawUrl.indexOf(':', hostStart);
+
+  int hostEnd;
+  if (colonIdx != -1 && (slashIdx == -1 || colonIdx < slashIdx)) {
+    hostEnd = colonIdx;
+  } else if (slashIdx != -1) {
+    hostEnd = slashIdx;
+  } else {
+    hostEnd = rawUrl.length();
+  }
+
+  String host = rawUrl.substring(hostStart, hostEnd);
+  host.trim();
+
+  // If not a .local domain, return as-is
+  if (!host.endsWith(".local") && !host.endsWith(".LOCAL")) {
+    outResolvedUrl = rawUrl;
+    return true;
+  }
+
+  // Check cached IP address
+  uint32_t now = millis();
+  if (m_cachedHost.equalsIgnoreCase(host) && now < m_cacheExpireMs && (uint32_t)m_cachedIp != 0) {
+    outResolvedUrl = rawUrl.substring(0, hostStart) + m_cachedIp.toString() + rawUrl.substring(hostEnd);
+    return true;
+  }
+
+  // Resolve via mDNS
+  IPAddress ip = resolveMdns(host);
+  if ((uint32_t)ip != 0) {
+    m_cachedHost = host;
+    m_cachedIp = ip;
+    m_cacheExpireMs = now + 60000; // Cache for 60 seconds
+    outResolvedUrl = rawUrl.substring(0, hostStart) + ip.toString() + rawUrl.substring(hostEnd);
+    return true;
+  }
+
+  // Fallback to original URL if mDNS failed
+  outResolvedUrl = rawUrl;
+  return false;
 }
 
 String GatewayManager::resolveEndpoint(MessageType type) {
   switch (type) {
     case MSG_ALERT:        return ENDPOINT_ALERT;
     case MSG_HEARTBEAT:    return ENDPOINT_HEARTBEAT;
-    case MSG_PROV_REQUEST: return ENDPOINT_PROV_REQUEST;
+    case MSG_PROV_REQ:     return ENDPOINT_PROV_REQUEST;
     case MSG_PROV_CONFIRM: return ENDPOINT_PROV_CONFIRM;
     case MSG_TELEMETRY:
     default:               return ENDPOINT_TELEMETRY;
@@ -151,26 +264,28 @@ String GatewayManager::resolveEndpoint(MessageType type) {
 }
 
 bool GatewayManager::forwardPacket(const BufferedItem& item) {
-  String url = m_backendUrl + resolveEndpoint(item.type);
+  String rawUrl = m_backendUrl + resolveEndpoint(item.type);
+  String finalUrl;
+  resolveMdnsHost(rawUrl, finalUrl);
 
   HTTPClient http;
-  if (!http.begin(url)) {
-    Serial.printf("[GW HTTP ERROR] Unable to parse URL: %s\n", url.c_str());
+  if (!http.begin(finalUrl)) {
+    Serial.printf("[GW HTTP ERROR] Unable to parse URL: %s\n", finalUrl.c_str());
     return false;
   }
 
   http.setTimeout(BACKEND_TIMEOUT_MS);
   http.addHeader("Content-Type", "application/json");
   http.addHeader("X-API-Key", m_apiKey);
-  http.addHeader("X-Gateway-ID", ACTIVE_DEVICE_ID);
+  http.addHeader("X-Gateway-ID", m_deviceId);
   http.addHeader("X-Packet-Priority", item.isPriority ? "HIGH" : "NORMAL");
 
   int httpCode = http.POST(item.rawJson);
 
   if (httpCode >= 200 && httpCode < 300) {
     Serial.printf("[GW FORWARD SUCCESS] Flushed %s packet to %s (HTTP %d | Remaining: %u)\n",
-                  item.isPriority ? "CRITICAL ALERT" : "TELEMETRY",
-                  url.c_str(),
+                  item.isPriority ? "CRITICAL ALERT" : messageTypeToString(item.type),
+                  finalUrl.c_str(),
                   httpCode,
                   m_buffer.count() - 1);
     http.end();
@@ -191,6 +306,53 @@ bool GatewayManager::forwardPacket(const BufferedItem& item) {
   Serial.printf("[GW UPLINK ERROR] Failed to send to backend (HTTP %d: %s). Packet retained in buffer.\n",
                 httpCode,
                 httpCode < 0 ? http.errorToString(httpCode).c_str() : "Server Error");
+  http.end();
+
+  // Invalidate mDNS cache on network failure so it will re-query host next attempt
+  if (httpCode < 0) {
+    m_cacheExpireMs = 0;
+  }
+
+  return false;
+}
+
+bool GatewayManager::sendDirectTestPacket(const String& jsonPayload, MessageType type) {
+  if (WiFi.status() != WL_CONNECTED) {
+    Serial.println("[GW TEST ERROR] Cannot send test packet: Wi-Fi STA is NOT connected!");
+    return false;
+  }
+
+  String rawUrl = m_backendUrl + resolveEndpoint(type);
+  String finalUrl;
+  resolveMdnsHost(rawUrl, finalUrl);
+
+  Serial.println("\n--------------------------------------------------------------");
+  Serial.printf("[GW DIRECT TEST] Dispatching test POST to: %s\n", finalUrl.c_str());
+  Serial.printf("[GW DIRECT TEST] Payload: %s\n", jsonPayload.c_str());
+
+  HTTPClient http;
+  if (!http.begin(finalUrl)) {
+    Serial.println("[GW DIRECT TEST] HTTPClient::begin() failed.");
+    return false;
+  }
+
+  http.setTimeout(BACKEND_TIMEOUT_MS);
+  http.addHeader("Content-Type", "application/json");
+  http.addHeader("X-API-Key", m_apiKey);
+  http.addHeader("X-Gateway-ID", m_deviceId);
+
+  int httpCode = http.POST(jsonPayload);
+  Serial.printf("[GW DIRECT TEST] Response Code: %d (%s)\n",
+                httpCode,
+                httpCode > 0 ? "HTTP Response" : http.errorToString(httpCode).c_str());
+
+  if (httpCode >= 200 && httpCode < 300) {
+    String resp = http.getString();
+    Serial.printf("[GW DIRECT TEST SUCCESS] Server returned: %s\n", resp.c_str());
+    http.end();
+    return true;
+  }
+
   http.end();
   return false;
 }

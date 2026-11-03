@@ -144,7 +144,7 @@ inline NodeRole stringToNodeRole(const char* str) {
 // Parameters used when CURRENT_ROLE is configured as ROLE_GATEWAY
 #define UPLINK_WIFI_SSID        "Innov_Hub"
 #define UPLINK_WIFI_PASSWORD    "V!brant2025#1nnov"
-#define BACKEND_BASE_URL        "http://192.168.1.176:8000"
+#define BACKEND_BASE_URL        "http://innovation-hub03.local:8000"
 #define BACKEND_API_KEY         "compallette-mining-secret-key-v1"
 #define BACKEND_TIMEOUT_MS      4000       // HTTP request timeout in ms
 

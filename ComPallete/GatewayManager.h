@@ -4,6 +4,7 @@
 #include <Arduino.h>
 #include <WiFi.h>
 #include <HTTPClient.h>
+#include <ESPmDNS.h>
 #include "Config.h"
 #include "Protocol.h"
 #include "OfflineBuffer.h"
@@ -12,7 +13,8 @@
 // COMPALLETTE - GATEWAY BRIDGE & UPLINK MANAGER
 // ============================================================================
 // Bridges painlessMesh subterranean packets to an external HTTPS/REST server.
-// Manages Wi-Fi STA uplink, exponential backoff retries, and offline buffer flushes.
+// Manages Wi-Fi STA uplink, mDNS hostname resolution (.local), exponential
+// backoff retries, and offline buffer flushes.
 
 enum GatewayState {
   GW_STATE_DISCONNECTED = 0,
@@ -31,7 +33,8 @@ public:
     const char* ssid = UPLINK_WIFI_SSID,
     const char* password = UPLINK_WIFI_PASSWORD,
     const char* backendUrl = BACKEND_BASE_URL,
-    const char* apiKey = BACKEND_API_KEY
+    const char* apiKey = BACKEND_API_KEY,
+    const char* deviceId = ACTIVE_DEVICE_ID
   );
 
   // Periodic non-blocking tick called from main loop or scheduler
@@ -45,16 +48,26 @@ public:
   bool isConnected() const { return m_state == GW_STATE_CONNECTED; }
   const char* getStateString() const;
 
-  // Diagnostics
+  // Diagnostics & Manual Testing
   OfflineBuffer& getBuffer() { return m_buffer; }
   uint32_t getConsecutiveFailures() const { return m_consecutiveFailures; }
   uint32_t getCurrentBackoffMs() const { return m_currentBackoffMs; }
+  const String& getBackendUrl() const { return m_backendUrl; }
+  const String& getUplinkSsid() const { return m_ssid; }
+  
+  // mDNS resolution query (returns resolved IPAddress, or INADDR_NONE on error)
+  IPAddress resolveMdns(const String& hostname);
+  bool resolveMdnsHost(const String& rawUrl, String& outResolvedUrl);
+
+  // Send an immediate test packet over HTTP
+  bool sendDirectTestPacket(const String& jsonPayload, MessageType type = MSG_HEARTBEAT);
 
 private:
-  const char* m_ssid;
-  const char* m_password;
+  String      m_ssid;
+  String      m_password;
   String      m_backendUrl;
   String      m_apiKey;
+  String      m_deviceId;
 
   GatewayState m_state;
   OfflineBuffer m_buffer;
@@ -64,6 +77,12 @@ private:
   uint32_t m_backoffStartMs;
   uint32_t m_currentBackoffMs;
   uint32_t m_consecutiveFailures;
+
+  // mDNS Resolution & Caching
+  bool        m_mdnsInitialized;
+  String      m_cachedHost;
+  IPAddress   m_cachedIp;
+  uint32_t    m_cacheExpireMs;
 
   void checkConnection();
   bool forwardPacket(const BufferedItem& item);
