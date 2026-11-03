@@ -1,5 +1,5 @@
 # Multi-stage Docker build for Compallette Rust Backend
-FROM rust:1.78-slim AS builder
+FROM rust:slim AS builder
 
 WORKDIR /app
 COPY Cargo.toml ./

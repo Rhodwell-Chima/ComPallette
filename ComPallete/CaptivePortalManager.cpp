@@ -10,25 +10,45 @@ CaptivePortalManager::CaptivePortalManager()
     _server(80),
     _rebootTargetMs(0),
     _rebootPending(false) {
+  _apSsid[0] = '\0';
 }
 
 bool CaptivePortalManager::begin() {
   if (_active) return true;
 
   const char* chipId = nodeConfigManager.getChipId();
-  char apSsid[32];
-  snprintf(apSsid, sizeof(apSsid), "Compallette-Setup-%s", chipId);
+  snprintf(_apSsid, sizeof(_apSsid), "Compallette-Setup-%s", chipId);
 
-  Serial.println("\n[PORTAL] Launching Local Wi-Fi Captive Portal...");
-  Serial.printf("  |-- SoftAP SSID : %s\n", apSsid);
-  Serial.println("  |-- Portal URL  : http://192.168.4.1");
+  Serial.println("\n+--------------------------------------------------------------+");
+  Serial.println("|         COMPALLETTE LOCAL WI-FI CAPTIVE PORTAL ONLINE        |");
+  Serial.println("+--------------------------------------------------------------+");
+  Serial.printf("  |-- SoftAP SSID    : %s (OPEN / NO PASSWORD)\n", _apSsid);
+  Serial.printf("  |-- SoftAP Channel : 1\n");
+  Serial.println("  |-- Portal URL     : http://192.168.4.1");
 
-  // Configure SoftAP
+  // Clean Wi-Fi state before starting AP to avoid radio conflict
+  WiFi.disconnect(true, true);
+  WiFi.mode(WIFI_OFF);
+  delay(100);
+
   WiFi.mode(WIFI_AP);
+  delay(50);
+
   IPAddress apIP(192, 168, 4, 1);
+  IPAddress gateway(192, 168, 4, 1);
   IPAddress netMsk(255, 255, 255, 0);
-  WiFi.softAPConfig(apIP, apIP, netMsk);
-  WiFi.softAP(apSsid);
+  if (!WiFi.softAPConfig(apIP, gateway, netMsk)) {
+    Serial.println("  |-- [WARN] softAPConfig failed; using default AP IP.");
+  }
+
+  bool ok = WiFi.softAP(_apSsid, nullptr, 1, 0, 4);
+  if (!ok) {
+    Serial.println("  |-- [ERROR] WiFi.softAP() failed to start AP broadcast!");
+    return false;
+  }
+
+  Serial.printf("  |-- SoftAP IP      : %s\n", WiFi.softAPIP().toString().c_str());
+  Serial.printf("  |-- SoftAP MAC     : %s\n", WiFi.softAPmacAddress().c_str());
 
   // Start captive DNS server to redirect all requests to 192.168.4.1
   _dnsServer.setErrorReplyCode(DNSReplyCode::NoError);
@@ -48,7 +68,10 @@ bool CaptivePortalManager::begin() {
   _server.begin();
   _active = true;
 
-  Serial.println("[PORTAL] Captive portal online and waiting for supervisor connection.\n");
+  Serial.println("  |-- Web Server     : Listening on port 80");
+  Serial.println("  |-- DNS Server     : Captive DNS redirecting all traffic to 192.168.4.1");
+  Serial.println("+--------------------------------------------------------------+");
+  Serial.println("Connect a smartphone or PC to the Wi-Fi network above to configure.\n");
   return true;
 }
 
@@ -71,6 +94,7 @@ void CaptivePortalManager::stop() {
   _dnsServer.stop();
   _server.stop();
   WiFi.softAPdisconnect(true);
+  WiFi.mode(WIFI_OFF);
   _active = false;
   Serial.println("[PORTAL] Captive portal stopped. SoftAP offline.");
 }
@@ -92,7 +116,10 @@ void CaptivePortalManager::handleSave() {
     cfg.role = (NodeRole)r;
   }
 
-  if (_server.hasArg("zone_id") && _server.arg("zone_id").length() > 0) {
+  if (cfg.role == ROLE_WEARABLE) {
+    // Wearable tag location is determined dynamically via nearby stationary anchors (Option 1)
+    strncpy(cfg.zone_id, "UNASSIGNED", sizeof(cfg.zone_id) - 1);
+  } else if (_server.hasArg("zone_id") && _server.arg("zone_id").length() > 0) {
     strncpy(cfg.zone_id, _server.arg("zone_id").c_str(), sizeof(cfg.zone_id) - 1);
   }
 
@@ -213,16 +240,17 @@ String CaptivePortalManager::buildPortalHtml() {
                 "<div class='card-title'>Node Commissioning Profile</div>"
 
                 "<label for='role'>Operational Role</label>"
-                "<select name='role' id='role'>"
-                "<option value='0' " + String(cfg.role == ROLE_WEARABLE ? "selected" : "") + ">Wearable Miner Tag</option>"
-                "<option value='1' " + String(cfg.role == ROLE_STATIONARY_ANCHOR ? "selected" : "") + ">Stationary Tunnel Anchor</option>"
+                "<select name='role' id='role' onchange='handleRoleChange()'>"
+                "<option value='0' " + String(cfg.role == ROLE_WEARABLE ? "selected" : "") + ">Wearable Miner Tag (Mobile)</option>"
+                "<option value='1' " + String(cfg.role == ROLE_STATIONARY_ANCHOR ? "selected" : "") + ">Stationary Tunnel Anchor (Fixed)</option>"
                 "<option value='2' " + String(cfg.role == ROLE_GATEWAY ? "selected" : "") + ">Shaft / Surface Gateway Bridge</option>"
                 "</select>"
 
                 "<label for='device_id'>Assigned Badge / Node ID</label>"
                 "<input type='text' name='device_id' id='device_id' value='" + String(cfg.device_id) + "' required placeholder='e.g. MINER-106 or ANCHOR-LVL2'>"
 
-                "<label for='zone_id'>Subterranean Zone</label>"
+                "<div id='zone_container'>"
+                "<label for='zone_id'>Subterranean Anchor Zone</label>"
                 "<select name='zone_id' id='zone_id'>"
                 "<option value='SURFACE-PORTAL' " + String(strcmp(cfg.zone_id, "SURFACE-PORTAL") == 0 ? "selected" : "") + ">Surface Portal (0m)</option>"
                 "<option value='LEVEL-1-STATION' " + String(strcmp(cfg.zone_id, "LEVEL-1-STATION") == 0 ? "selected" : "") + ">Level 1 Station (-100m)</option>"
@@ -230,6 +258,8 @@ String CaptivePortalManager::buildPortalHtml() {
                 "<option value='LEVEL-2-HAULAGE-WAY' " + String(strcmp(cfg.zone_id, "LEVEL-2-HAULAGE-WAY") == 0 ? "selected" : "") + ">Level 2 Haulage Way (-250m)</option>"
                 "<option value='LEVEL-3-ACTIVE-STOPE' " + String(strcmp(cfg.zone_id, "LEVEL-3-ACTIVE-STOPE") == 0 ? "selected" : "") + ">Level 3 Active Stope (-450m)</option>"
                 "</select>"
+                "<div id='zone_help' style='font-size:11px;color:#a1a1aa;margin-top:4px;'>Stationary mounting location.</div>"
+                "</div>"
 
                 "<label for='m_ssid'>Mesh Network SSID</label>"
                 "<input type='text' name='m_ssid' id='m_ssid' value='" + String(cfg.mesh_prefix) + "'>"
@@ -239,6 +269,24 @@ String CaptivePortalManager::buildPortalHtml() {
 
                 "<button type='submit' class='btn'>Save &amp; Commission Node</button>"
                 "</form>"
+
+                "<script>"
+                "function handleRoleChange(){"
+                "  var r = document.getElementById('role').value;"
+                "  var z = document.getElementById('zone_id');"
+                "  var h = document.getElementById('zone_help');"
+                "  if(r === '0'){"
+                "    z.disabled = true;"
+                "    h.innerText = 'Option 1 Active: Wearable tag dynamically adopts location from nearest stationary anchor.';"
+                "    h.style.color = '#38bdf8';"
+                "  } else {"
+                "    z.disabled = false;"
+                "    h.innerText = 'Fixed physical tunnel zone where this stationary node is bolted/mounted.';"
+                "    h.style.color = '#a1a1aa';"
+                "  }"
+                "}"
+                "window.onload = handleRoleChange;"
+                "</script>"
 
                 "<div style='text-align:center;font-size:11px;color:#52525b;margin-top:10px;'>"
                 "Compallette IoT Underground Safety Platform &bull; Zambia"

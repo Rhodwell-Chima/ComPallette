@@ -141,10 +141,12 @@ void GatewayManager::checkConnection() {
 
 String GatewayManager::resolveEndpoint(MessageType type) {
   switch (type) {
-    case MSG_ALERT:     return ENDPOINT_ALERT;
-    case MSG_HEARTBEAT: return ENDPOINT_HEARTBEAT;
+    case MSG_ALERT:        return ENDPOINT_ALERT;
+    case MSG_HEARTBEAT:    return ENDPOINT_HEARTBEAT;
+    case MSG_PROV_REQUEST: return ENDPOINT_PROV_REQUEST;
+    case MSG_PROV_CONFIRM: return ENDPOINT_PROV_CONFIRM;
     case MSG_TELEMETRY:
-    default:            return ENDPOINT_TELEMETRY;
+    default:               return ENDPOINT_TELEMETRY;
   }
 }
 

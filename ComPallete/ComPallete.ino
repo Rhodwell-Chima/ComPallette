@@ -6,6 +6,7 @@
 #include "SensorHAL.h"
 #include "NodeConfigManager.h"
 #include "CaptivePortalManager.h"
+#include "ZoneTracker.h"
 
 // ============================================================================
 // COMPALLETTE - SUBTERRANEAN MESH MONITORING NODE FIRMWARE (Dynamic Provisioning)
@@ -14,6 +15,7 @@
 // --- GLOBAL INSTANCES ---
 painlessMesh mesh;
 Scheduler userScheduler;
+ZoneTracker zoneTracker;
 
 #if (CURRENT_ROLE == ROLE_GATEWAY)
 GatewayManager gatewayManager;
@@ -28,6 +30,15 @@ int lastNodeCount = 0;
 // SoftAP Setup button tracking (hold onboard BOOT button Pin 0 >= 3s to enter SoftAP Setup)
 static uint32_t g_bootButtonHoldStartTime = 0;
 static bool     g_bootSetupArmed = false;
+
+// Forward declarations
+void handleSerialCLI();
+void printDiagnosticBanner();
+void printHelpMenu();
+void printStatusDashboard();
+void runI2CScan();
+void runWiFiScan();
+int  calculateHopDistance(uint32_t targetNodeId);
 
 // Task declarations
 void sendTelemetryTask();
@@ -48,7 +59,8 @@ void sendAlertEvent(AlertSeverity severity, const char* code, const char* detail
   env.seq = ++g_messageSequence;
   strncpy(env.sender_id, nodeConfigManager.getDeviceId(), sizeof(env.sender_id) - 1);
   strncpy(env.role, nodeRoleToString(nodeConfigManager.getRole()), sizeof(env.role) - 1);
-  strncpy(env.zone_id, nodeConfigManager.getZoneId(), sizeof(env.zone_id) - 1);
+  const char* activeZone = (nodeConfigManager.getRole() == ROLE_WEARABLE) ? zoneTracker.getCurrentZone() : nodeConfigManager.getZoneId();
+  strncpy(env.zone_id, activeZone, sizeof(env.zone_id) - 1);
   env.uptime_ms = millis();
 
   AlertData alert;
@@ -103,6 +115,38 @@ void changedConnectionCallback() {
   lastNodeCount = currentNodeCount;
 }
 
+// ----------------------------------------------------------------------------
+// TOPOLOGY & PROXIMITY HELPER (Option 1)
+// ----------------------------------------------------------------------------
+int calculateHopDistance(uint32_t targetNodeId) {
+  if (targetNodeId == 0) return 99;
+
+  String subJson = mesh.subConnectionJson();
+  if (subJson.length() < 5) {
+    return 1; // Default to 1-hop if mesh topology is flat or direct peer
+  }
+
+  StaticJsonDocument<1024> doc;
+  DeserializationError err = deserializeJson(doc, subJson);
+  if (!err && doc.is<JsonArray>()) {
+    JsonArray arr = doc.as<JsonArray>();
+    for (JsonObject obj : arr) {
+      if (obj["nodeId"].as<uint32_t>() == targetNodeId) {
+        return 1; // Immediate direct 1-hop neighbor
+      }
+      if (obj.containsKey("subs") && obj["subs"].is<JsonArray>()) {
+        for (JsonObject sub : obj["subs"].as<JsonArray>()) {
+          if (sub["nodeId"].as<uint32_t>() == targetNodeId) {
+            return 2; // 2 hops away in mesh tree
+          }
+        }
+      }
+    }
+  }
+
+  return 1; // In painlessMesh, direct upstream parent AP also appears as 1-hop
+}
+
 void receivedCallback(uint32_t from, String &msg) {
   MessageEnvelope env;
   TelemetryData telem;
@@ -120,6 +164,16 @@ void receivedCallback(uint32_t from, String &msg) {
   // If operating as gateway bridge, forward packet to upstream backend
   gatewayManager.handleIncomingMeshPacket(from, msg);
 #endif
+
+  // Option 1 Dynamic Proximity Tracking:
+  // If this device is a Wearable Miner Tag, listen for beacons/heartbeats from Stationary Anchors & Gateways
+  if (nodeConfigManager.getRole() == ROLE_WEARABLE) {
+    if (strcmp(env.role, "ANCHOR") == 0 || strcmp(env.role, "GATEWAY") == 0) {
+      int hops = calculateHopDistance(from);
+      int rssi = (WiFi.status() == WL_CONNECTED) ? WiFi.RSSI() : 0;
+      zoneTracker.handleAnchorBeacon(env.sender_id, env.zone_id, from, hops, rssi);
+    }
+  }
 
   // Handle Option 1: Downlink Provisioning Assignment from Gateway
   if (env.msg_type == MSG_PROV_ASSIGN) {
@@ -211,7 +265,7 @@ void sendTelemetryTask() {
   env.seq = ++g_messageSequence;
   strncpy(env.sender_id, nodeConfigManager.getDeviceId(), sizeof(env.sender_id) - 1);
   strncpy(env.role, nodeRoleToString(nodeConfigManager.getRole()), sizeof(env.role) - 1);
-  strncpy(env.zone_id, nodeConfigManager.getZoneId(), sizeof(env.zone_id) - 1);
+  strncpy(env.zone_id, zoneTracker.getCurrentZone(), sizeof(env.zone_id) - 1);
   env.uptime_ms = millis();
 
   SensorReadings readings = sensorHAL.read();
@@ -249,7 +303,8 @@ void sendTelemetryTask() {
   String packet;
   if (serializeTelemetry(env, data, packet)) {
     mesh.sendBroadcast(packet);
-    Serial.printf("\n[TX TELEMETRY #%u] %s\n", env.seq, packet.c_str());
+    Serial.printf("[TX TELEM #%u] CO: %.1f ppm | Temp: %.1f C | Batt: %.2f V (~%.0f%%) | IMU: %.2f g\n",
+                  env.seq, data.co_ppm, data.temp_c, data.battery_v, readings.battery_pct, readings.accel_magnitude);
   }
 }
 
@@ -261,7 +316,8 @@ void sendHeartbeatTask() {
   env.seq = ++g_messageSequence;
   strncpy(env.sender_id, nodeConfigManager.getDeviceId(), sizeof(env.sender_id) - 1);
   strncpy(env.role, nodeRoleToString(nodeConfigManager.getRole()), sizeof(env.role) - 1);
-  strncpy(env.zone_id, nodeConfigManager.getZoneId(), sizeof(env.zone_id) - 1);
+  const char* activeHbZone = (nodeConfigManager.getRole() == ROLE_WEARABLE) ? zoneTracker.getCurrentZone() : nodeConfigManager.getZoneId();
+  strncpy(env.zone_id, activeHbZone, sizeof(env.zone_id) - 1);
   env.uptime_ms = millis();
 
   HeartbeatData hb;
@@ -312,6 +368,268 @@ void sendProvRequestTask() {
 }
 
 // ----------------------------------------------------------------------------
+// DIAGNOSTIC STARTUP BANNER & SYSTEM SUMMARY
+// ----------------------------------------------------------------------------
+void printDiagnosticBanner() {
+  Serial.println();
+  Serial.println("================================================================================");
+  Serial.println("         COMPALLETTE | SUBTERRANEAN MINING SAFETY PLATFORM (FIRMWARE v1.2)      ");
+  Serial.println("================================================================================");
+  Serial.printf("  [SYS] Silicon Architecture     : %s\n", 
+#if defined(CONFIG_IDF_TARGET_ESP32S3)
+    "ESP32-S3 (Freenove S3 / Native USB CDC)"
+#elif defined(CONFIG_IDF_TARGET_ESP32)
+    "ESP32 Classic (Freenove WROOM / WROVER)"
+#else
+    "Generic ESP32"
+#endif
+  );
+  Serial.printf("  [SYS] CPU Clock Speed          : %u MHz\n", ESP.getCpuFreqMHz());
+  Serial.printf("  [SYS] Silicon Revision         : %u\n", ESP.getChipRevision());
+  Serial.printf("  [SYS] Free Internal Heap       : %u bytes\n", ESP.getFreeHeap());
+  Serial.printf("  [SYS] Flash Storage Size       : %u MB\n", ESP.getFlashChipSize() / (1024 * 1024));
+  Serial.printf("  [SYS] Hardware Chip MAC        : %s\n", nodeConfigManager.getChipMac());
+  Serial.printf("  [SYS] Hardware Chip ID         : %s\n", nodeConfigManager.getChipId());
+  Serial.println("--------------------------------------------------------------------------------");
+  Serial.printf("  [CFG] Commissioning State      : %s\n",
+                nodeConfigManager.isProvisioned() ? "COMMISSIONED (Production Mesh Mode)" : "UNCOMMISSIONED (SoftAP Setup Mode)");
+  Serial.printf("  [CFG] Active Device ID         : %s\n", nodeConfigManager.getDeviceId());
+  Serial.printf("  [CFG] Assigned Role            : %s\n", nodeRoleToString(nodeConfigManager.getRole()));
+  if (nodeConfigManager.getRole() == ROLE_WEARABLE) {
+    Serial.printf("  [CFG] Subterranean Zone        : %s (Option 1 Dynamic Proximity Tracking)\n", zoneTracker.getCurrentZone());
+  } else {
+    Serial.printf("  [CFG] Subterranean Zone        : %s (Fixed Stationary Reference)\n", nodeConfigManager.getZoneId());
+  }
+  Serial.printf("  [CFG] Mesh Network             : %s (Channel %d)\n", nodeConfigManager.getMeshPrefix(), nodeConfigManager.getMeshChannel());
+  if (nodeConfigManager.getRole() == ROLE_GATEWAY) {
+    Serial.printf("  [CFG] Uplink Wi-Fi (GW)        : %s\n", nodeConfigManager.getUplinkSsid());
+    Serial.printf("  [CFG] Upstream Backend URL     : %s\n", nodeConfigManager.getBackendUrl());
+  }
+  Serial.println("--------------------------------------------------------------------------------");
+  Serial.println("  [CLI] Type 'help' in Serial Monitor for interactive diagnostics & configuration.");
+  Serial.println("================================================================================\n");
+  Serial.flush();
+}
+
+// ----------------------------------------------------------------------------
+// INTERACTIVE SERIAL CLI (Command-Line Interface)
+// ----------------------------------------------------------------------------
+void printHelpMenu() {
+  Serial.println("\n+--------------------------------------------------------------+");
+  Serial.println("|              COMPALLETTE SERIAL CLI COMMAND LIST             |");
+  Serial.println("+--------------------------------------------------------------+");
+  Serial.println("  help            - Display this command reference");
+  Serial.println("  status          - Print full real-time telemetry & system health");
+  Serial.println("  setup           - Switch to SoftAP Captive Portal mode and restart");
+  Serial.println("  mesh            - Switch to Production Mesh mode and restart");
+  Serial.println("  scan            - Scan I2C bus (sensors) and local Wi-Fi channels");
+  Serial.println("  role <0|1|2>    - Change operational role (0:Wearable, 1:Anchor, 2:Gateway)");
+  Serial.println("  id <name>       - Change device badge ID (e.g., id MINER-108)");
+  Serial.println("  zone [name|auto]- Change or view subterranean zone (Wearables support 'zone auto')");
+  Serial.println("  reset           - Factory reset all persistent NVS settings");
+  Serial.println("  reboot          - Perform a software restart of the ESP32");
+  Serial.println("+--------------------------------------------------------------+\n");
+}
+
+void printStatusDashboard() {
+  SensorReadings s = sensorHAL.read();
+  uint32_t upSec = millis() / 1000;
+  uint32_t upMin = upSec / 60;
+  upSec %= 60;
+
+  Serial.println("\n+--------------------------------------------------------------+");
+  Serial.println("|               COMPALLETTE LIVE STATUS DASHBOARD              |");
+  Serial.println("+--------------------------------------------------------------+");
+  Serial.printf("  Node ID       : %s (%s)\n", nodeConfigManager.getDeviceId(), nodeRoleToString(nodeConfigManager.getRole()));
+  if (nodeConfigManager.getRole() == ROLE_WEARABLE) {
+    Serial.printf("  Zone (Dynamic): %s [%s]\n",
+                  zoneTracker.getCurrentZone(),
+                  zoneTracker.isAutoTracking() ? "AUTO (Nearest Anchor)" : "MANUAL TEST OVERRIDE");
+    if (zoneTracker.hasAnchor()) {
+      Serial.printf("  Nearest Anchor: %s (Heard %u s ago | Hop: %d | RSSI: %d dBm)\n",
+                    zoneTracker.getNearestAnchorId(),
+                    (unsigned)(zoneTracker.getTimeSinceLastBeaconMs() / 1000),
+                    zoneTracker.getHopDistance(),
+                    zoneTracker.getRssi());
+    } else {
+      Serial.println("  Nearest Anchor: NONE (Listening for stationary tunnel anchors...)");
+    }
+  } else {
+    Serial.printf("  Zone (Fixed)  : %s\n", nodeConfigManager.getZoneId());
+  }
+  Serial.printf("  Uptime        : %u min %u sec\n", upMin, upSec);
+  Serial.printf("  Free Heap     : %u bytes\n", ESP.getFreeHeap());
+  Serial.printf("  Active Mode   : %s\n", captivePortal.isActive() ? "SOFTAP SETUP (Captive Portal)" : "PRODUCTION MESH");
+
+  if (captivePortal.isActive()) {
+    Serial.printf("  SoftAP SSID   : %s (IP: 192.168.4.1)\n", captivePortal.getSsid());
+  } else {
+    SimpleList<uint32_t> peers = mesh.getNodeList();
+    Serial.printf("  Mesh Node ID  : %u | Connected Peers: %d\n", mesh.getNodeId(), (int)peers.size());
+  }
+
+  Serial.println("  -- Sensor Readings --");
+  Serial.printf("  CO Gas        : %.1f ppm [%s]\n", s.co_ppm, 
+                s.co_ppm >= nodeConfigManager.get().co_critical_ppm ? "CRITICAL ALARM" :
+                (s.co_ppm >= nodeConfigManager.get().co_warning_ppm ? "WARNING" : "NORMAL"));
+  Serial.printf("  Temperature   : %.1f C\n", s.temp_c);
+  Serial.printf("  Humidity      : %.1f %%\n", s.humidity_pct);
+  Serial.printf("  IMU Accel     : %.2f g (Fall: %s)\n", s.accel_magnitude, s.fall_detected ? "FALL CONFIRMED" : "CLEAR");
+  Serial.printf("  Battery       : %.2f V (~%.0f%%)\n", s.battery_v, s.battery_pct);
+  Serial.printf("  Hardware HAL  : MQ-7 [%s] | MPU6050 [%s] | ADC [%s]\n",
+                s.mq_healthy ? "OK" : "SIM", s.mpu_healthy ? "OK" : "SIM", s.battery_healthy ? "OK" : "SIM");
+  Serial.println("+--------------------------------------------------------------+\n");
+}
+
+void runI2CScan() {
+  Serial.println("\n[I2C] Scanning I2C bus (pins SDA=" + String(PIN_I2C_SDA) + ", SCL=" + String(PIN_I2C_SCL) + ")...");
+  int nDevices = 0;
+  for (uint8_t address = 1; address < 127; ++address) {
+    Wire.beginTransmission(address);
+    uint8_t error = Wire.endTransmission();
+    if (error == 0) {
+      Serial.printf("  |-- Found I2C device at 0x%02X", address);
+      if (address == 0x68 || address == 0x69) {
+        Serial.print(" (MPU-6050 6-Axis IMU)");
+      }
+      Serial.println();
+      nDevices++;
+    }
+  }
+  if (nDevices == 0) {
+    Serial.println("  |-- No I2C devices detected. Check SDA/SCL pull-up resistors or wiring.");
+  } else {
+    Serial.printf("  |-- Total %d I2C device(s) found.\n", nDevices);
+  }
+}
+
+void runWiFiScan() {
+  Serial.println("\n[WIFI] Scanning 2.4 GHz Wi-Fi spectrum...");
+  WiFi.mode(WIFI_STA);
+  WiFi.disconnect();
+  delay(100);
+  int n = WiFi.scanNetworks();
+  if (n == 0) {
+    Serial.println("  |-- No networks found.");
+  } else {
+    Serial.printf("  |-- Found %d network(s):\n", n);
+    for (int i = 0; i < n; ++i) {
+      Serial.printf("      [%2d] %-24s (RSSI: %3d dBm, Ch: %2d)\n",
+                    i + 1, WiFi.SSID(i).c_str(), WiFi.RSSI(i), WiFi.channel(i));
+    }
+  }
+  WiFi.scanDelete();
+}
+
+void handleSerialCLI() {
+  static char cliBuf[64];
+  static size_t cliIndex = 0;
+
+  while (Serial.available() > 0) {
+    char c = Serial.read();
+    if (c == '\r' || c == '\n') {
+      if (cliIndex == 0) continue;
+      cliBuf[cliIndex] = '\0';
+
+      // Trim leading spaces
+      char* cmd = cliBuf;
+      while (*cmd == ' ') cmd++;
+
+      if (strcmp(cmd, "help") == 0 || strcmp(cmd, "?") == 0) {
+        printHelpMenu();
+      } else if (strcmp(cmd, "status") == 0) {
+        printStatusDashboard();
+      } else if (strcmp(cmd, "setup") == 0) {
+        Serial.println("\n[CLI] Entering SoftAP Setup Mode (Captive Portal)...");
+        nodeConfigManager.enterSetupMode();
+        delay(200);
+        ESP.restart();
+      } else if (strcmp(cmd, "mesh") == 0) {
+        Serial.println("\n[CLI] Transitioning node to Production Mesh Mode...");
+        NodeConfig cfg = nodeConfigManager.get();
+        cfg.is_provisioned = true;
+        nodeConfigManager.save(cfg);
+        delay(200);
+        ESP.restart();
+      } else if (strcmp(cmd, "scan") == 0) {
+        runI2CScan();
+        runWiFiScan();
+      } else if (strncmp(cmd, "role ", 5) == 0) {
+        int r = atoi(cmd + 5);
+        if (r >= 0 && r <= 2) {
+          NodeConfig cfg = nodeConfigManager.get();
+          cfg.role = (NodeRole)r;
+          nodeConfigManager.save(cfg);
+          Serial.printf("[CLI] Node role updated to: %s\n", nodeRoleToString(cfg.role));
+        } else {
+          Serial.println("[CLI ERROR] Invalid role. Use: 0 (Wearable), 1 (Anchor), 2 (Gateway)");
+        }
+      } else if (strncmp(cmd, "id ", 3) == 0) {
+        char* newId = cmd + 3;
+        while (*newId == ' ') newId++;
+        if (strlen(newId) > 0) {
+          NodeConfig cfg = nodeConfigManager.get();
+          strncpy(cfg.device_id, newId, sizeof(cfg.device_id) - 1);
+          nodeConfigManager.save(cfg);
+          Serial.printf("[CLI] Device ID updated to: %s\n", cfg.device_id);
+        }
+      } else if (strncmp(cmd, "zone", 4) == 0) {
+        char* newZone = cmd + 4;
+        while (*newZone == ' ') newZone++;
+        if (strlen(newZone) == 0) {
+          const char* curZ = (nodeConfigManager.getRole() == ROLE_WEARABLE) ? zoneTracker.getCurrentZone() : nodeConfigManager.getZoneId();
+          Serial.printf("  Zone          : %s\n", curZ);
+          if (nodeConfigManager.getRole() == ROLE_WEARABLE) {
+            Serial.printf("  Tracking Mode : %s\n", zoneTracker.isAutoTracking() ? "AUTO (Option 1 Anchor Proximity)" : "MANUAL TEST OVERRIDE");
+            if (zoneTracker.hasAnchor()) {
+              Serial.printf("  Nearest Anchor: %s (Heard %u s ago | Hop: %d | RSSI: %d dBm)\n",
+                            zoneTracker.getNearestAnchorId(),
+                            (unsigned)(zoneTracker.getTimeSinceLastBeaconMs() / 1000),
+                            zoneTracker.getHopDistance(),
+                            zoneTracker.getRssi());
+            } else {
+              Serial.println("  Nearest Anchor: NONE (Listening for stationary tunnel anchors...)");
+            }
+            Serial.println("  Usage: 'zone <name>' for manual test override, 'zone auto' to resume auto-tracking");
+          }
+        } else if (strcmp(newZone, "auto") == 0) {
+          if (nodeConfigManager.getRole() == ROLE_WEARABLE) {
+            zoneTracker.resumeAutoTracking();
+          } else {
+            Serial.println("[CLI] 'zone auto' is only applicable to Wearable tags. Stationary anchors require a fixed zone.");
+          }
+        } else {
+          if (nodeConfigManager.getRole() == ROLE_WEARABLE) {
+            zoneTracker.setManualOverride(newZone);
+            Serial.printf("[CLI] Wearable test zone override set to: %s (Type 'zone auto' to resume proximity tracking)\n", newZone);
+          } else {
+            NodeConfig cfg = nodeConfigManager.get();
+            strncpy(cfg.zone_id, newZone, sizeof(cfg.zone_id) - 1);
+            nodeConfigManager.save(cfg);
+            Serial.printf("[CLI] Stationary node zone updated to: %s\n", cfg.zone_id);
+          }
+        }
+      } else if (strcmp(cmd, "reset") == 0) {
+        Serial.println("\n[CLI] Performing factory reset (wiping NVS)...");
+        nodeConfigManager.clear();
+        delay(300);
+        ESP.restart();
+      } else if (strcmp(cmd, "reboot") == 0 || strcmp(cmd, "restart") == 0) {
+        Serial.println("\n[CLI] Restarting ESP32...");
+        delay(100);
+        ESP.restart();
+      } else {
+        Serial.printf("[CLI] Unknown command: '%s'. Type 'help' for available commands.\n", cmd);
+      }
+
+      cliIndex = 0;
+    } else if (cliIndex < sizeof(cliBuf) - 1) {
+      cliBuf[cliIndex++] = c;
+    }
+  }
+}
+
+// ----------------------------------------------------------------------------
 // SETUP & INITIALIZATION
 // ----------------------------------------------------------------------------
 void setup() {
@@ -323,14 +641,12 @@ void setup() {
   while (!Serial && (millis() - serialWaitStart < 3000)) {
     delay(10);
   }
-  delay(300);
-
-  Serial.println("\n[BOOT] Compallette Subterranean Node Firmware Starting...");
-  Serial.flush();
+  delay(200);
 
   // 1. Initialize Dynamic NVS Configuration Subsystem
   nodeConfigManager.begin();
-  Serial.flush();
+  zoneTracker.begin((nodeConfigManager.getRole() == ROLE_WEARABLE) ? "UNASSIGNED" : nodeConfigManager.getZoneId());
+  printDiagnosticBanner();
 
   // If onboard BOOT button (GPIO 0) is held during startup, force into SoftAP setup mode.
   // Skip if already unprovisioned to prevent reboot loops (user may still be holding button).
@@ -345,61 +661,89 @@ void setup() {
   // 2. Initialize Hardware Abstraction Layer (MQ-7, MPU6050, Battery ADC)
   sensorHAL.begin();
 
-  // 3. Option 3: If node is uncommissioned, launch local Wi-Fi Captive Portal
+  // 3. Operational Mode Dispatch
   if (!nodeConfigManager.isProvisioned()) {
+    // MODE: SOFTAP CAPTIVE PORTAL COMMISSIONING
+    // Radio is dedicated solely to SoftAP. Mesh is halted to prevent Wi-Fi channel/AP collision!
+    Serial.println("\n[MODE] ======================================================================");
+    Serial.println("[MODE] >>> NODE UNCOMMISSIONED: Entering SoftAP Setup Mode (Captive Portal) <<<");
+    Serial.println("[MODE] Mesh radio paused to guarantee 100% stable SoftAP commissioning.");
+    Serial.println("[MODE] ======================================================================");
     captivePortal.begin();
-  }
+  } else {
+    // MODE: PRODUCTION WIRELESS MESH
+    Serial.println("\n[MODE] ======================================================================");
+    Serial.println("[MODE] >>> NODE COMMISSIONED: Entering Production Mesh Mode <<<");
+    Serial.printf(" [MODE] Role: %s | Zone: %s | ID: %s\n",
+                  nodeRoleToString(nodeConfigManager.getRole()),
+                  (nodeConfigManager.getRole() == ROLE_WEARABLE) ? zoneTracker.getCurrentZone() : nodeConfigManager.getZoneId(),
+                  nodeConfigManager.getDeviceId());
+    Serial.println("[MODE] ======================================================================");
 
-  // 4. Initialize Mesh Network using dynamic credentials from NVS
-  mesh.setDebugMsgTypes(ERROR | STARTUP);
-  mesh.init(nodeConfigManager.getMeshPrefix(),
-            nodeConfigManager.getMeshPassword(),
-            &userScheduler,
-            nodeConfigManager.getMeshChannel());
+    // Initialize Mesh Network using dynamic credentials from NVS
+    mesh.setDebugMsgTypes(ERROR | STARTUP);
+    mesh.init(nodeConfigManager.getMeshPrefix(),
+              nodeConfigManager.getMeshPassword(),
+              &userScheduler,
+              nodeConfigManager.getMeshChannel());
 
-  mesh.onReceive(&receivedCallback);
-  mesh.onNewConnection(&newConnectionCallback);
-  mesh.onChangedConnections(&changedConnectionCallback);
+    mesh.onReceive(&receivedCallback);
+    mesh.onNewConnection(&newConnectionCallback);
+    mesh.onChangedConnections(&changedConnectionCallback);
 
-  // 5. Register scheduled tasks
-  userScheduler.addTask(taskSendHeartbeat);
-  taskSendHeartbeat.enable();
+    // Register scheduled tasks
+    userScheduler.addTask(taskSendHeartbeat);
+    if (nodeConfigManager.getRole() == ROLE_STATIONARY_ANCHOR) {
+      taskSendHeartbeat.setInterval(ANCHOR_BEACON_INTERVAL_MS);
+    }
+    taskSendHeartbeat.enable();
 
-  if (nodeConfigManager.isProvisioned()) {
     if (nodeConfigManager.getRole() == ROLE_WEARABLE) {
       userScheduler.addTask(taskSendTelemetry);
       taskSendTelemetry.enable();
     }
-  } else {
-    // Option 1: Uncommissioned nodes periodically request dynamic enrollment
-    userScheduler.addTask(taskSendProvRequest);
-    taskSendProvRequest.enable();
-  }
 
 #if (CURRENT_ROLE == ROLE_GATEWAY)
-  gatewayManager.begin();
+    if (nodeConfigManager.getRole() == ROLE_GATEWAY) {
+      gatewayManager.begin();
+    }
 #endif
 
-  Serial.printf("[INIT] Mesh online. Chip Mesh Node ID: %u\n", mesh.getNodeId());
+    Serial.printf("[INIT] Mesh online. Chip Mesh Node ID: %u\n", mesh.getNodeId());
+  }
 }
 
 // ----------------------------------------------------------------------------
 // MAIN LOOP
 // ----------------------------------------------------------------------------
 void loop() {
-  // Drives mesh packet routing & scheduler
-  mesh.update();
+  // Drives dynamic subterranean zone tracking (Option 1: Anchor Proximity)
+  zoneTracker.update();
 
   // Option 3: Handle captive portal client requests if setup AP is active
   if (captivePortal.isActive()) {
     captivePortal.update();
+  } else {
+    // Drives mesh packet routing & scheduler
+    mesh.update();
+
+#if (CURRENT_ROLE == ROLE_GATEWAY)
+    if (nodeConfigManager.getRole() == ROLE_GATEWAY) {
+      gatewayManager.update();
+    }
+#endif
   }
 
   // Check physical emergency panic button
   if (sensorHAL.checkPanicButton()) {
     sensorHAL.setAlarmIndication(true, SEVERITY_CRITICAL);
-    sendAlertEvent(SEVERITY_CRITICAL, "PANIC_SOS", "Miner activated emergency panic button", 1.0f);
+    if (!captivePortal.isActive()) {
+      sendAlertEvent(SEVERITY_CRITICAL, "PANIC_SOS", "Miner activated emergency panic button", 1.0f);
+    }
   }
+
+  // Non-blocking Serial CLI Command Parser
+  handleSerialCLI();
 
   // SoftAP Configuration Trigger: Hold onboard BOOT button (GPIO 0) >= 3s
   if (digitalRead(PIN_BOOT_BUTTON) == LOW) {
@@ -423,8 +767,7 @@ void loop() {
       }
       nodeConfigManager.enterSetupMode();
 
-      // Wait for user to physically release the BOOT button before restarting,
-      // otherwise ESP32-S3 re-enters download mode or triggers setup again on reboot.
+      // Wait for user to physically release the BOOT button before restarting
       Serial.println("[SETUP] Waiting for BOOT button release...");
       Serial.flush();
       while (digitalRead(PIN_BOOT_BUTTON) == LOW) {
@@ -439,8 +782,4 @@ void loop() {
   } else {
     g_bootButtonHoldStartTime = 0;
   }
-
-#if (CURRENT_ROLE == ROLE_GATEWAY)
-  gatewayManager.update();
-#endif
 }

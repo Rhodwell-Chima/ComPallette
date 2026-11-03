@@ -30,9 +30,11 @@ public:
   void stop();
 
   bool isActive() const { return _active; }
+  const char* getSsid() const { return _apSsid; }
 
 private:
   bool        _active;
+  char        _apSsid[32];
   WebServer   _server;
   DNSServer   _dnsServer;
   uint32_t    _rebootTargetMs;

@@ -15,11 +15,13 @@ import unittest
 import urllib.request
 import urllib.error
 
+import os
+
 API_KEY = "compallette-mining-secret-key-v1"
 
 
 class BackendContractTestSuite(unittest.TestCase):
-    base_url = "http://127.0.0.1:8000"
+    base_url = os.environ.get("COMPALLETTE_URL", "http://127.0.0.1:8000")
 
     @classmethod
     def setUpClass(cls):

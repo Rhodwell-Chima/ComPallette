@@ -80,8 +80,12 @@ bool NodeConfigManager::load() {
 
     _config.role = (NodeRole)_prefs.getUChar("role", (uint8_t)ROLE_WEARABLE);
 
-    String zone = _prefs.getString("zone", "UNASSIGNED");
-    strncpy(_config.zone_id, zone.c_str(), sizeof(_config.zone_id) - 1);
+    if (_config.role == ROLE_WEARABLE) {
+      strncpy(_config.zone_id, "UNASSIGNED", sizeof(_config.zone_id) - 1);
+    } else {
+      String zone = _prefs.getString("zone", ACTIVE_ZONE_ID);
+      strncpy(_config.zone_id, zone.c_str(), sizeof(_config.zone_id) - 1);
+    }
 
     String mSsid = _prefs.getString("m_ssid", MESH_PREFIX);
     strncpy(_config.mesh_prefix, mSsid.c_str(), sizeof(_config.mesh_prefix) - 1);
@@ -133,7 +137,11 @@ bool NodeConfigManager::setAssignment(const char* deviceId, NodeRole role, const
   _config.is_provisioned = true;
   strncpy(_config.device_id, deviceId, sizeof(_config.device_id) - 1);
   _config.role = role;
-  strncpy(_config.zone_id, zoneId, sizeof(_config.zone_id) - 1);
+  if (role == ROLE_WEARABLE) {
+    strncpy(_config.zone_id, "UNASSIGNED", sizeof(_config.zone_id) - 1);
+  } else {
+    strncpy(_config.zone_id, zoneId, sizeof(_config.zone_id) - 1);
+  }
   _config.co_warning_ppm = coWarn;
   _config.co_critical_ppm = coCrit;
 
@@ -145,7 +153,8 @@ bool NodeConfigManager::setAssignment(const char* deviceId, NodeRole role, const
   _prefs.putFloat("co_crit", _config.co_critical_ppm);
 
   Serial.printf("\n[NVS] Node commissioned successfully: ID=%s, Role=%s, Zone=%s\n",
-                _config.device_id, nodeRoleToString(_config.role), _config.zone_id);
+                _config.device_id, nodeRoleToString(_config.role),
+                (_config.role == ROLE_WEARABLE) ? "DYNAMIC_AUTO_TRACK" : _config.zone_id);
   return true;
 }
 
@@ -172,7 +181,11 @@ void NodeConfigManager::printConfig() {
   Serial.printf("  Provisioned State  : %s\n", _config.is_provisioned ? "COMMISSIONED (Production)" : "UNCOMMISSIONED (Setup Mode)");
   Serial.printf("  Active Device ID   : %s\n", _config.device_id);
   Serial.printf("  Assigned Role      : %s\n", nodeRoleToString(_config.role));
-  Serial.printf("  Tunnel Zone        : %s\n", _config.zone_id);
+  if (_config.role == ROLE_WEARABLE) {
+    Serial.println("  Tunnel Zone        : [DYNAMIC AUTO-DETECTION via Nearest Anchor]");
+  } else {
+    Serial.printf("  Tunnel Zone        : %s (Fixed Reference)\n", _config.zone_id);
+  }
   Serial.printf("  Mesh Network       : %s (CH %d)\n", _config.mesh_prefix, _config.mesh_channel);
   if (_config.role == ROLE_GATEWAY) {
     Serial.printf("  Uplink Wi-Fi       : %s\n", _config.uplink_ssid);

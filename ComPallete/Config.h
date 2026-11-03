@@ -46,13 +46,13 @@ inline NodeRole stringToNodeRole(const char* str) {
 
 // --- ACTIVE NODE CONFIGURATION ---
 // Set the operational role for this physical device build:
-#define CURRENT_ROLE            ROLE_STATIONARY_ANCHOR
+#define CURRENT_ROLE            ROLE_GATEWAY
 
 // Identifier for this node:
 // - For wearable: Unique miner badge / personnel ID (e.g., "MINER-106")
 // - For anchor: Physical tunnel zone identifier (e.g., "ANCHOR-Z02-L3")
 // - For gateway: Gateway ID (e.g., "GW-SURFACE-01")
-#define ACTIVE_DEVICE_ID        "ANCHOR-Z02-L3"
+#define ACTIVE_DEVICE_ID        "GW-SURFACE-01"
 
 // Physical tunnel zone name (primarily used by stationary anchors):
 #define ACTIVE_ZONE_ID          "ZONE-B-DRIFT-04"
@@ -61,7 +61,8 @@ inline NodeRole stringToNodeRole(const char* str) {
 // 3. Timing & Task Scheduling (milliseconds)
 // ----------------------------------------------------------------------------
 #define TELEMETRY_INTERVAL_MS   5000       // Regular telemetry interval for wearable nodes
-#define HEARTBEAT_INTERVAL_MS   30000      // Node health & keep-alive ping
+#define HEARTBEAT_INTERVAL_MS   30000      // Node health & keep-alive ping for wearables / gateways
+#define ANCHOR_BEACON_INTERVAL_MS 5000     // Fast beacon cadence for stationary anchors (Option 1 proximity)
 #define ALERT_RETRY_INTERVAL_MS 1000       // Fast retransmit cadence during active emergency
 #define ALERT_BURST_COUNT       3          // Number of immediate retransmits for high-severity alerts
 
@@ -141,9 +142,9 @@ inline NodeRole stringToNodeRole(const char* str) {
 // 7. Gateway & Upstream Infrastructure Configuration
 // ----------------------------------------------------------------------------
 // Parameters used when CURRENT_ROLE is configured as ROLE_GATEWAY
-#define UPLINK_WIFI_SSID        "MineSurface_WiFi"
-#define UPLINK_WIFI_PASSWORD    "SurfaceLink2026"
-#define BACKEND_BASE_URL        "http://192.168.1.100:8080"
+#define UPLINK_WIFI_SSID        "Innov_Hub"
+#define UPLINK_WIFI_PASSWORD    "V!brant2025#1nnov"
+#define BACKEND_BASE_URL        "http://192.168.1.176:8000"
 #define BACKEND_API_KEY         "compallette-mining-secret-key-v1"
 #define BACKEND_TIMEOUT_MS      4000       // HTTP request timeout in ms
 
@@ -151,6 +152,8 @@ inline NodeRole stringToNodeRole(const char* str) {
 #define ENDPOINT_TELEMETRY      "/api/v1/telemetry"
 #define ENDPOINT_ALERT          "/api/v1/alert"
 #define ENDPOINT_HEARTBEAT      "/api/v1/heartbeat"
+#define ENDPOINT_PROV_REQUEST   "/api/v1/provision/request"
+#define ENDPOINT_PROV_CONFIRM   "/api/v1/provision/confirm"
 
 // Gateway reconnection backoff timings (milliseconds)
 #define GW_RECONNECT_MIN_MS     2000       // Initial retry delay
