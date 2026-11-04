@@ -12,6 +12,7 @@ ALLOWED_HOSTS = ['*']
 
 # Application definition
 INSTALLED_APPS = [
+    'daphne',
     'django.contrib.admin',
     'django.contrib.auth',
     'django.contrib.contenttypes',
@@ -22,6 +23,7 @@ INSTALLED_APPS = [
     # Third party
     'corsheaders',
     'rest_framework',
+    'channels',
 
     # Compallette Mining Core
     'mining_api.apps.MiningApiConfig',
@@ -134,3 +136,10 @@ CO_WARN_PPM = float(os.getenv('CO_WARN_PPM', 25.0))
 CO_CRIT_PPM = float(os.getenv('CO_CRIT_PPM', 50.0))
 STALE_THRESHOLD_SEC = int(os.getenv('COMPALLETTE_STALE_SEC', 20))
 OFFLINE_THRESHOLD_SEC = int(os.getenv('COMPALLETTE_OFFLINE_SEC', 45))
+
+# Real-time WebSocket Channel Layers (In-Memory for zero external dependencies)
+CHANNEL_LAYERS = {
+    "default": {
+        "BACKEND": "channels.layers.InMemoryChannelLayer"
+    }
+}

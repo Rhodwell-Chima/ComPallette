@@ -812,6 +812,14 @@ void setup() {
     }
 
     if (nodeConfigManager.getRole() == ROLE_GATEWAY) {
+      gatewayManager.setDownlinkCallback([](const String& downlinkMsg) {
+        Serial.println("\n**************************************************************");
+        Serial.println("[DOWNLINK BROADCAST] Re-broadcasting surface command to mesh!");
+        Serial.printf("   |-- Payload: %s\n", downlinkMsg.c_str());
+        Serial.println("**************************************************************");
+        mesh.sendBroadcast(downlinkMsg);
+      });
+
       gatewayManager.begin(
         nodeConfigManager.getUplinkSsid(),
         nodeConfigManager.getUplinkPassword(),

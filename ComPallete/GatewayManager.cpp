@@ -15,7 +15,12 @@ GatewayManager::GatewayManager()
     m_mdnsInitialized(false),
     m_cachedHost(""),
     m_cachedIp(0, 0, 0, 0),
-    m_cacheExpireMs(0) {}
+    m_cacheExpireMs(0),
+    m_wsConnected(false),
+#if ENABLE_WEBSOCKET_UPLINK
+    m_wsInitialized(false),
+#endif
+    m_downlinkCb(nullptr) {}
 
 GatewayManager::~GatewayManager() {}
 
@@ -37,10 +42,22 @@ bool GatewayManager::begin(
   Serial.printf("  Target Uplink SSID : %s\n", m_ssid.c_str());
   Serial.printf("  Backend REST URL   : %s\n", m_backendUrl.c_str());
   Serial.printf("  Gateway Node ID    : %s\n", m_deviceId.c_str());
+#if ENABLE_WEBSOCKET_UPLINK
+  Serial.println("  Real-time Uplink   : WebSocket Streaming (with HTTP Fallback)");
+#else
+  Serial.println("  Real-time Uplink   : HTTP REST Polling");
+#endif
   Serial.println("==============================================================");
 
   // Initialize offline buffer (mounts LittleFS or falls back to RAM)
   m_buffer.begin(BUFFER_MAX_RAM_ITEMS, BUFFER_MAX_FLASH_ITEMS);
+
+#if ENABLE_WEBSOCKET_UPLINK
+  // Register WebSocket event handler
+  m_wsClient.onEvent([this](WStype_t type, uint8_t * payload, size_t length) {
+    this->handleWsEvent(type, payload, length);
+  });
+#endif
 
   // Initiate Wi-Fi station connection (painlessMesh continues concurrently)
   WiFi.begin(m_ssid.c_str(), m_password.c_str());
@@ -52,7 +69,8 @@ bool GatewayManager::begin(
 
 const char* GatewayManager::getStateString() const {
   switch (m_state) {
-    case GW_STATE_CONNECTED:    return "CONNECTED";
+    case GW_STATE_CONNECTED:
+      return m_wsConnected ? "CONNECTED (WebSocket Stream)" : "CONNECTED (HTTP REST Fallback)";
     case GW_STATE_CONNECTING:   return "CONNECTING";
     case GW_STATE_BACKOFF:      return "BACKOFF";
     case GW_STATE_DISCONNECTED: return "DISCONNECTED";
@@ -86,6 +104,79 @@ void GatewayManager::handleIncomingMeshPacket(uint32_t fromNodeId, const String&
                 m_buffer.count());
 }
 
+#if ENABLE_WEBSOCKET_UPLINK
+void GatewayManager::initWebSocket() {
+  String finalUrl;
+  resolveMdnsHost(m_backendUrl, finalUrl);
+
+  // Extract host and port from URL (e.g. http://192.168.1.176:8000)
+  int protoEnd = finalUrl.indexOf("://");
+  int hostStart = (protoEnd != -1) ? protoEnd + 3 : 0;
+  int slashIdx = finalUrl.indexOf('/', hostStart);
+  int colonIdx = finalUrl.indexOf(':', hostStart);
+
+  String hostStr;
+  uint16_t port = 8000;
+
+  if (colonIdx != -1 && (slashIdx == -1 || colonIdx < slashIdx)) {
+    hostStr = finalUrl.substring(hostStart, colonIdx);
+    int portEnd = (slashIdx != -1) ? slashIdx : finalUrl.length();
+    port = (uint16_t)finalUrl.substring(colonIdx + 1, portEnd).toInt();
+  } else if (slashIdx != -1) {
+    hostStr = finalUrl.substring(hostStart, slashIdx);
+    port = (finalUrl.startsWith("https")) ? 443 : 80;
+  } else {
+    hostStr = finalUrl.substring(hostStart);
+  }
+
+  String wsPath = String(ENDPOINT_WS_GATEWAY) + "?api_key=" + m_apiKey;
+  String extraHeaders = "X-API-Key: " + m_apiKey + "\r\nX-Gateway-ID: " + m_deviceId + "\r\n";
+
+  Serial.println("\n--------------------------------------------------------------");
+  Serial.println("[GW WS] Initializing WebSocket Uplink client...");
+  Serial.printf("  |-- Target Host : %s:%u\n", hostStr.c_str(), port);
+  Serial.printf("  |-- Target Path : %s\n", wsPath.c_str());
+  Serial.println("--------------------------------------------------------------");
+
+  m_wsClient.begin(hostStr.c_str(), port, wsPath.c_str());
+  m_wsClient.setExtraHeaders(extraHeaders.c_str());
+  m_wsClient.setReconnectInterval(3000);
+  m_wsInitialized = true;
+}
+
+void GatewayManager::handleWsEvent(WStype_t type, uint8_t * payload, size_t length) {
+  switch (type) {
+    case WStype_DISCONNECTED:
+      m_wsConnected = false;
+      Serial.println("\n[GW WS WARNING] WebSocket disconnected. Running on HTTP REST fallback mode.");
+      break;
+
+    case WStype_CONNECTED:
+      m_wsConnected = true;
+      Serial.printf("\n[GW WS CONNECTED] Streaming socket established to backend! (Server: %s)\n", (char*)payload);
+      break;
+
+    case WStype_TEXT: {
+      String msg = String((char*)payload);
+      Serial.printf("\n[GW WS DOWNLINK RX] Received message from surface: %s\n", msg.c_str());
+      if (m_downlinkCb) {
+        m_downlinkCb(msg);
+      }
+      break;
+    }
+
+    case WStype_BIN:
+    case WStype_ERROR:
+    case WStype_FRAGMENT_TEXT_START:
+    case WStype_FRAGMENT_BIN_START:
+    case WStype_FRAGMENT:
+    case WStype_FRAGMENT_FIN:
+    default:
+      break;
+  }
+}
+#endif
+
 void GatewayManager::update() {
   uint32_t now = millis();
 
@@ -94,6 +185,18 @@ void GatewayManager::update() {
     m_lastStateCheckMs = now;
     checkConnection();
   }
+
+#if ENABLE_WEBSOCKET_UPLINK
+  // Maintain WebSocket loop if Wi-Fi STA is connected
+  if (WiFi.status() == WL_CONNECTED) {
+    if (!m_wsInitialized) {
+      initWebSocket();
+    }
+    m_wsClient.loop();
+  } else {
+    m_wsConnected = false;
+  }
+#endif
 
   // 2. Handle Exponential Backoff Timer
   if (m_state == GW_STATE_BACKOFF) {
@@ -108,21 +211,39 @@ void GatewayManager::update() {
 
   // 3. Process & Flush Queued Packets
   if (m_state == GW_STATE_CONNECTED && !m_buffer.isEmpty()) {
-    // Pace HTTP requests (minimum 60ms between packets to prevent socket choking)
-    if (now - m_lastTransmitMs >= 60) {
-      m_lastTransmitMs = now;
-
+#if ENABLE_WEBSOCKET_UPLINK
+    if (m_wsConnected) {
+      // Over WebSocket: Ultra-low latency framing!
       BufferedItem item;
       if (m_buffer.peek(item)) {
-        bool sent = forwardPacket(item);
+        bool sent = m_wsClient.sendTXT(item.rawJson);
         if (sent) {
+          Serial.printf("[GW WS FORWARD] Streamed %s (Remaining: %u)\n",
+                        messageTypeToString(item.type), m_buffer.count() - 1);
           m_buffer.pop();
           resetBackoff();
-        } else {
-          triggerBackoff();
         }
       }
+    } else {
+#endif
+      // Over HTTP REST: Fallback mode (minimum 60ms between requests)
+      if (now - m_lastTransmitMs >= 60) {
+        m_lastTransmitMs = now;
+
+        BufferedItem item;
+        if (m_buffer.peek(item)) {
+          bool sent = forwardPacket(item);
+          if (sent) {
+            m_buffer.pop();
+            resetBackoff();
+          } else {
+            triggerBackoff();
+          }
+        }
+      }
+#if ENABLE_WEBSOCKET_UPLINK
     }
+#endif
   }
 }
 
@@ -163,6 +284,7 @@ void GatewayManager::checkConnection() {
       Serial.println("\n[GW UPLINK WARNING] Wi-Fi disconnected! Switching to offline buffering.");
     }
     m_state = GW_STATE_DISCONNECTED;
+    m_wsConnected = false;
     // Invalidate cached IP upon Wi-Fi loss
     m_cachedIp = IPAddress(0, 0, 0, 0);
     m_cacheExpireMs = 0;

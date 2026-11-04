@@ -148,12 +148,18 @@ inline NodeRole stringToNodeRole(const char* str) {
 #define BACKEND_API_KEY         "compallette-mining-secret-key-v1"
 #define BACKEND_TIMEOUT_MS      4000       // HTTP request timeout in ms
 
-// Backend API REST endpoints
+// Backend API REST & WebSocket endpoints
 #define ENDPOINT_TELEMETRY      "/api/v1/telemetry"
 #define ENDPOINT_ALERT          "/api/v1/alert"
 #define ENDPOINT_HEARTBEAT      "/api/v1/heartbeat"
 #define ENDPOINT_PROV_REQUEST   "/api/v1/provision/request"
 #define ENDPOINT_PROV_CONFIRM   "/api/v1/provision/confirm"
+#define ENDPOINT_WS_GATEWAY     "/api/v1/ws/gateway"
+
+// WebSocket Gateway Streaming Uplink (true = Persistent WS stream; false = Stabilized HTTP REST)
+// NOTE: Setting to true requires selecting "Minimal SPIFFS (1.9MB APP)" or "Huge APP (3MB No OTA)"
+// in the Arduino IDE 'Tools -> Partition Scheme' menu to accommodate WebSocket + Mesh flash footprint.
+#define ENABLE_WEBSOCKET_UPLINK false
 
 // Gateway reconnection backoff timings (milliseconds)
 #define GW_RECONNECT_MIN_MS     2000       // Initial retry delay
