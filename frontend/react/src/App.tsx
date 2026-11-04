@@ -55,8 +55,9 @@ export const App: React.FC = () => {
   };
 
   const isGatewayOnline = Boolean(
-    summary?.last_packet_received_ms &&
-    (Date.now() - summary.last_packet_received_ms) < 15000
+    (summary?.last_packet_received_ms &&
+     (Date.now() - summary.last_packet_received_ms) < 45000) ||
+    nodes.some(n => n.status === 'ONLINE')
   );
 
   const loadData = useCallback(async () => {

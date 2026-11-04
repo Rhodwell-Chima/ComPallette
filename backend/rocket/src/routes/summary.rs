@@ -82,13 +82,23 @@ pub async fn system_summary(pool: &State<PgPool>) -> Value {
     .await
     .unwrap_or(0);
 
-    let last_rx: i64 = sqlx::query_scalar(
+    let last_telem: i64 = sqlx::query_scalar(
         "SELECT received_at FROM mining_api_telemetryrecord ORDER BY received_at DESC LIMIT 1",
     )
     .fetch_optional(pool.inner())
     .await
     .unwrap_or(None)
     .unwrap_or(0);
+
+    let last_node: i64 = sqlx::query_scalar(
+        "SELECT last_seen_ts FROM mining_api_node ORDER BY last_seen_ts DESC LIMIT 1",
+    )
+    .fetch_optional(pool.inner())
+    .await
+    .unwrap_or(None)
+    .unwrap_or(0);
+
+    let last_rx = std::cmp::max(last_telem, last_node);
 
     json!({
         "total_nodes_tracked": total_nodes,

@@ -300,8 +300,11 @@ class SystemSummaryView(APIView):
         gas_warn = Node.objects.filter(latest_co__gte=settings.CO_WARN_PPM, latest_co__lt=settings.CO_CRIT_PPM).count()
         gas_crit = Node.objects.filter(latest_co__gte=settings.CO_CRIT_PPM).count()
 
-        last_record = TelemetryRecord.objects.order_by('-received_at').first()
-        last_rx = last_record.received_at if last_record else 0
+        last_telem = TelemetryRecord.objects.order_by('-received_at').first()
+        last_node = Node.objects.order_by('-last_seen_ts').first()
+        last_telem_rx = last_telem.received_at if last_telem else 0
+        last_node_rx = last_node.last_seen_ts if last_node else 0
+        last_rx = max(last_telem_rx, last_node_rx)
 
         return Response({
             "total_nodes_tracked": total,
