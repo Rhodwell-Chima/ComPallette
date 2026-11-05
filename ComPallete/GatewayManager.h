@@ -19,8 +19,9 @@
 // ============================================================================
 // Bridges painlessMesh subterranean packets to an external HTTPS/REST server
 // or real-time bi-directional WebSocket connection with automated HTTP fallback.
-// Manages Wi-Fi STA uplink, mDNS hostname resolution (.local), exponential
-// backoff retries, and offline buffer flushes.
+// Observes the painlessMesh-managed Wi-Fi STA uplink, resolves mDNS hostnames,
+// retries backend delivery, and flushes the offline buffer. painlessMesh owns
+// station association and mesh reconnection on the shared ESP32 radio.
 
 enum GatewayState {
   GW_STATE_DISCONNECTED = 0,
@@ -34,13 +35,15 @@ public:
   GatewayManager();
   ~GatewayManager();
 
-  // Initializes gateway subsystem, offline buffer, and Wi-Fi uplink connection
+  // Initializes gateway transport after the caller has configured the
+  // painlessMesh bridge station with stationManual().
   bool begin(
     const char* ssid = UPLINK_WIFI_SSID,
     const char* password = UPLINK_WIFI_PASSWORD,
     const char* backendUrl = BACKEND_BASE_URL,
-    const char* apiKey = BACKEND_API_KEY,
-    const char* deviceId = ACTIVE_DEVICE_ID
+    const char* apiKey = "",
+    const char* deviceId = ACTIVE_DEVICE_ID,
+    uint8_t meshChannel = MESH_CHANNEL
   );
 
   // Periodic non-blocking tick called from main loop or scheduler
@@ -79,6 +82,7 @@ private:
   String      m_backendUrl;
   String      m_apiKey;
   String      m_deviceId;
+  uint8_t     m_meshChannel;
 
   GatewayState m_state;
   OfflineBuffer m_buffer;
