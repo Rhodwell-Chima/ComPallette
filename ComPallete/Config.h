@@ -17,7 +17,7 @@
 #define MESH_PREFIX     "MineMesh_Zambia"
 #define MESH_PASSWORD   "SecureMine123"
 #define MESH_PORT       5555
-#define MESH_CHANNEL    6                  // Fixed Wi-Fi channel for fast mesh convergence
+#define MESH_CHANNEL    6                  // Must match the Gateway's 2.4 GHz router channel
 
 // ----------------------------------------------------------------------------
 // 2. Node Roles & Operational Profile
@@ -63,6 +63,7 @@ inline NodeRole stringToNodeRole(const char* str) {
 #define TELEMETRY_INTERVAL_MS   5000       // Regular telemetry interval for wearable nodes
 #define HEARTBEAT_INTERVAL_MS   30000      // Node health & keep-alive ping for wearables / gateways
 #define ANCHOR_BEACON_INTERVAL_MS 5000     // Fast beacon cadence for stationary anchors (Option 1 proximity)
+#define ENABLE_EXPERIMENTAL_BEACON_ZONE_TRACKING 0 // Disabled until direct-link RSSI pilot passes
 #define ALERT_RETRY_INTERVAL_MS 1000       // Fast retransmit cadence during active emergency
 #define ALERT_BURST_COUNT       3          // Number of immediate retransmits for high-severity alerts
 
@@ -145,7 +146,6 @@ inline NodeRole stringToNodeRole(const char* str) {
 #define UPLINK_WIFI_SSID        "Innov_Hub"
 #define UPLINK_WIFI_PASSWORD    "V!brant2025#1nnov"
 #define BACKEND_BASE_URL        "http://innovation-hub03.local:8000"
-#define BACKEND_API_KEY         "compallette-mining-secret-key-v1"
 #define BACKEND_TIMEOUT_MS      4000       // HTTP request timeout in ms
 
 // Backend API REST & WebSocket endpoints
