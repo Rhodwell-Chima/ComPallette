@@ -58,7 +58,7 @@ public:
   void clear();
 
   // Flushes dirty in-memory state to LittleFS persistent file
-  void syncToFlash();
+  bool syncToFlash();
 
 private:
   size_t m_maxRamItems;
@@ -70,6 +70,8 @@ private:
 
   size_t m_totalFlushed;
   size_t m_totalDropped;
+  uint8_t m_priorityBurst;
+  bool m_peekedPriority;
 
   void loadFromFlash();
   void evictOldestStandard();
