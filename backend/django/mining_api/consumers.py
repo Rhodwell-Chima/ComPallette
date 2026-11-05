@@ -29,22 +29,11 @@ class GatewayConsumer(AsyncWebsocketConsumer):
         headers = dict(self.scope.get('headers', []))
         api_key = headers.get(b'x-api-key', b'').decode('utf-8')
 
-        # Fallback to query parameter ?api_key=... or ?key=...
-        query_string = self.scope.get('query_string', b'').decode('utf-8')
-        if not api_key and query_string:
-            for param in query_string.split('&'):
-                if param.startswith('api_key='):
-                    api_key = param.split('=')[1]
-                    break
-                elif param.startswith('key='):
-                    api_key = param.split('=')[1]
-                    break
-
-        expected_key = getattr(settings, 'COMPALLETTE_API_KEY', 'compallette-mining-secret-key-v1')
+        expected_key = getattr(settings, 'COMPALLETTE_API_KEY', '')
 
         # Verify API key
-        if api_key and api_key != expected_key:
-            print(f"[WS GATEWAY REJECT] Unauthorized WebSocket connection attempt (Invalid API Key: '{api_key}')")
+        if not expected_key or api_key != expected_key:
+            print("[WS GATEWAY REJECT] Unauthorized WebSocket connection attempt")
             await self.close(code=4001)
             return
 
