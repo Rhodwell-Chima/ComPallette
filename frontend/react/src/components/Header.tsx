@@ -4,6 +4,8 @@ interface HeaderProps {
   isGatewayOnline: boolean;
   audioArmed: boolean;
   theme: 'dark' | 'light';
+  frontendRevision: string;
+  backendRevision: string | null;
   pendingProvisioningCount?: number;
   onOpenProvisioning?: () => void;
   onToggleTheme: () => void;
@@ -15,6 +17,8 @@ export const Header: React.FC<HeaderProps> = ({
   isGatewayOnline,
   audioArmed,
   theme,
+  frontendRevision,
+  backendRevision,
   pendingProvisioningCount = 0,
   onOpenProvisioning,
   onToggleTheme,
@@ -36,12 +40,18 @@ export const Header: React.FC<HeaderProps> = ({
         <span className="brand">Compallette</span>
         <span className="header-sep" />
         <span className="header-context">Underground Safety Monitor</span>
+        <span
+          className={`build-revision ${backendRevision === frontendRevision ? 'build-match' : 'build-mismatch'}`}
+          title={`Frontend build: ${frontendRevision}; backend build: ${backendRevision ?? 'unavailable'}`}
+        >
+          UI {frontendRevision} · API {backendRevision ?? 'unavailable'}
+        </span>
       </div>
 
       <div className="header-center" style={{ gap: '10px' }}>
         <span className={`status-pill ${isGatewayOnline ? 'status-ok' : 'status-warn'}`}>
           <span className="status-dot" />
-          {isGatewayOnline ? 'Gateway connected' : 'Gateway offline'}
+          {isGatewayOnline ? 'Gateway reporting' : 'Gateway stale / offline'}
         </span>
 
         {pendingProvisioningCount > 0 && (
