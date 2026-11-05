@@ -17,12 +17,15 @@ import {
   fetchAlerts,
   fetchNodeHistory,
   fetchAudit,
+  fetchBackendHealth,
   fetchPendingProvisioning,
   acknowledgeAlert,
   resolveAlert,
   assignNodeProvisioning,
+  ApiError,
 } from './services/api';
 import { SystemSummary, NodeItem, AlertItem, TelemetryItem, AuditItem, ProvisioningRequest } from './types';
+import { FRONTEND_BUILD_REVISION } from './buildInfo';
 
 export const App: React.FC = () => {
   const [theme, setTheme] = useState<'dark' | 'light'>(() => {
@@ -44,6 +47,8 @@ export const App: React.FC = () => {
   const [pendingNodes, setPendingNodes] = useState<ProvisioningRequest[]>([]);
   const [isProvModalOpen, setIsProvModalOpen] = useState(false);
   const [nodeActivityFilter, setNodeActivityFilter] = useState<'ALL' | 'ACTIVE' | 'INACTIVE'>('ALL');
+  const [backendRevision, setBackendRevision] = useState<string | null>(null);
+  const [dataError, setDataError] = useState<string | null>(null);
 
   useEffect(() => {
     document.documentElement.setAttribute('data-theme', theme);
@@ -54,35 +59,33 @@ export const App: React.FC = () => {
     setTheme(prev => (prev === 'dark' ? 'light' : 'dark'));
   };
 
-  const isGatewayOnline = Boolean(
-    (summary?.last_packet_received_ms &&
-     (Date.now() - summary.last_packet_received_ms) < 45000) ||
-    nodes.some(n => n.status === 'ONLINE')
+  const isGatewayOnline = nodes.some(n =>
+    n.role === 'GATEWAY' && n.status === 'ONLINE' && Date.now() - n.last_seen_ts < 45000
   );
 
   const loadData = useCallback(async () => {
     try {
       const [sumData, nodesData, alertsData, auditData, provData] = await Promise.all([
-        fetchSummary().catch(() => null),
-        fetchNodes().catch(() => []),
-        fetchAlerts().catch(() => []),
-        fetchAudit().catch(() => []),
-        fetchPendingProvisioning().catch(() => []),
+        fetchSummary(),
+        fetchNodes(),
+        fetchAlerts(),
+        fetchAudit(),
+        fetchPendingProvisioning(),
       ]);
 
-      if (sumData) setSummary(sumData);
-      if (provData) setPendingNodes(provData);
-      if (nodesData) {
-        setNodes(nodesData);
-        if (!selectedMinerId && nodesData.length > 0) {
-          const firstWearable = nodesData.find(n => n.role === 'WEARABLE');
-          if (firstWearable) setSelectedMinerId(firstWearable.node_id);
-        }
+      setDataError(null);
+      setSummary(sumData);
+      setPendingNodes(provData);
+      setNodes(nodesData);
+      if (!selectedMinerId && nodesData.length > 0) {
+        const firstWearable = nodesData.find(n => n.role === 'WEARABLE');
+        if (firstWearable) setSelectedMinerId(firstWearable.node_id);
       }
-      if (alertsData) setAlerts(alertsData);
-      if (auditData) setAuditLogs(auditData);
-    } catch (e) {
-      console.error('Error polling data:', e);
+      setAlerts(alertsData);
+      setAuditLogs(auditData);
+    } catch (error) {
+      if (error instanceof ApiError && error.kind === 'authentication') return;
+      setDataError(error instanceof Error ? error.message : 'The dashboard data could not be refreshed.');
     }
   }, [selectedMinerId]);
 
@@ -96,9 +99,25 @@ export const App: React.FC = () => {
     if (selectedMinerId) {
       fetchNodeHistory(selectedMinerId)
         .then(setHistory)
-        .catch(() => setHistory([]));
+        .catch(error => {
+          if (error instanceof ApiError && error.kind === 'authentication') return;
+          setHistory([]);
+          setDataError(error instanceof Error ? error.message : 'The selected node history could not be loaded.');
+        });
     }
   }, [selectedMinerId]);
+
+  useEffect(() => {
+    let active = true;
+    void fetchBackendHealth()
+      .then(health => { if (active) setBackendRevision(health.build_revision); })
+      .catch(error => {
+        if (!active) return;
+        setBackendRevision(null);
+        setDataError(error instanceof Error ? error.message : 'The backend health check failed.');
+      });
+    return () => { active = false; };
+  }, []);
 
   const handleSelectMiner = (nodeId: string) => {
     setSelectedMinerId(nodeId);
@@ -158,12 +177,20 @@ export const App: React.FC = () => {
         isGatewayOnline={isGatewayOnline}
         audioArmed={audioArmed}
         theme={theme}
+        frontendRevision={FRONTEND_BUILD_REVISION}
+        backendRevision={backendRevision}
         pendingProvisioningCount={pendingNodes.length}
         onOpenProvisioning={() => setIsProvModalOpen(true)}
         onToggleTheme={toggleTheme}
         onToggleAudio={() => setAudioArmed(prev => !prev)}
         onRefresh={loadData}
       />
+
+      {dataError && (
+        <div className="dashboard-error" role="alert">
+          {dataError}<button className="btn btn-ghost btn-sm" onClick={() => void loadData()}>Retry</button>
+        </div>
+      )}
 
       {/* Emergency Banner */}
       <EmergencyBanner
