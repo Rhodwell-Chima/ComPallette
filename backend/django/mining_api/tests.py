@@ -1,13 +1,17 @@
 import json
 import time
-from django.test import TestCase
+from io import StringIO
+from django.test import TestCase, override_settings
 from django.conf import settings
+from django.contrib.auth import get_user_model
+from django.core.management import call_command
 from rest_framework.test import APIClient
 from rest_framework import status
 from .models import (
     Node, NodeRole, NodeStatus, TelemetryRecord, SafetyAlert, AlertSeverity,
     AlertStatus, AuditEntry, ProvisioningRequest, ProvisioningStatus
 )
+from .views import check_and_update_watchdog
 
 
 class MiningApiTests(TestCase):
@@ -15,6 +19,66 @@ class MiningApiTests(TestCase):
         self.client = APIClient()
         self.api_key = settings.COMPALLETTE_API_KEY
         self.auth_headers = {'HTTP_X_API_KEY': self.api_key}
+        self.operator = get_user_model().objects.create_user(username='test-operator', password='test-password', is_staff=True)
+        self.client.force_authenticate(user=self.operator)
+
+    def test_operator_reads_and_actions_require_authentication(self):
+        anonymous = APIClient()
+        self.assertEqual(anonymous.get('/api/v1/nodes').status_code, status.HTTP_403_FORBIDDEN)
+        self.assertEqual(anonymous.get('/api/v1/provision/pending').status_code, status.HTTP_403_FORBIDDEN)
+        self.assertEqual(anonymous.post('/api/v1/provision/assign', {}, format='json').status_code, status.HTTP_403_FORBIDDEN)
+
+    def test_operator_session_login_requires_csrf_and_sets_session(self):
+        client = APIClient(enforce_csrf_checks=True)
+        csrf_response = client.get('/api/v1/auth/csrf')
+        token = csrf_response.json()['csrfToken']
+        login_response = client.post(
+            '/api/v1/auth/session', {'username': 'test-operator', 'password': 'test-password'},
+            format='json', HTTP_X_CSRFTOKEN=token,
+        )
+        self.assertEqual(login_response.status_code, status.HTTP_200_OK)
+        self.assertTrue(client.get('/api/v1/auth/session').json()['authenticated'])
+
+        self.assertEqual(client.get('/api/v1/system/summary').status_code, status.HTTP_200_OK)
+        self.assertEqual(client.get('/api/v1/nodes').status_code, status.HTTP_200_OK)
+        self.assertEqual(client.get('/api/v1/provision/pending').status_code, status.HTTP_200_OK)
+
+        client.logout()
+        self.assertEqual(client.get('/api/v1/nodes').status_code, status.HTTP_403_FORBIDDEN)
+
+    def test_wire_envelope_rejects_wrong_type_and_invalid_values(self):
+        invalid = {
+            "ver": 1, "type": "HEARTBEAT", "seq": 0, "sender": "MINER-INVALID",
+            "role": "UNKNOWN", "zone": "LEVEL-1", "uptime": 1, "payload": {},
+        }
+        response = self.client.post('/api/v1/telemetry', invalid, format='json', **self.auth_headers)
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertEqual(response.json()['error_code'], 'VALIDATION_ERROR')
+
+    def test_gateway_heartbeat_wire_format_is_accepted(self):
+        payload = {
+            "ver": 1,
+            "type": "HEARTBEAT",
+            "seq": 2,
+            "sender": "GW-SURFACE-01",
+            "role": "GATEWAY",
+            "zone": "UNASSIGNED",
+            "uptime": 15000,
+            "payload": {"heap": 207544, "nodes": 1, "batt": 3.70},
+        }
+        response = self.client.post('/api/v1/heartbeat', payload, format='json', **self.auth_headers)
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response.json()['node_id'], 'GW-SURFACE-01')
+
+    def test_operator_identity_is_taken_from_session_not_request_body(self):
+        alert = SafetyAlert.objects.create(
+            node=Node.objects.create(node_id='MINER-AUTH', last_seen_ts=int(time.time() * 1000)),
+            alert_code='TEST', created_at=int(time.time() * 1000),
+        )
+        response = self.client.post(f'/api/v1/alerts/{alert.id}/ack', {'officer_name': 'forged'}, format='json')
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        alert.refresh_from_db()
+        self.assertEqual(alert.acknowledged_by, 'test-operator')
 
     def test_health_check(self):
         response = self.client.get('/api/v1/health')
@@ -22,6 +86,15 @@ class MiningApiTests(TestCase):
         data = response.json()
         self.assertEqual(data['status'], 'healthy')
         self.assertEqual(data['service'], 'Compallette Mining Safety Django Backend')
+        self.assertEqual(data['build_revision'], settings.COMPALLETTE_BUILD_REVISION)
+
+    @override_settings(COMPALLETTE_BUILD_REVISION='test-build')
+    def test_deployment_readiness_accepts_migrated_database_with_staff_operator(self):
+        output = StringIO()
+        call_command('check_deployment_readiness', stdout=output)
+        report = json.loads(output.getvalue())
+        self.assertTrue(report['ready'])
+        self.assertGreaterEqual(report['active_staff_operators'], 1)
 
     def test_unauthorized_ingest_rejected(self):
         # Missing API Key
@@ -75,18 +148,14 @@ class MiningApiTests(TestCase):
         # Ensure only 1 record created in database
         self.assertEqual(TelemetryRecord.objects.filter(node=node).count(), 1)
 
-    def test_legacy_telemetry_ingest(self):
+    def test_legacy_telemetry_without_restart_safe_identity_is_rejected(self):
         legacy_packet = {
             "miner_id": "MINER-LEGACY-01",
             "co": 12.0,
             "fall": False
         }
         res = self.client.post('/api/v1/telemetry', legacy_packet, format='json', **self.auth_headers)
-        self.assertEqual(res.status_code, status.HTTP_200_OK)
-        self.assertTrue(res.json()['recorded'])
-
-        node = Node.objects.get(node_id="MINER-LEGACY-01")
-        self.assertEqual(node.latest_co, 12.0)
+        self.assertEqual(res.status_code, status.HTTP_400_BAD_REQUEST)
 
     def test_alert_lifecycle(self):
         # Ingest an alert
@@ -97,6 +166,7 @@ class MiningApiTests(TestCase):
             "sender": "MINER-107",
             "role": "WEARABLE",
             "zone": "STOPE-4B",
+            "uptime": 90000,
             "payload": {
                 "severity": "CRITICAL",
                 "code": "GAS_CO_CRITICAL",
@@ -118,7 +188,7 @@ class MiningApiTests(TestCase):
         self.assertEqual(ack_res.status_code, status.HTTP_200_OK)
         alert.refresh_from_db()
         self.assertEqual(alert.status, AlertStatus.ACKNOWLEDGED)
-        self.assertEqual(alert.acknowledged_by, 'SAFETY-OFFICER-MUTALE')
+        self.assertEqual(alert.acknowledged_by, 'test-operator')
 
         # Resolve alert
         res_res = self.client.post(f'/api/v1/alerts/{alert_id}/resolve', {
@@ -128,7 +198,7 @@ class MiningApiTests(TestCase):
         self.assertEqual(res_res.status_code, status.HTTP_200_OK)
         alert.refresh_from_db()
         self.assertEqual(alert.status, AlertStatus.RESOLVED)
-        self.assertEqual(alert.resolved_by, 'SAFETY-OFFICER-MUTALE')
+        self.assertEqual(alert.resolved_by, 'test-operator')
 
         # Check audit log records
         actions = list(AuditEntry.objects.values_list('action', flat=True))
@@ -145,6 +215,7 @@ class MiningApiTests(TestCase):
             "sender": "ANCHOR-02",
             "role": "ANCHOR",
             "zone": "LEVEL-100-WEST",
+            "uptime": 60000,
             "payload": {
                 "batt": 4.15,
                 "free_heap": 184000
@@ -160,9 +231,7 @@ class MiningApiTests(TestCase):
         node.last_seen_ts = int((time.time() - 25) * 1000)
         node.save()
 
-        # Query summary (which triggers watchdog pass)
-        sum_res = self.client.get('/api/v1/system/summary')
-        self.assertEqual(sum_res.status_code, status.HTTP_200_OK)
+        check_and_update_watchdog()
         node.refresh_from_db()
         self.assertEqual(node.status, NodeStatus.STALE)
 
@@ -170,8 +239,7 @@ class MiningApiTests(TestCase):
         node.last_seen_ts = int((time.time() - 60) * 1000)
         node.save()
 
-        # Query summary again
-        sum_res = self.client.get('/api/v1/system/summary')
+        check_and_update_watchdog()
         node.refresh_from_db()
         self.assertEqual(node.status, NodeStatus.OFFLINE)
 
@@ -251,7 +319,12 @@ class MiningApiTests(TestCase):
         self.assertEqual(node.current_zone, 'LEVEL-3-ACTIVE-STOPE')
 
         # 4. Gateway confirms node acknowledged commissioning
-        res_confirm = self.client.post('/api/v1/provision/confirm', {"chip_id": "8F4C2A"}, format='json')
+        confirm_body = {
+            "ver": 1, "type": "PROV_CONFIRM", "seq": 2, "sender": "GW-SURFACE-01",
+            "role": "GATEWAY", "zone": "SURFACE-PORTAL", "uptime": 15000,
+            "payload": {"chip_id": "8F4C2A", "status": "CONFIRMED"},
+        }
+        res_confirm = self.client.post('/api/v1/provision/confirm', confirm_body, format='json', **self.auth_headers)
         self.assertEqual(res_confirm.status_code, status.HTTP_200_OK)
         self.assertEqual(res_confirm.json()['status'], 'confirmed')
 
