@@ -1,5 +1,6 @@
 #include "painlessMesh.h"
 #include <ArduinoJson.h>
+#include <esp_system.h>
 #include "Config.h"
 #include "Protocol.h"
 #include "GatewayManager.h"
@@ -7,6 +8,7 @@
 #include "NodeConfigManager.h"
 #include "CaptivePortalManager.h"
 #include "ZoneTracker.h"
+#include "RadioDiagnostics.h"
 
 // ============================================================================
 // COMPALLETTE - SUBTERRANEAN MESH MONITORING NODE FIRMWARE (Dynamic Provisioning)
@@ -17,9 +19,6 @@ painlessMesh mesh;
 Scheduler userScheduler;
 ZoneTracker zoneTracker;
 GatewayManager gatewayManager;
-
-// Monotonic sequence counter for packets emitted by this node
-static uint32_t g_messageSequence = 0;
 
 // Track mesh network topology
 int lastNodeCount = 0;
@@ -35,6 +34,8 @@ void printHelpMenu();
 void printStatusDashboard();
 void runI2CScan();
 void runWiFiScan();
+void printBootDiagnostics();
+void gatewayWiFiEvent(WiFiEvent_t event, WiFiEventInfo_t info);
 int  calculateHopDistance(uint32_t targetNodeId);
 
 // Task declarations
@@ -53,7 +54,8 @@ void sendAlertEvent(AlertSeverity severity, const char* code, const char* detail
   MessageEnvelope env;
   env.version = PROTOCOL_VERSION;
   env.msg_type = MSG_ALERT;
-  env.seq = ++g_messageSequence;
+  env.seq = nodeConfigManager.nextSequence();
+  if (env.seq == 0) return;
   strncpy(env.sender_id, nodeConfigManager.getDeviceId(), sizeof(env.sender_id) - 1);
   strncpy(env.role, nodeRoleToString(nodeConfigManager.getRole()), sizeof(env.role) - 1);
   const char* activeZone = (nodeConfigManager.getRole() == ROLE_WEARABLE) ? zoneTracker.getCurrentZone() : nodeConfigManager.getZoneId();
@@ -116,6 +118,27 @@ void changedConnectionCallback() {
   lastNodeCount = currentNodeCount;
 }
 
+// Gateway radio events are diagnostic only. painlessMesh remains responsible
+// for station association and reconnection through stationManual().
+void gatewayWiFiEvent(WiFiEvent_t event, WiFiEventInfo_t info) {
+  switch (event) {
+    case ARDUINO_EVENT_WIFI_STA_CONNECTED:
+      Serial.println("[GW RADIO] Router association accepted; waiting for DHCP.");
+      break;
+    case ARDUINO_EVENT_WIFI_STA_GOT_IP:
+      Serial.printf("[GW RADIO] Router DHCP complete: %s | Channel: %u\n",
+                    WiFi.localIP().toString().c_str(), WiFi.channel());
+      break;
+    case ARDUINO_EVENT_WIFI_STA_DISCONNECTED:
+      Serial.printf("[GW RADIO] Router station disconnected (reason %d). "
+                    "painlessMesh will manage the retry.\n",
+                    info.wifi_sta_disconnected.reason);
+      break;
+    default:
+      break;
+  }
+}
+
 // ----------------------------------------------------------------------------
 // TOPOLOGY & PROXIMITY HELPER (Option 1)
 // ----------------------------------------------------------------------------
@@ -166,8 +189,9 @@ void receivedCallback(uint32_t from, String &msg) {
     gatewayManager.handleIncomingMeshPacket(from, msg);
   }
 
-  // Option 1 Dynamic Proximity Tracking:
-  // If this device is a Wearable Miner Tag, listen for beacons/heartbeats from Stationary Anchors & Gateways
+#if ENABLE_EXPERIMENTAL_BEACON_ZONE_TRACKING
+  // Experimental legacy zone inference; requires direct-link measurements and
+  // must remain disabled until the WROOM/S3 pilot passes its acceptance gate.
   if (nodeConfigManager.getRole() == ROLE_WEARABLE) {
     if (strcmp(env.role, "ANCHOR") == 0 || strcmp(env.role, "GATEWAY") == 0) {
       int hops = calculateHopDistance(from);
@@ -175,6 +199,7 @@ void receivedCallback(uint32_t from, String &msg) {
       zoneTracker.handleAnchorBeacon(env.sender_id, env.zone_id, from, hops, rssi);
     }
   }
+#endif
 
   // Handle Option 1: Downlink Provisioning Assignment from Gateway
   if (env.msg_type == MSG_PROV_ASSIGN) {
@@ -199,7 +224,8 @@ void receivedCallback(uint32_t from, String &msg) {
         MessageEnvelope confEnv;
         confEnv.version = PROTOCOL_VERSION;
         confEnv.msg_type = MSG_PROV_CONFIRM;
-        confEnv.seq = ++g_messageSequence;
+        confEnv.seq = nodeConfigManager.nextSequence();
+        if (confEnv.seq == 0) return;
         strncpy(confEnv.sender_id, assign.assigned_id, sizeof(confEnv.sender_id) - 1);
         strncpy(confEnv.role, assign.role, sizeof(confEnv.role) - 1);
         strncpy(confEnv.zone_id, assign.zone_id, sizeof(confEnv.zone_id) - 1);
@@ -263,7 +289,8 @@ void sendTelemetryTask() {
   MessageEnvelope env;
   env.version = PROTOCOL_VERSION;
   env.msg_type = MSG_TELEMETRY;
-  env.seq = ++g_messageSequence;
+  env.seq = nodeConfigManager.nextSequence();
+  if (env.seq == 0) return;
   strncpy(env.sender_id, nodeConfigManager.getDeviceId(), sizeof(env.sender_id) - 1);
   strncpy(env.role, nodeRoleToString(nodeConfigManager.getRole()), sizeof(env.role) - 1);
   const char* activeTelemZone = (nodeConfigManager.getRole() == ROLE_WEARABLE) ? zoneTracker.getCurrentZone() : nodeConfigManager.getZoneId();
@@ -320,7 +347,8 @@ void sendHeartbeatTask() {
   MessageEnvelope env;
   env.version = PROTOCOL_VERSION;
   env.msg_type = MSG_HEARTBEAT;
-  env.seq = ++g_messageSequence;
+  env.seq = nodeConfigManager.nextSequence();
+  if (env.seq == 0) return;
   strncpy(env.sender_id, nodeConfigManager.getDeviceId(), sizeof(env.sender_id) - 1);
   strncpy(env.role, nodeRoleToString(nodeConfigManager.getRole()), sizeof(env.role) - 1);
   const char* activeHbZone = (nodeConfigManager.getRole() == ROLE_WEARABLE) ? zoneTracker.getCurrentZone() : nodeConfigManager.getZoneId();
@@ -354,7 +382,8 @@ void sendProvRequestTask() {
   MessageEnvelope env;
   env.version = PROTOCOL_VERSION;
   env.msg_type = MSG_PROV_REQ;
-  env.seq = ++g_messageSequence;
+  env.seq = nodeConfigManager.nextSequence();
+  if (env.seq == 0) return;
   strncpy(env.sender_id, nodeConfigManager.getDeviceId(), sizeof(env.sender_id) - 1);
   strncpy(env.role, "UNASSIGNED", sizeof(env.role) - 1);
   strncpy(env.zone_id, "UNASSIGNED", sizeof(env.zone_id) - 1);
@@ -432,8 +461,9 @@ void printHelpMenu() {
   Serial.println("  help            - Display this command reference");
   Serial.println("  status          - Print full real-time telemetry & system health");
   Serial.println("  setup           - Switch to SoftAP Captive Portal mode and restart");
+  Serial.println("  portal          - Show the active SoftAP SSID and temporary password");
   Serial.println("  mesh            - Switch to Production Mesh mode and restart");
-  Serial.println("  scan            - Scan I2C bus (sensors) and local Wi-Fi channels");
+  Serial.println("  scan            - Scan I2C bus; Wi-Fi spectrum scan is disabled for radio safety");
   Serial.println("  role <0|1|2>    - Change operational role (0:Wearable, 1:Anchor, 2:Gateway)");
   Serial.println("  id <name>       - Change device badge ID (e.g., id MINER-108)");
   Serial.println("  zone [name|auto]- Change or view subterranean zone (Wearables support 'zone auto')");
@@ -482,6 +512,12 @@ void printStatusDashboard() {
   } else {
     SimpleList<uint32_t> peers = mesh.getNodeList();
     Serial.printf("  Mesh Node ID  : %u | Connected Peers: %d\n", mesh.getNodeId(), (int)peers.size());
+    Serial.printf("  Mesh Radio    : TCP port %u | Commissioned channel %u\n",
+                  MESH_PORT, nodeConfigManager.getMeshChannel());
+    if (nodeConfigManager.getRole() == ROLE_GATEWAY) {
+      Serial.printf("  Router Link   : Wi-Fi status %d | Current channel %u\n",
+                    (int)WiFi.status(), WiFi.channel());
+    }
   }
 
   Serial.println("  -- Sensor Readings --");
@@ -520,21 +556,16 @@ void runI2CScan() {
 }
 
 void runWiFiScan() {
-  Serial.println("\n[WIFI] Scanning 2.4 GHz Wi-Fi spectrum...");
-  WiFi.mode(WIFI_STA);
-  WiFi.disconnect();
-  delay(100);
-  int n = WiFi.scanNetworks();
-  if (n == 0) {
-    Serial.println("  |-- No networks found.");
-  } else {
-    Serial.printf("  |-- Found %d network(s):\n", n);
-    for (int i = 0; i < n; ++i) {
-      Serial.printf("      [%2d] %-24s (RSSI: %3d dBm, Ch: %2d)\n",
-                    i + 1, WiFi.SSID(i).c_str(), WiFi.RSSI(i), WiFi.channel(i));
-    }
-  }
-  WiFi.scanDelete();
+  // An active scan changes the shared Wi-Fi radio state. On an ESP32 running
+  // painlessMesh it can disconnect the STA or move a mesh peer off-channel.
+  Serial.println("\n[WIFI] Spectrum scan is disabled while firmware is running.");
+  Serial.println("  |-- Use an external 2.4 GHz Wi-Fi analyser to inspect router channels.");
+  Serial.println("  |-- The configured mesh channel is shown at production-mesh startup.");
+}
+
+void printBootDiagnostics() {
+  Serial.printf("[BOOT] ESP reset reason code: %d | millis() reset to 0\n",
+                static_cast<int>(esp_reset_reason()));
 }
 
 void handleSerialCLI() {
@@ -560,6 +591,12 @@ void handleSerialCLI() {
         nodeConfigManager.enterSetupMode();
         delay(200);
         ESP.restart();
+      } else if (strcmp(cmd, "portal") == 0 || strcmp(cmd, "credentials") == 0) {
+        if (captivePortal.isActive()) {
+          captivePortal.printCredentials();
+        } else {
+          Serial.println("[CLI] Captive portal is not active. Run 'setup' and wait for the node to restart.");
+        }
       } else if (strcmp(cmd, "mesh") == 0) {
         Serial.println("\n[CLI] Transitioning node to Production Mesh Mode...");
         NodeConfig cfg = nodeConfigManager.get();
@@ -659,7 +696,8 @@ void handleSerialCLI() {
         MessageEnvelope env;
         env.version = PROTOCOL_VERSION;
         env.msg_type = MSG_HEARTBEAT;
-        env.seq = ++g_messageSequence;
+        env.seq = nodeConfigManager.nextSequence();
+        if (env.seq == 0) return;
         strncpy(env.sender_id, nodeConfigManager.getDeviceId(), sizeof(env.sender_id) - 1);
         strncpy(env.role, nodeRoleToString(nodeConfigManager.getRole()), sizeof(env.role) - 1);
         strncpy(env.zone_id, (nodeConfigManager.getRole() == ROLE_WEARABLE) ? zoneTracker.getCurrentZone() : nodeConfigManager.getZoneId(), sizeof(env.zone_id) - 1);
@@ -676,7 +714,7 @@ void handleSerialCLI() {
           if (ok) {
             Serial.println("[CLI] Test heartbeat successfully pushed to backend! Check dashboard.");
           } else {
-            Serial.println("[CLI ERROR] Test heartbeat failed. Verify Wi-Fi and backend URL with 'wifi'.");
+            Serial.println("[CLI ERROR] Test heartbeat was not accepted. Inspect the response above; HTTP 401 means the configured Gateway API key is missing or does not match the backend.");
           }
         }
       } else if (strncmp(cmd, "api", 3) == 0) {
@@ -749,6 +787,7 @@ void setup() {
     delay(10);
   }
   delay(200);
+  printBootDiagnostics();
 
   // 1. Initialize Dynamic NVS Configuration Subsystem
   nodeConfigManager.begin();
@@ -787,12 +826,25 @@ void setup() {
                   nodeConfigManager.getDeviceId());
     Serial.println("[MODE] ======================================================================");
 
-    // Initialize Mesh Network using dynamic credentials from NVS
+    // painlessMesh 1.5.7 signature is (ssid, password, scheduler, port,
+    // connectMode, channel). Keep the TCP port and radio channel explicit.
+    uint8_t meshChannel = nodeConfigManager.getMeshChannel();
+    if (meshChannel < 1 || meshChannel > 13) {
+      Serial.printf("[MESH CONFIG WARNING] Invalid commissioned channel %u; using default channel %u.\n",
+                    meshChannel, MESH_CHANNEL);
+      meshChannel = MESH_CHANNEL;
+    }
     mesh.setDebugMsgTypes(ERROR | STARTUP);
     mesh.init(nodeConfigManager.getMeshPrefix(),
               nodeConfigManager.getMeshPassword(),
               &userScheduler,
-              nodeConfigManager.getMeshChannel());
+              MESH_PORT,
+              WIFI_AP_STA,
+              meshChannel);
+
+    // All production nodes expect the Gateway root. This helps a partitioned
+    // node continue searching for the path to the configured bridge.
+    mesh.setContainsRoot(true);
 
     mesh.onReceive(&receivedCallback);
     mesh.onNewConnection(&newConnectionCallback);
@@ -812,6 +864,14 @@ void setup() {
     }
 
     if (nodeConfigManager.getRole() == ROLE_GATEWAY) {
+      // Configure the router association through painlessMesh. The library
+      // owns station scanning and reconnects, avoiding competing WiFi.begin()
+      // calls against the mesh STA interface.
+      mesh.setRoot(true);
+      WiFi.onEvent(gatewayWiFiEvent);
+      mesh.stationManual(nodeConfigManager.getUplinkSsid(),
+                         nodeConfigManager.getUplinkPassword());
+
       gatewayManager.setDownlinkCallback([](const String& downlinkMsg) {
         Serial.println("\n**************************************************************");
         Serial.println("[DOWNLINK BROADCAST] Re-broadcasting surface command to mesh!");
@@ -824,12 +884,14 @@ void setup() {
         nodeConfigManager.getUplinkSsid(),
         nodeConfigManager.getUplinkPassword(),
         nodeConfigManager.getBackendUrl(),
-        BACKEND_API_KEY,
-        nodeConfigManager.getDeviceId()
+        nodeConfigManager.getBackendApiKey(),
+        nodeConfigManager.getDeviceId(),
+        meshChannel
       );
     }
 
-    Serial.printf("[INIT] Mesh online. Chip Mesh Node ID: %u\n", mesh.getNodeId());
+    Serial.printf("[INIT] Mesh online. Node ID: %u | TCP port: %u | Radio channel: %u\n",
+                  mesh.getNodeId(), MESH_PORT, meshChannel);
   }
 }
 
@@ -846,6 +908,7 @@ void loop() {
   } else {
     // Drives mesh packet routing & scheduler
     mesh.update();
+    radioDiagnosticsUpdate(mesh.getNodeId(), nodeConfigManager.getDeviceId());
 
     if (nodeConfigManager.getRole() == ROLE_GATEWAY) {
       gatewayManager.update();
