@@ -1,0 +1,91 @@
+from rest_framework import serializers
+
+
+class EnvelopeSerializer(serializers.Serializer):
+    ver = serializers.IntegerField(min_value=1, max_value=1)
+    type = serializers.CharField(max_length=16)
+    seq = serializers.IntegerField(min_value=1, max_value=2_147_483_647)
+    sender = serializers.CharField(max_length=32, allow_blank=False)
+    role = serializers.ChoiceField(choices=('WEARABLE', 'ANCHOR', 'GATEWAY', 'UNASSIGNED'))
+    zone = serializers.CharField(max_length=64, allow_blank=False)
+    uptime = serializers.IntegerField(min_value=0)
+    payload = serializers.DictField()
+
+
+def validate_envelope(data, expected_type):
+    if not isinstance(data, dict):
+        return None, {"error": "Payload must be a JSON object"}
+    serializer = EnvelopeSerializer(data=data)
+    if not serializer.is_valid():
+        return None, {"error": "Invalid wire envelope", "details": serializer.errors}
+    normalized = serializer.validated_data
+    if normalized['type'] != expected_type:
+        return None, {"error": f"Expected message type {expected_type}"}
+    return normalized, None
+
+
+class TelemetryPayloadSerializer(serializers.Serializer):
+    co = serializers.FloatField(min_value=0, max_value=10000, required=False)
+    co_ppm = serializers.FloatField(min_value=0, max_value=10000, required=False)
+    temp = serializers.FloatField(min_value=-50, max_value=100, required=False)
+    temp_c = serializers.FloatField(min_value=-50, max_value=100, required=False)
+    hum = serializers.FloatField(min_value=0, max_value=100, required=False)
+    humidity_pct = serializers.FloatField(min_value=0, max_value=100, required=False)
+    fall = serializers.BooleanField(required=False)
+    fall_detected = serializers.BooleanField(required=False)
+    batt = serializers.FloatField(min_value=0, max_value=10, required=False)
+    battery_v = serializers.FloatField(min_value=0, max_value=10, required=False)
+    sim = serializers.BooleanField(required=False)
+    is_simulated = serializers.BooleanField(required=False)
+    ok = serializers.BooleanField(required=False)
+    sensor_ok = serializers.BooleanField(required=False)
+
+    def validate(self, attrs):
+        if 'co' not in attrs and 'co_ppm' not in attrs:
+            raise serializers.ValidationError('co or co_ppm is required')
+        return attrs
+
+
+class AlertPayloadSerializer(serializers.Serializer):
+    severity = serializers.ChoiceField(choices=('INFO', 'WARNING', 'CRITICAL'))
+    code = serializers.CharField(max_length=32, required=False)
+    alert_code = serializers.CharField(max_length=32, required=False)
+    details = serializers.CharField(max_length=2000, allow_blank=True, required=False)
+    val = serializers.FloatField(min_value=0, required=False)
+    trigger_value = serializers.FloatField(min_value=0, required=False)
+
+    def validate(self, attrs):
+        if not attrs.get('code') and not attrs.get('alert_code'):
+            raise serializers.ValidationError('code or alert_code is required')
+        return attrs
+
+
+class HeartbeatPayloadSerializer(serializers.Serializer):
+    heap = serializers.IntegerField(min_value=0, max_value=2_147_483_647, required=False)
+    free_heap = serializers.IntegerField(min_value=0, max_value=2_147_483_647, required=False)
+    batt = serializers.FloatField(min_value=0, max_value=10, required=False)
+    battery_v = serializers.FloatField(min_value=0, max_value=10, required=False)
+
+    def validate(self, attrs):
+        if 'heap' not in attrs and 'free_heap' not in attrs:
+            raise serializers.ValidationError('heap or free_heap is required')
+        if 'batt' not in attrs and 'battery_v' not in attrs:
+            raise serializers.ValidationError('batt or battery_v is required')
+        return attrs
+
+
+class ProvisionPayloadSerializer(serializers.Serializer):
+    chip_id = serializers.CharField(max_length=16, allow_blank=False, required=False)
+    chip_mac = serializers.CharField(max_length=24, allow_blank=False, required=False)
+    mesh_id = serializers.IntegerField(min_value=0, required=False)
+    fw_ver = serializers.CharField(max_length=16, required=False)
+    batt = serializers.FloatField(min_value=0, max_value=10, required=False)
+    mq_ok = serializers.BooleanField(required=False)
+    mpu_ok = serializers.BooleanField(required=False)
+
+
+def validate_payload(serializer_class, payload):
+    serializer = serializer_class(data=payload)
+    if not serializer.is_valid():
+        return None, {"error": "Invalid message payload", "details": serializer.errors}
+    return serializer.validated_data, None
