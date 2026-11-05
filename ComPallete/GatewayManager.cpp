@@ -4,8 +4,9 @@ GatewayManager::GatewayManager()
   : m_ssid(UPLINK_WIFI_SSID),
     m_password(UPLINK_WIFI_PASSWORD),
     m_backendUrl(BACKEND_BASE_URL),
-    m_apiKey(BACKEND_API_KEY),
+    m_apiKey(""),
     m_deviceId(ACTIVE_DEVICE_ID),
+    m_meshChannel(MESH_CHANNEL),
     m_state(GW_STATE_DISCONNECTED),
     m_lastStateCheckMs(0),
     m_lastTransmitMs(0),
@@ -29,25 +30,34 @@ bool GatewayManager::begin(
   const char* password,
   const char* backendUrl,
   const char* apiKey,
-  const char* deviceId
+  const char* deviceId,
+  uint8_t meshChannel
 ) {
   m_ssid = (ssid && strlen(ssid) > 0) ? ssid : UPLINK_WIFI_SSID;
   m_password = password ? password : UPLINK_WIFI_PASSWORD;
   m_backendUrl = (backendUrl && strlen(backendUrl) > 0) ? backendUrl : BACKEND_BASE_URL;
-  m_apiKey = (apiKey && strlen(apiKey) > 0) ? apiKey : BACKEND_API_KEY;
+  m_apiKey = (apiKey && strlen(apiKey) > 0) ? apiKey : "";
   m_deviceId = (deviceId && strlen(deviceId) > 0) ? deviceId : ACTIVE_DEVICE_ID;
+  m_meshChannel = meshChannel;
 
   Serial.println("\n==============================================================");
   Serial.println("         COMPALLETTE - GATEWAY BRIDGE INITIALIZATION          ");
   Serial.printf("  Target Uplink SSID : %s\n", m_ssid.c_str());
   Serial.printf("  Backend REST URL   : %s\n", m_backendUrl.c_str());
   Serial.printf("  Gateway Node ID    : %s\n", m_deviceId.c_str());
+  Serial.printf("  Required Radio Ch. : %u\n", m_meshChannel);
 #if ENABLE_WEBSOCKET_UPLINK
   Serial.println("  Real-time Uplink   : WebSocket Streaming (with HTTP Fallback)");
 #else
   Serial.println("  Real-time Uplink   : HTTP REST Polling");
 #endif
   Serial.println("==============================================================");
+
+  if (m_apiKey.length() < 32) {
+    Serial.println("[GW CONFIG ERROR] A provisioned API key of at least 32 characters is required; uplink disabled.");
+    m_state = GW_STATE_DISCONNECTED;
+    return false;
+  }
 
   // Initialize offline buffer (mounts LittleFS or falls back to RAM)
   m_buffer.begin(BUFFER_MAX_RAM_ITEMS, BUFFER_MAX_FLASH_ITEMS);
@@ -59,8 +69,9 @@ bool GatewayManager::begin(
   });
 #endif
 
-  // Initiate Wi-Fi station connection (painlessMesh continues concurrently)
-  WiFi.begin(m_ssid.c_str(), m_password.c_str());
+  // painlessMesh 1.5.7 owns the station connection through stationManual().
+  // Calling WiFi.begin() here would compete with its mesh scan/reconnect task
+  // for the ESP32's only STA interface.
   m_state = GW_STATE_CONNECTING;
   m_lastStateCheckMs = millis();
 
@@ -95,7 +106,11 @@ void GatewayManager::handleIncomingMeshPacket(uint32_t fromNodeId, const String&
   bool isPriority = (env.msg_type == MSG_ALERT) || (isLegacy && telem.fall_detected);
 
   // Push to persistent buffer
-  m_buffer.push(rawMsg, env.msg_type, isPriority);
+  if (!m_buffer.push(rawMsg, env.msg_type, isPriority)) {
+    Serial.printf("[GW DROP] Could not retain packet from %s (priority=%s). Total dropped=%u\n",
+                  env.sender_id, isPriority ? "yes" : "no", m_buffer.getTotalDropped());
+    return;
+  }
 
   Serial.printf("[GW INGEST] Buffered packet from %s (Type: %s | Priority: %s | Queue Size: %u)\n",
                 env.sender_id,
@@ -129,7 +144,7 @@ void GatewayManager::initWebSocket() {
     hostStr = finalUrl.substring(hostStart);
   }
 
-  String wsPath = String(ENDPOINT_WS_GATEWAY) + "?api_key=" + m_apiKey;
+  String wsPath = String(ENDPOINT_WS_GATEWAY);
   String extraHeaders = "X-API-Key: " + m_apiKey + "\r\nX-Gateway-ID: " + m_deviceId + "\r\n";
 
   Serial.println("\n--------------------------------------------------------------");
@@ -180,7 +195,7 @@ void GatewayManager::handleWsEvent(WStype_t type, uint8_t * payload, size_t leng
 void GatewayManager::update() {
   uint32_t now = millis();
 
-  // 1. Connection Monitoring (Every 1500ms)
+  // 1. Observe the painlessMesh-managed station connection (every 1500ms).
   if (now - m_lastStateCheckMs >= 1500) {
     m_lastStateCheckMs = now;
     checkConnection();
@@ -258,7 +273,14 @@ void GatewayManager::checkConnection() {
       Serial.printf("   |-- Router Gateway IP  : %s\n", WiFi.gatewayIP().toString().c_str());
       Serial.printf("   |-- Subnet Mask        : %s\n", WiFi.subnetMask().toString().c_str());
       Serial.printf("   |-- Uplink RSSI        : %d dBm\n", WiFi.RSSI());
+      Serial.printf("   |-- Router Channel     : %u\n", WiFi.channel());
       Serial.printf("   |-- Pending Queue Size : %u packets\n", m_buffer.count());
+
+      if (WiFi.channel() != m_meshChannel) {
+        Serial.printf("[GW RADIO WARNING] Router channel %u differs from commissioned mesh channel %u. "
+                      "ESP32 AP+STA uses one channel; align the router and mesh before deployment.\n",
+                      WiFi.channel(), m_meshChannel);
+      }
 
       // Initialize mDNS Responder on the ESP32
       if (!m_mdnsInitialized) {
@@ -279,17 +301,18 @@ void GatewayManager::checkConnection() {
         }
       }
     }
-  } else if (status == WL_DISCONNECTED || status == WL_IDLE_STATUS || status == WL_CONNECTION_LOST) {
+  } else {
     if (m_state == GW_STATE_CONNECTED) {
-      Serial.println("\n[GW UPLINK WARNING] Wi-Fi disconnected! Switching to offline buffering.");
+      Serial.printf("\n[GW UPLINK WARNING] Wi-Fi station unavailable (status %d). Switching to offline buffering.\n",
+                    (int)status);
     }
     m_state = GW_STATE_DISCONNECTED;
     m_wsConnected = false;
     // Invalidate cached IP upon Wi-Fi loss
     m_cachedIp = IPAddress(0, 0, 0, 0);
     m_cacheExpireMs = 0;
-    // Attempt non-blocking reconnection
-    WiFi.begin(m_ssid.c_str(), m_password.c_str());
+    // painlessMesh 1.5.7 schedules the reconnect for the station configured
+    // by stationManual(); do not issue a competing WiFi.begin() here.
   }
 }
 
@@ -414,14 +437,47 @@ bool GatewayManager::forwardPacket(const BufferedItem& item) {
     return true;
   }
 
-  // Handle Client-Side Errors (400 Bad Request / 422 Unprocessable)
-  // Drop the bad packet so it doesn't perpetually block the buffer queue
+  // Only a Django-issued validation code proves the event can never be
+  // accepted. Other 4xx failures (host policy, credentials, proxy policy)
+  // remain queued for operator correction and later replay.
   if (httpCode == 400 || httpCode == 422) {
-    Serial.printf("[GW CLIENT ERROR] Backend rejected packet with HTTP %d. Dropping invalid payload to unblock queue.\n",
-                  httpCode);
+    uint32_t rejectedSeq = 0;
+    const char* rejectedSender = "unknown";
+    StaticJsonDocument<512> diagnosticDoc;
+    if (!deserializeJson(diagnosticDoc, item.rawJson)) {
+      rejectedSeq = diagnosticDoc["seq"] | 0UL;
+      rejectedSender = diagnosticDoc["sender"] | "unknown";
+    }
+
+    const int responseSize = http.getSize();
+    String responseBody = http.getString();
+    bool permanentlyInvalid = false;
+    StaticJsonDocument<256> responseDoc;
+    if (!deserializeJson(responseDoc, responseBody)) {
+      const char* errorCode = responseDoc["error_code"] | "";
+      permanentlyInvalid = strcmp(errorCode, "VALIDATION_ERROR") == 0;
+    }
+    responseBody.replace('\r', ' ');
+    responseBody.replace('\n', ' ');
+    if (responseBody.length() > 160) responseBody.remove(160);
+
+    if (permanentlyInvalid) {
+      Serial.printf("[GW INVALID EVENT] HTTP %d for %s %s #%u; discarding permanently invalid event. Response (%d B): %s\n",
+                    httpCode, messageTypeToString(item.type), rejectedSender, rejectedSeq,
+                    responseSize, responseBody.c_str());
+      http.end();
+      return true;
+    }
+    if (responseBody.length() > 0) {
+      Serial.printf("[GW CONFIG ERROR] HTTP %d for %s %s #%u; retaining packet for recovery. Response (%d B): %s\n",
+                    httpCode, messageTypeToString(item.type), rejectedSender, rejectedSeq,
+                    responseSize, responseBody.c_str());
+    } else {
+      Serial.printf("[GW CONFIG ERROR] HTTP %d for %s %s #%u; retaining packet for recovery (response size: %d B).\n",
+                    httpCode, messageTypeToString(item.type), rejectedSender, rejectedSeq, responseSize);
+    }
     http.end();
-    m_buffer.pop(); // Discard unparseable packet
-    return true;
+    return false;
   }
 
   // Server error (5xx) or Network timeout/connection failure (< 0)
@@ -473,6 +529,17 @@ bool GatewayManager::sendDirectTestPacket(const String& jsonPayload, MessageType
     Serial.printf("[GW DIRECT TEST SUCCESS] Server returned: %s\n", resp.c_str());
     http.end();
     return true;
+  }
+
+  if (httpCode > 0) {
+    String response = http.getString();
+    if (httpCode == HTTP_CODE_UNAUTHORIZED || httpCode == HTTP_CODE_FORBIDDEN) {
+      Serial.printf("[GW DIRECT TEST AUTH ERROR] Backend rejected the Gateway credential (HTTP %d). Re-enter the Gateway API key through the captive portal; do not print or share that key. Response: %s\n",
+                    httpCode, response.c_str());
+    } else {
+      Serial.printf("[GW DIRECT TEST ERROR] Backend rejected the request (HTTP %d). Response: %s\n",
+                    httpCode, response.c_str());
+    }
   }
 
   http.end();
