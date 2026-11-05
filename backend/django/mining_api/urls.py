@@ -17,9 +17,13 @@ from .views import (
     ProvisioningPendingListView,
     ProvisioningAssignView,
     ProvisioningConfirmView,
+    OperatorSessionView,
+    csrf_token_view,
 )
 
 urlpatterns = [
+    re_path(r'^api/v1/auth/csrf/?$', csrf_token_view, name='auth-csrf'),
+    re_path(r'^api/v1/auth/session/?$', OperatorSessionView.as_view(), name='auth-session'),
     re_path(r'^(?:api/v1/)?health/?$', HealthCheckView.as_view(), name='health'),
     re_path(r'^api/v1/telemetry/?$', TelemetryIngestView.as_view(), name='telemetry-ingest'),
     re_path(r'^api/v1/alert/?$', AlertIngestView.as_view(), name='alert-ingest'),
