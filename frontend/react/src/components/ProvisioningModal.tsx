@@ -20,6 +20,7 @@ export const ProvisioningModal: React.FC<ProvisioningModalProps> = ({
   const [zoneId, setZoneId] = useState('LEVEL-3-ACTIVE-STOPE');
   const [officerName, setOfficerName] = useState(() => localStorage.getItem('officer_name') || 'Safety_Officer');
   const [isSubmitting, setIsSubmitting] = useState(false);
+  const [submitError, setSubmitError] = useState('');
 
   // Sync selectedChipId when list updates
   React.useEffect(() => {
@@ -38,12 +39,13 @@ export const ProvisioningModal: React.FC<ProvisioningModalProps> = ({
 
     try {
       setIsSubmitting(true);
+      setSubmitError('');
       localStorage.setItem('officer_name', officerName);
       await onAssign(activeNode.chip_id, deviceId.trim(), role, zoneId, officerName);
       setDeviceId('');
       onClose();
     } catch (err) {
-      console.error('Error assigning node:', err);
+      setSubmitError(err instanceof Error ? err.message : 'The node could not be commissioned.');
     } finally {
       setIsSubmitting(false);
     }
@@ -204,6 +206,7 @@ export const ProvisioningModal: React.FC<ProvisioningModalProps> = ({
               </div>
 
               <div className="modal-footer" style={{ padding: '10px 0 0 0', marginTop: '10px' }}>
+                {submitError && <p role="alert" className="form-error">{submitError}</p>}
                 <button type="button" className="btn btn-ghost" onClick={onClose}>
                   Cancel
                 </button>
