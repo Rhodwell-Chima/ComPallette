@@ -23,6 +23,7 @@ struct NodeConfig {
   char      uplink_ssid[32];           // Surface Wi-Fi SSID (Gateway role only)
   char      uplink_password[64];       // Surface Wi-Fi Password (Gateway role only)
   char      backend_url[64];           // REST API URL
+  char      backend_api_key[64];       // Gateway device credential
   float     co_warning_ppm;            // OSHA warning limit (ppm)
   float     co_critical_ppm;           // NIOSH evacuation limit (ppm)
   char      chip_id[16];               // Unique 6-hex factory chip identifier (e.g. "8F4C2A")
@@ -45,6 +46,10 @@ public:
   // Set individual provisioning assignment and commit to NVS
   bool setAssignment(const char* deviceId, NodeRole role, const char* zoneId, float coWarn = 25.0f, float coCrit = 50.0f);
 
+  // Returns a reboot-safe monotonically increasing event sequence. Reserves
+  // sequence blocks in NVS to limit flash wear while preventing reuse.
+  uint32_t nextSequence();
+
   // Erase all persistent configurations (Factory Reset)
   void clear();
 
@@ -65,13 +70,18 @@ public:
   const char* getUplinkSsid() const { return _config.uplink_ssid; }
   const char* getUplinkPassword() const { return _config.uplink_password; }
   const char* getBackendUrl() const { return _config.backend_url; }
+  const char* getBackendApiKey() const { return _config.backend_api_key; }
 
   // Print diagnostic summary to Serial
   void printConfig();
 
 private:
   Preferences _prefs;
+  Preferences _sequencePrefs;
   NodeConfig  _config;
+  uint32_t _sequenceNext;
+  uint32_t _sequenceReservedThrough;
+  bool _sequenceReady;
 
   // Reads hardware eFuse MAC to generate permanent hardware chip identity
   void initHardwareIdentity();
