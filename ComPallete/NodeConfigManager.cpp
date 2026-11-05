@@ -5,7 +5,7 @@
 // Global configuration manager instance
 NodeConfigManager nodeConfigManager;
 
-NodeConfigManager::NodeConfigManager() {
+NodeConfigManager::NodeConfigManager() : _sequenceNext(1), _sequenceReservedThrough(0), _sequenceReady(false) {
   memset(&_config, 0, sizeof(_config));
 }
 
@@ -25,6 +25,10 @@ void NodeConfigManager::initHardwareIdentity() {
 
 bool NodeConfigManager::begin() {
   initHardwareIdentity();
+  _sequenceReady = _sequencePrefs.begin("compseq", false);
+  const uint32_t persistedThrough = _sequenceReady ? _sequencePrefs.getULong("seq_hi", 0) : 0;
+  _sequenceNext = persistedThrough + 1;
+  _sequenceReservedThrough = persistedThrough;
 
   if (!_prefs.begin("compallette", false)) {
     Serial.println("[NVS] Warning: Failed to open NVS namespace 'compallette'. Using factory defaults.");
@@ -35,6 +39,28 @@ bool NodeConfigManager::begin() {
   load();
   printConfig();
   return true;
+}
+
+uint32_t NodeConfigManager::nextSequence() {
+  if (!_sequenceReady) {
+    Serial.println("[NVS] Sequence namespace unavailable; cannot guarantee unique event IDs.");
+    return 0;
+  }
+  if (_sequenceNext == 0 || _sequenceNext > _sequenceReservedThrough) {
+    const uint32_t persistedThrough = _sequencePrefs.getULong("seq_hi", 0);
+    const uint32_t reserveThrough = persistedThrough + 256;
+    if (reserveThrough < persistedThrough || reserveThrough > 2147483647UL) {
+      Serial.println("[NVS] Sequence space exhausted; refusing to reuse event IDs.");
+      return 0;
+    }
+    if (_sequencePrefs.putULong("seq_hi", reserveThrough) == 0) {
+      Serial.println("[NVS] Failed to reserve event sequence range.");
+      return 0;
+    }
+    _sequenceNext = persistedThrough + 1;
+    _sequenceReservedThrough = reserveThrough;
+  }
+  return _sequenceNext++;
 }
 
 bool NodeConfigManager::load() {
@@ -66,6 +92,8 @@ bool NodeConfigManager::load() {
 
     String api = _prefs.getString("api_url", BACKEND_BASE_URL);
     strncpy(_config.backend_url, api.c_str(), sizeof(_config.backend_url) - 1);
+    String apiKey = _prefs.getString("api_key", "");
+    strncpy(_config.backend_api_key, apiKey.c_str(), sizeof(_config.backend_api_key) - 1);
 
     _config.co_warning_ppm = _prefs.getFloat("co_warn", CO_THRESHOLD_WARNING_PPM);
     _config.co_critical_ppm = _prefs.getFloat("co_crit", CO_THRESHOLD_CRITICAL_PPM);
@@ -103,6 +131,8 @@ bool NodeConfigManager::load() {
 
     String api = _prefs.getString("api_url", BACKEND_BASE_URL);
     strncpy(_config.backend_url, api.c_str(), sizeof(_config.backend_url) - 1);
+    String apiKey = _prefs.getString("api_key", "");
+    strncpy(_config.backend_api_key, apiKey.c_str(), sizeof(_config.backend_api_key) - 1);
 
     _config.co_warning_ppm = _prefs.getFloat("co_warn", CO_THRESHOLD_WARNING_PPM);
     _config.co_critical_ppm = _prefs.getFloat("co_crit", CO_THRESHOLD_CRITICAL_PPM);
@@ -125,6 +155,7 @@ bool NodeConfigManager::save(const NodeConfig& cfg) {
   _prefs.putString("gw_ssid", _config.uplink_ssid);
   _prefs.putString("gw_pass", _config.uplink_password);
   _prefs.putString("api_url", _config.backend_url);
+  _prefs.putString("api_key", _config.backend_api_key);
   _prefs.putFloat("co_warn", _config.co_warning_ppm);
   _prefs.putFloat("co_crit", _config.co_critical_ppm);
 
