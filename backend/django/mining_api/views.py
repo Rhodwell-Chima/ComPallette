@@ -1,8 +1,14 @@
+import logging
 import time
 from django.conf import settings
+from django.contrib.auth import authenticate, login, logout
+from django.http import JsonResponse
+from django.middleware.csrf import get_token
+from django.utils.decorators import method_decorator
+from django.views.decorators.csrf import csrf_protect, ensure_csrf_cookie
 from django.db import transaction, IntegrityError
 from django.shortcuts import get_object_or_404
-from rest_framework import status
+from rest_framework import status, permissions
 from rest_framework.views import APIView
 from rest_framework.response import Response
 
@@ -14,12 +20,61 @@ from .serializers import (
     NodeSerializer, TelemetryRecordSerializer, SafetyAlertSerializer,
     AuditEntrySerializer, ProvisioningRequestSerializer
 )
+from .wire_validation import (
+    validate_envelope, validate_payload, TelemetryPayloadSerializer, AlertPayloadSerializer,
+    HeartbeatPayloadSerializer, ProvisionPayloadSerializer,
+)
+
+
+logger = logging.getLogger(__name__)
 
 
 def verify_api_key(request):
     """Verifies gateway X-API-Key header matches configured secret."""
     key = request.headers.get('X-API-Key')
-    return key == settings.COMPALLETTE_API_KEY
+    expected = settings.COMPALLETTE_API_KEY
+    return bool(expected) and key == expected
+
+
+def validation_error_response(request, error):
+    """Return a safe, machine-readable rejection for a permanently invalid event."""
+    response_body = {**error, "error_code": "VALIDATION_ERROR"}
+    logger.warning(
+        "Gateway event rejected by validation path=%s gateway=%s error=%s",
+        request.path,
+        request.headers.get('X-Gateway-ID', 'unknown'),
+        error.get('error', 'unknown'),
+    )
+    return Response(response_body, status=status.HTTP_400_BAD_REQUEST)
+
+
+@ensure_csrf_cookie
+def csrf_token_view(request):
+    return JsonResponse({"csrfToken": get_token(request)})
+
+
+class OperatorSessionView(APIView):
+    permission_classes = [permissions.AllowAny]
+
+    @method_decorator(csrf_protect)
+    def post(self, request):
+        username = request.data.get('username', '')
+        password = request.data.get('password', '')
+        user = authenticate(request, username=username, password=password)
+        if user is None or not user.is_active:
+            return Response({"error": "Invalid username or password"}, status=status.HTTP_401_UNAUTHORIZED)
+        login(request, user)
+        return Response({"authenticated": True, "username": user.get_username(), "is_staff": user.is_staff})
+
+    def get(self, request):
+        if not request.user.is_authenticated:
+            return Response({"authenticated": False}, status=status.HTTP_401_UNAUTHORIZED)
+        return Response({"authenticated": True, "username": request.user.get_username(), "is_staff": request.user.is_staff})
+
+    @method_decorator(csrf_protect)
+    def delete(self, request):
+        logout(request)
+        return Response({"authenticated": False})
 
 
 def check_and_update_watchdog():
@@ -36,47 +91,42 @@ def check_and_update_watchdog():
     ).update(status=NodeStatus.STALE)
 
     # 2. Flag Offline Nodes and generate COMM_LOST alert
-    dropping = Node.objects.filter(
-        last_seen_ts__lt=offline_limit
-    ).exclude(status=NodeStatus.OFFLINE)
-
-    for n in dropping:
-        n.status = NodeStatus.OFFLINE
-        n.save(update_fields=['status'])
-
-        # Create automated COMM_LOST safety alert
-        SafetyAlert.objects.get_or_create(
-            node=n,
-            seq=0,
-            alert_code='COMM_LOST',
-            defaults={
-                'zone': n.current_zone,
-                'severity': AlertSeverity.WARNING,
-                'details': f"Node {n.node_id} ({n.role}) lost underground communication in {n.current_zone}",
-                'trigger_value': 0.0,
-                'status': AlertStatus.NEW,
-                'created_at': now_ms,
-            }
-        )
-        AuditEntry.objects.create(
-            timestamp=now_ms,
-            actor='SYSTEM_WATCHDOG',
-            action='COMM_LOST',
-            details=f"Node {n.node_id} marked OFFLINE in {n.current_zone}"
-        )
+    with transaction.atomic():
+        dropping = list(Node.objects.select_for_update().filter(
+            last_seen_ts__lt=offline_limit
+        ).exclude(status=NodeStatus.OFFLINE))
+        for n in dropping:
+            n.status = NodeStatus.OFFLINE
+            n.save(update_fields=['status'])
+            SafetyAlert.objects.get_or_create(
+                node=n, seq=0, alert_code='COMM_LOST',
+                defaults={
+                    'zone': n.current_zone,
+                    'severity': AlertSeverity.WARNING,
+                    'details': f"Node {n.node_id} ({n.role}) lost underground communication in {n.current_zone}",
+                    'trigger_value': 0.0, 'status': AlertStatus.NEW, 'created_at': now_ms,
+                }
+            )
+            AuditEntry.objects.create(
+                timestamp=now_ms, actor='SYSTEM_WATCHDOG', action='COMM_LOST',
+                details=f"Node {n.node_id} marked OFFLINE in {n.current_zone}"
+            )
 
 
 class HealthCheckView(APIView):
+    permission_classes = [permissions.AllowAny]
     def get(self, request):
         return Response({
             "status": "healthy",
             "service": "Compallette Mining Safety Django Backend",
             "version": "2.0.0",
+            "build_revision": settings.COMPALLETTE_BUILD_REVISION,
             "database": settings.DATABASES['default']['ENGINE'].split('.')[-1],
         })
 
 
 class TelemetryIngestView(APIView):
+    permission_classes = [permissions.AllowAny]
     def post(self, request):
         if not verify_api_key(request):
             return Response({"error": "Unauthorized: Invalid or missing X-API-Key"}, status=status.HTTP_401_UNAUTHORIZED)
@@ -87,35 +137,24 @@ class TelemetryIngestView(APIView):
 
         now_ms = int(time.time() * 1000)
 
-        # Legacy payload support
-        is_legacy = ("ver" not in data and "miner_id" in data)
-        if is_legacy:
-            node_id = data.get("miner_id", "LEGACY_NODE")
-            seq = 0
-            role = NodeRole.WEARABLE
-            zone = "UNASSIGNED"
-            uptime_ms = 0
-            co_ppm = float(data.get("co", 0.0))
-            fall = bool(data.get("fall", False))
-            temp_c, hum, batt, sim, sok = 0.0, 0.0, 0.0, True, True
-        else:
-            node_id = data.get("sender", "UNKNOWN")
-            seq = int(data.get("seq", 0))
-            role = data.get("role", NodeRole.WEARABLE)
-            zone = data.get("zone", "UNASSIGNED")
-            uptime_ms = int(data.get("uptime", 0))
-
-            payload = data.get("payload", {})
-            if not isinstance(payload, dict):
-                return Response({"error": "Missing or invalid payload object"}, status=status.HTTP_400_BAD_REQUEST)
-
-            co_ppm = float(payload.get("co", payload.get("co_ppm", 0.0)))
-            temp_c = float(payload.get("temp", payload.get("temp_c", 0.0)))
-            hum = float(payload.get("hum", payload.get("humidity_pct", 0.0)))
-            fall = bool(payload.get("fall", payload.get("fall_detected", False)))
-            batt = float(payload.get("batt", payload.get("battery_v", 0.0)))
-            sim = bool(payload.get("sim", payload.get("is_simulated", True)))
-            sok = bool(payload.get("ok", payload.get("sensor_ok", True)))
+        envelope, error = validate_envelope(data, 'TELEMETRY')
+        if error:
+            return validation_error_response(request, error)
+        payload, error = validate_payload(TelemetryPayloadSerializer, envelope['payload'])
+        if error:
+            return validation_error_response(request, error)
+        node_id = envelope['sender']
+        seq = envelope['seq']
+        role = envelope['role']
+        zone = envelope['zone']
+        uptime_ms = envelope['uptime']
+        co_ppm = float(payload.get("co", payload.get("co_ppm", 0.0)))
+        temp_c = float(payload.get("temp", payload.get("temp_c", 0.0)))
+        hum = float(payload.get("hum", payload.get("humidity_pct", 0.0)))
+        fall = bool(payload.get("fall", payload.get("fall_detected", False)))
+        batt = float(payload.get("batt", payload.get("battery_v", 0.0)))
+        sim = bool(payload.get("sim", payload.get("is_simulated", True)))
+        sok = bool(payload.get("ok", payload.get("sensor_ok", True)))
 
         with transaction.atomic():
             # Upsert Node
@@ -136,9 +175,21 @@ class TelemetryIngestView(APIView):
                 }
             )
 
-            # Check sequence deduplication
-            existing_telem = TelemetryRecord.objects.filter(node=node, seq=seq).exists()
-            if existing_telem:
+            # The database uniqueness constraint makes this idempotent even if
+            # retries arrive concurrently at multiple API workers.
+            telem, created = TelemetryRecord.objects.get_or_create(
+                node=node, seq=seq,
+                defaults={
+                    'zone': zone, 'co_ppm': co_ppm, 'temp_c': temp_c,
+                    'humidity_pct': hum, 'fall_detected': fall, 'battery_v': batt,
+                    'is_simulated': sim, 'sensor_ok': sok,
+                    'uptime_ms': uptime_ms, 'received_at': now_ms,
+                },
+            )
+            if not created:
+                node.last_seen_ts = now_ms
+                node.status = NodeStatus.ONLINE
+                node.save(update_fields=['last_seen_ts', 'status'])
                 return Response({
                     "status": "ok",
                     "recorded": False,
@@ -146,22 +197,6 @@ class TelemetryIngestView(APIView):
                     "node_id": node_id,
                     "seq": seq
                 })
-
-            # Record new telemetry
-            TelemetryRecord.objects.create(
-                node=node,
-                seq=seq,
-                zone=zone,
-                co_ppm=co_ppm,
-                temp_c=temp_c,
-                humidity_pct=hum,
-                fall_detected=fall,
-                battery_v=batt,
-                is_simulated=sim,
-                sensor_ok=sok,
-                uptime_ms=uptime_ms,
-                received_at=now_ms
-            )
 
             # Update live node state
             node.role = role
@@ -187,11 +222,15 @@ class TelemetryIngestView(APIView):
 
 
 class AlertIngestView(APIView):
+    permission_classes = [permissions.AllowAny]
     def post(self, request):
         if not verify_api_key(request):
             return Response({"error": "Unauthorized: Invalid or missing X-API-Key"}, status=status.HTTP_401_UNAUTHORIZED)
 
         data = request.data
+        envelope, error = validate_envelope(data, 'ALERT')
+        if error:
+            return validation_error_response(request, error)
         now_ms = int(time.time() * 1000)
 
         node_id = data.get("sender", "UNKNOWN")
@@ -199,7 +238,9 @@ class AlertIngestView(APIView):
         role = data.get("role", NodeRole.WEARABLE)
         zone = data.get("zone", "UNASSIGNED")
 
-        payload = data.get("payload", {})
+        payload, error = validate_payload(AlertPayloadSerializer, envelope['payload'])
+        if error:
+            return validation_error_response(request, error)
         sev = payload.get("severity", AlertSeverity.WARNING)
         code = payload.get("code", payload.get("alert_code", "UNKNOWN"))
         details = payload.get("details", "")
@@ -211,27 +252,21 @@ class AlertIngestView(APIView):
                 defaults={'role': role, 'current_zone': zone, 'last_seen_ts': now_ms, 'status': NodeStatus.ONLINE}
             )
 
-            existing = SafetyAlert.objects.filter(node=node, seq=seq, alert_code=code).first()
-            if existing:
+            alert, created = SafetyAlert.objects.get_or_create(
+                node=node, seq=seq, alert_code=code,
+                defaults={
+                    'zone': zone, 'severity': sev, 'details': details,
+                    'trigger_value': val, 'status': AlertStatus.NEW, 'created_at': now_ms,
+                },
+            )
+            if not created:
                 return Response({
                     "status": "ok",
                     "recorded": False,
                     "deduplicated": True,
-                    "alert_id": existing.id,
+                    "alert_id": alert.id,
                     "node_id": node_id
                 })
-
-            alert = SafetyAlert.objects.create(
-                node=node,
-                zone=zone,
-                severity=sev,
-                alert_code=code,
-                details=details,
-                trigger_value=val,
-                status=AlertStatus.NEW,
-                seq=seq,
-                created_at=now_ms
-            )
 
             AuditEntry.objects.create(
                 timestamp=now_ms,
@@ -255,17 +290,23 @@ class AlertIngestView(APIView):
 
 
 class HeartbeatIngestView(APIView):
+    permission_classes = [permissions.AllowAny]
     def post(self, request):
         if not verify_api_key(request):
             return Response({"error": "Unauthorized: Invalid or missing X-API-Key"}, status=status.HTTP_401_UNAUTHORIZED)
 
         data = request.data
+        envelope, error = validate_envelope(data, 'HEARTBEAT')
+        if error:
+            return validation_error_response(request, error)
         now_ms = int(time.time() * 1000)
         node_id = data.get("sender", "UNKNOWN")
         role = data.get("role", NodeRole.ANCHOR)
         zone = data.get("zone", "UNASSIGNED")
 
-        payload = data.get("payload", {})
+        payload, error = validate_payload(HeartbeatPayloadSerializer, envelope['payload'])
+        if error:
+            return validation_error_response(request, error)
         heap = int(payload.get("heap", payload.get("free_heap", 0)))
         batt = float(payload.get("batt", payload.get("battery_v", 0.0)))
 
@@ -286,8 +327,6 @@ class HeartbeatIngestView(APIView):
 
 class SystemSummaryView(APIView):
     def get(self, request):
-        check_and_update_watchdog()
-
         total = Node.objects.count()
         online_miners = Node.objects.filter(role=NodeRole.WEARABLE, status=NodeStatus.ONLINE).count()
         stale = Node.objects.filter(status=NodeStatus.STALE).count()
@@ -322,7 +361,6 @@ class SystemSummaryView(APIView):
 
 class NodeListView(APIView):
     def get(self, request):
-        check_and_update_watchdog()
         status_q = request.query_params.get("status")
         active_q = request.query_params.get("active")
 
@@ -393,12 +431,13 @@ class AlertDetailView(APIView):
 
 
 class AlertAcknowledgeView(APIView):
+    permission_classes = [permissions.IsAdminUser]
     def post(self, request, alert_id):
         alert = get_object_or_404(SafetyAlert, id=alert_id)
         if alert.status != AlertStatus.NEW:
             return Response({"error": "Alert not found or already acknowledged/resolved", "alert_id": alert_id}, status=status.HTTP_404_NOT_FOUND)
 
-        officer = request.data.get("officer_name", request.data.get("officer", "Safety_Officer"))
+        officer = request.user.get_username()
         now_ms = int(time.time() * 1000)
 
         alert.status = AlertStatus.ACKNOWLEDGED
@@ -417,12 +456,13 @@ class AlertAcknowledgeView(APIView):
 
 
 class AlertResolveView(APIView):
+    permission_classes = [permissions.IsAdminUser]
     def post(self, request, alert_id):
         alert = get_object_or_404(SafetyAlert, id=alert_id)
         if alert.status == AlertStatus.RESOLVED:
             return Response({"error": "Alert already resolved", "alert_id": alert_id}, status=status.HTTP_404_NOT_FOUND)
 
-        officer = request.data.get("officer_name", request.data.get("officer", "Safety_Officer"))
+        officer = request.user.get_username()
         notes = request.data.get("notes", "Hazard cleared.")
         now_ms = int(time.time() * 1000)
 
@@ -455,14 +495,20 @@ class AuditListView(APIView):
 # ============================================================================
 
 class ProvisioningRequestIngestView(APIView):
+    permission_classes = [permissions.AllowAny]
     """Handles uncommissioned node announcement beacons forwarded by the mesh gateway."""
     def post(self, request):
         if not verify_api_key(request):
             return Response({"error": "Unauthorized: Invalid X-API-Key header"}, status=status.HTTP_401_UNAUTHORIZED)
 
         data = request.data
-        payload = data.get("payload", {})
-        chip_id = payload.get("chip_id") or data.get("sender", "").replace("PROV-", "")
+        envelope, error = validate_envelope(data, 'PROV_REQ')
+        if error:
+            return validation_error_response(request, error)
+        payload, error = validate_payload(ProvisionPayloadSerializer, envelope['payload'])
+        if error:
+            return validation_error_response(request, error)
+        chip_id = payload.get("chip_id") or envelope['sender'].replace("PROV-", "")
 
         if not chip_id:
             return Response({"error": "Missing chip_id in provisioning payload"}, status=status.HTTP_400_BAD_REQUEST)
@@ -506,13 +552,16 @@ class ProvisioningPendingListView(APIView):
 
 
 class ProvisioningAssignView(APIView):
+    permission_classes = [permissions.IsAdminUser]
     """Dispatcher commissions an unassigned node by binding an ID, role, and underground zone."""
     def post(self, request):
-        chip_id = request.data.get("chip_id")
+        payload = request.data.get('payload', {}) if isinstance(request.data, dict) else {}
+        chip_id = payload.get("chip_id") if isinstance(payload, dict) else None
+        chip_id = chip_id or request.data.get("chip_id")
         device_id = request.data.get("device_id")
         role = request.data.get("role", "WEARABLE")
         zone_id = request.data.get("zone_id", "SURFACE-PORTAL")
-        officer = request.data.get("officer_name", "Safety_Officer")
+        officer = request.user.get_username()
 
         if not chip_id or not device_id:
             return Response({"error": "chip_id and device_id are required"}, status=status.HTTP_400_BAD_REQUEST)
@@ -577,8 +626,14 @@ class ProvisioningAssignView(APIView):
 
 class ProvisioningConfirmView(APIView):
     """Gateway reports that node received assignment and acknowledged commissioning."""
+    permission_classes = [permissions.AllowAny]
     def post(self, request):
-        chip_id = request.data.get("chip_id")
+        if not verify_api_key(request):
+            return Response({"error": "Unauthorized: Invalid or missing X-API-Key"}, status=status.HTTP_401_UNAUTHORIZED)
+        envelope, error = validate_envelope(request.data, 'PROV_CONFIRM')
+        if error:
+            return validation_error_response(request, error)
+        chip_id = envelope['payload'].get("chip_id")
         if not chip_id:
             return Response({"error": "chip_id is required"}, status=status.HTTP_400_BAD_REQUEST)
 
