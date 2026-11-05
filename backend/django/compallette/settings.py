@@ -4,11 +4,19 @@ from pathlib import Path
 # Build paths inside the project like this: BASE_DIR / 'subdir'.
 BASE_DIR = Path(__file__).resolve().parent.parent
 
-# Quick-start development settings - unsuitable for production
-SECRET_KEY = os.getenv('SECRET_KEY', 'compallette-insecure-dev-key-change-in-production')
-DEBUG = os.getenv('DEBUG', '1') == '1'
+SECRET_KEY = os.getenv('SECRET_KEY', '')
+DEBUG = os.getenv('DEBUG', '0') == '1'
+COMPALLETTE_BUILD_REVISION = os.getenv('COMPALLETTE_BUILD_REVISION', 'development')
 
-ALLOWED_HOSTS = ['*']
+if not SECRET_KEY:
+    raise RuntimeError('SECRET_KEY must be set')
+if len(SECRET_KEY) < 32 or 'replace-with' in SECRET_KEY:
+    raise RuntimeError('SECRET_KEY must be a unique random value of at least 32 characters')
+
+ALLOWED_HOSTS = [host.strip() for host in os.getenv('ALLOWED_HOSTS', 'localhost,127.0.0.1').split(',') if host.strip()]
+CSRF_TRUSTED_ORIGINS = [origin.strip() for origin in os.getenv(
+    'CSRF_TRUSTED_ORIGINS', 'http://localhost:3000,http://localhost:5173'
+).split(',') if origin.strip()]
 
 # Application definition
 INSTALLED_APPS = [
@@ -104,6 +112,12 @@ DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
 
 # Django REST Framework Configuration
 REST_FRAMEWORK = {
+    'DEFAULT_AUTHENTICATION_CLASSES': [
+        'rest_framework.authentication.SessionAuthentication',
+    ],
+    'DEFAULT_PERMISSION_CLASSES': [
+        'rest_framework.permissions.IsAuthenticated',
+    ],
     'DEFAULT_RENDERER_CLASSES': [
         'rest_framework.renderers.JSONRenderer',
         'rest_framework.renderers.BrowsableAPIRenderer',
@@ -114,7 +128,10 @@ REST_FRAMEWORK = {
 }
 
 # CORS Configuration
-CORS_ALLOW_ALL_ORIGINS = True
+CORS_ALLOW_ALL_ORIGINS = os.getenv('CORS_ALLOW_ALL', '0') == '1'
+CORS_ALLOWED_ORIGINS = [origin.strip() for origin in os.getenv('CORS_ALLOWED_ORIGINS', '').split(',') if origin.strip()]
+if not DEBUG and ('*' in ALLOWED_HOSTS or CORS_ALLOW_ALL_ORIGINS):
+    raise RuntimeError('Wildcard hosts and allow-all CORS are forbidden when DEBUG=0')
 CORS_ALLOW_HEADERS = [
     'accept',
     'accept-encoding',
@@ -131,7 +148,11 @@ CORS_ALLOW_HEADERS = [
 ]
 
 # Compallette Mining Safety Thresholds & API Security
-COMPALLETTE_API_KEY = os.getenv('COMPALLETTE_API_KEY', 'compallette-mining-secret-key-v1')
+COMPALLETTE_API_KEY = os.getenv('COMPALLETTE_API_KEY', '')
+if not COMPALLETTE_API_KEY:
+    raise RuntimeError('COMPALLETTE_API_KEY must be set')
+if len(COMPALLETTE_API_KEY) < 32 or len(COMPALLETTE_API_KEY) > 63 or 'replace-with' in COMPALLETTE_API_KEY:
+    raise RuntimeError('COMPALLETTE_API_KEY must be a unique value from 32 to 63 characters')
 CO_WARN_PPM = float(os.getenv('CO_WARN_PPM', 25.0))
 CO_CRIT_PPM = float(os.getenv('CO_CRIT_PPM', 50.0))
 STALE_THRESHOLD_SEC = int(os.getenv('COMPALLETTE_STALE_SEC', 20))
@@ -143,3 +164,10 @@ CHANNEL_LAYERS = {
         "BACKEND": "channels.layers.InMemoryChannelLayer"
     }
 }
+
+SESSION_COOKIE_HTTPONLY = True
+CSRF_COOKIE_HTTPONLY = False
+SESSION_COOKIE_SECURE = os.getenv('USE_HTTPS', '0') == '1'
+CSRF_COOKIE_SECURE = os.getenv('USE_HTTPS', '0') == '1'
+SECURE_CONTENT_TYPE_NOSNIFF = True
+X_FRAME_OPTIONS = 'DENY'
