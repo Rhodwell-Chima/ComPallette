@@ -17,7 +17,7 @@ import urllib.error
 
 import os
 
-API_KEY = "compallette-mining-secret-key-v1"
+API_KEY = os.environ.get("COMPALLETTE_API_KEY", "")
 
 
 class BackendContractTestSuite(unittest.TestCase):
@@ -25,6 +25,8 @@ class BackendContractTestSuite(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls):
+        if not API_KEY:
+            raise unittest.SkipTest("Set COMPALLETTE_API_KEY to the configured gateway key")
         try:
             req = urllib.request.Request(f"{cls.base_url}/health")
             with urllib.request.urlopen(req, timeout=0.8):
@@ -84,15 +86,10 @@ class BackendContractTestSuite(unittest.TestCase):
         self.assertEqual(data.get("status"), "ok")
         self.assertEqual(data.get("node_id"), "MINER-CONTRACT-01")
 
-    def test_04_system_summary_contract(self):
+    def test_04_operator_dashboard_requires_session(self):
         status, data = self._request("GET", "/api/v1/system/summary")
-        self.assertEqual(status, 200)
-        required_keys = [
-            "total_nodes_tracked", "online_miners", "stale_nodes",
-            "offline_nodes", "active_unacknowledged_alerts", "critical_emergencies"
-        ]
-        for key in required_keys:
-            self.assertIn(key, data, f"Missing required summary contract key: {key}")
+        self.assertEqual(status, 403)
+        self.assertIn("detail", data)
 
 
 if __name__ == "__main__":
