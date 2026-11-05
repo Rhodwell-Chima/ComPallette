@@ -31,10 +31,14 @@ public:
 
   bool isActive() const { return _active; }
   const char* getSsid() const { return _apSsid; }
+  // Prints the temporary setup credential only while the local setup AP is
+  // active.  It is intentionally not persisted in NVS.
+  void printCredentials() const;
 
 private:
   bool        _active;
   char        _apSsid[32];
+  char        _apPassword[16];
   WebServer   _server;
   DNSServer   _dnsServer;
   uint32_t    _rebootTargetMs;
