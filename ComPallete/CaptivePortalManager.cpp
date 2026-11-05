@@ -1,4 +1,5 @@
 #include "CaptivePortalManager.h"
+#include <esp_system.h>
 
 // Global instance
 CaptivePortalManager captivePortal;
@@ -11,6 +12,7 @@ CaptivePortalManager::CaptivePortalManager()
     _rebootTargetMs(0),
     _rebootPending(false) {
   _apSsid[0] = '\0';
+  _apPassword[0] = '\0';
 }
 
 bool CaptivePortalManager::begin() {
@@ -18,13 +20,6 @@ bool CaptivePortalManager::begin() {
 
   const char* chipId = nodeConfigManager.getChipId();
   snprintf(_apSsid, sizeof(_apSsid), "Compallette-Setup-%s", chipId);
-
-  Serial.println("\n+--------------------------------------------------------------+");
-  Serial.println("|         COMPALLETTE LOCAL WI-FI CAPTIVE PORTAL ONLINE        |");
-  Serial.println("+--------------------------------------------------------------+");
-  Serial.printf("  |-- SoftAP SSID    : %s (OPEN / NO PASSWORD)\n", _apSsid);
-  Serial.printf("  |-- SoftAP Channel : 1\n");
-  Serial.println("  |-- Portal URL     : http://192.168.4.1");
 
   // Clean Wi-Fi state before starting AP to avoid radio conflict
   WiFi.disconnect(true, true);
@@ -34,6 +29,11 @@ bool CaptivePortalManager::begin() {
   WiFi.mode(WIFI_AP);
   delay(50);
 
+  // Wi-Fi is active before drawing entropy for the temporary setup credential.
+  static const char alphabet[] = "ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz23456789";
+  for (size_t i = 0; i < 12; ++i) _apPassword[i] = alphabet[esp_random() % (sizeof(alphabet) - 1)];
+  _apPassword[12] = '\0';
+
   IPAddress apIP(192, 168, 4, 1);
   IPAddress gateway(192, 168, 4, 1);
   IPAddress netMsk(255, 255, 255, 0);
@@ -41,14 +41,11 @@ bool CaptivePortalManager::begin() {
     Serial.println("  |-- [WARN] softAPConfig failed; using default AP IP.");
   }
 
-  bool ok = WiFi.softAP(_apSsid, nullptr, 1, 0, 4);
+  bool ok = WiFi.softAP(_apSsid, _apPassword, 1, 0, 4);
   if (!ok) {
     Serial.println("  |-- [ERROR] WiFi.softAP() failed to start AP broadcast!");
     return false;
   }
-
-  Serial.printf("  |-- SoftAP IP      : %s\n", WiFi.softAPIP().toString().c_str());
-  Serial.printf("  |-- SoftAP MAC     : %s\n", WiFi.softAPmacAddress().c_str());
 
   // Start captive DNS server to redirect all requests to 192.168.4.1
   _dnsServer.setErrorReplyCode(DNSReplyCode::NoError);
@@ -68,11 +65,29 @@ bool CaptivePortalManager::begin() {
   _server.begin();
   _active = true;
 
+  printCredentials();
+  Serial.printf("  |-- SoftAP IP      : %s\n", WiFi.softAPIP().toString().c_str());
+  Serial.printf("  |-- SoftAP MAC     : %s\n", WiFi.softAPmacAddress().c_str());
   Serial.println("  |-- Web Server     : Listening on port 80");
   Serial.println("  |-- DNS Server     : Captive DNS redirecting all traffic to 192.168.4.1");
   Serial.println("+--------------------------------------------------------------+");
   Serial.println("Connect a smartphone or PC to the Wi-Fi network above to configure.\n");
   return true;
+}
+
+void CaptivePortalManager::printCredentials() const {
+  if (!_active) {
+    Serial.println("[PORTAL] Captive portal is not active; no setup credential is available.");
+    return;
+  }
+
+  Serial.println("\n+--------------------------------------------------------------+");
+  Serial.println("|         COMPALLETTE LOCAL WI-FI CAPTIVE PORTAL ONLINE        |");
+  Serial.println("+--------------------------------------------------------------+");
+  Serial.printf("  |-- SoftAP SSID    : %s\n", _apSsid);
+  Serial.printf("  |-- Setup Password : %s (temporary; shown only on serial)\n", _apPassword);
+  Serial.println("  |-- SoftAP Channel : 1");
+  Serial.println("  |-- Portal URL     : http://192.168.4.1");
 }
 
 void CaptivePortalManager::update() {
@@ -107,13 +122,29 @@ void CaptivePortalManager::handleRoot() {
 void CaptivePortalManager::handleSave() {
   NodeConfig cfg = nodeConfigManager.get();
 
-  if (_server.hasArg("device_id") && _server.arg("device_id").length() > 0) {
-    strncpy(cfg.device_id, _server.arg("device_id").c_str(), sizeof(cfg.device_id) - 1);
+  if (_server.hasArg("role")) {
+    int requestedRole = _server.arg("role").toInt();
+    if (requestedRole < ROLE_WEARABLE || requestedRole > ROLE_GATEWAY) {
+      _server.send(400, "text/plain", "Invalid node role");
+      return;
+    }
+    cfg.role = (NodeRole)requestedRole;
+  }
+  if (_server.hasArg("m_chan")) {
+    int channel = _server.arg("m_chan").toInt();
+    if (channel < 1 || channel > 13) {
+      _server.send(400, "text/plain", "Mesh channel must be between 1 and 13");
+      return;
+    }
+    cfg.mesh_channel = (uint8_t)channel;
   }
 
-  if (_server.hasArg("role")) {
-    int r = _server.arg("role").toInt();
-    cfg.role = (NodeRole)r;
+  if (_server.hasArg("device_id") && _server.arg("device_id").length() > 0) {
+    if (_server.arg("device_id").length() >= sizeof(cfg.device_id)) {
+      _server.send(400, "text/plain", "Device ID is too long");
+      return;
+    }
+    strncpy(cfg.device_id, _server.arg("device_id").c_str(), sizeof(cfg.device_id) - 1);
   }
 
   if (cfg.role == ROLE_WEARABLE) {
@@ -131,20 +162,28 @@ void CaptivePortalManager::handleSave() {
     strncpy(cfg.mesh_password, _server.arg("m_pass").c_str(), sizeof(cfg.mesh_password) - 1);
   }
 
-  if (_server.hasArg("m_chan")) {
-    cfg.mesh_channel = (uint8_t)_server.arg("m_chan").toInt();
-  }
-
   if (_server.hasArg("gw_ssid")) {
     strncpy(cfg.uplink_ssid, _server.arg("gw_ssid").c_str(), sizeof(cfg.uplink_ssid) - 1);
   }
 
-  if (_server.hasArg("gw_pass")) {
+  if (_server.hasArg("gw_pass") && _server.arg("gw_pass").length() > 0) {
     strncpy(cfg.uplink_password, _server.arg("gw_pass").c_str(), sizeof(cfg.uplink_password) - 1);
   }
 
   if (_server.hasArg("api_url")) {
     strncpy(cfg.backend_url, _server.arg("api_url").c_str(), sizeof(cfg.backend_url) - 1);
+  }
+  if (_server.hasArg("gw_api_key") && _server.arg("gw_api_key").length() > 0) {
+    if (_server.arg("gw_api_key").length() < 32 || _server.arg("gw_api_key").length() >= sizeof(cfg.backend_api_key)) {
+      _server.send(400, "text/plain", "Gateway API key must be 32 to 63 characters");
+      return;
+    }
+    strncpy(cfg.backend_api_key, _server.arg("gw_api_key").c_str(), sizeof(cfg.backend_api_key) - 1);
+    cfg.backend_api_key[sizeof(cfg.backend_api_key) - 1] = '\0';
+  }
+  if (cfg.role == ROLE_GATEWAY && strlen(cfg.backend_api_key) < 32) {
+    _server.send(400, "text/plain", "Configure a gateway API key of at least 32 characters");
+    return;
   }
 
   // Save to persistent flash NVS
@@ -272,9 +311,11 @@ String CaptivePortalManager::buildPortalHtml() {
                 "<label for='gw_ssid'>Uplink Wi-Fi SSID</label>"
                 "<input type='text' name='gw_ssid' id='gw_ssid' value='" + String(cfg.uplink_ssid) + "' placeholder='e.g. Innov_Hub'>"
                 "<label for='gw_pass'>Uplink Wi-Fi Password</label>"
-                "<input type='password' name='gw_pass' id='gw_pass' value='" + String(cfg.uplink_password) + "' placeholder='Wi-Fi Password'>"
+                "<input type='password' name='gw_pass' id='gw_pass' autocomplete='new-password' placeholder='Leave blank to keep current password'>"
                 "<label for='api_url'>Backend URL / mDNS Host</label>"
                 "<input type='text' name='api_url' id='api_url' value='" + String(cfg.backend_url) + "' placeholder='http://innovation-hub03.local:8000'>"
+                "<label for='gw_api_key'>Gateway API Key</label>"
+                "<input type='password' name='gw_api_key' id='gw_api_key' autocomplete='new-password' placeholder='" + String(strlen(cfg.backend_api_key) >= 32 ? "Configured; leave blank to keep" : "Required; at least 32 characters") + "'>"
                 "</div>"
 
                 "<button type='submit' class='btn'>Save &amp; Commission Node</button>"
