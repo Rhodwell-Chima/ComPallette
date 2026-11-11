@@ -1,4 +1,4 @@
-import React, { FormEvent, useEffect, useState } from 'react';
+import React, { FormEvent, createContext, useContext, useEffect, useState } from 'react';
 import {
   ApiError,
   getOperatorSession,
@@ -13,15 +13,34 @@ function errorMessage(error: unknown): string {
   return 'The ComPallette backend could not be reached. Check the service and try again.';
 }
 
+function canEnterOperations(session: Awaited<ReturnType<typeof getOperatorSession>>): boolean {
+  return Boolean(session?.authenticated && (session.is_staff || session.capabilities?.includes('view')));
+}
+
+interface AuthContextValue {
+  session: NonNullable<Awaited<ReturnType<typeof getOperatorSession>>>;
+  signOut: () => Promise<void>;
+}
+
+const AuthContext = createContext<AuthContextValue | null>(null);
+
+export function useOperatorSession(): AuthContextValue {
+  const context = useContext(AuthContext);
+  if (!context) throw new Error('useOperatorSession must be used inside AuthGate.');
+  return context;
+}
+
 export const AuthGate: React.FC<{ children: React.ReactNode }> = ({ children }) => {
   const [ready, setReady] = useState(false);
   const [authenticated, setAuthenticated] = useState(false);
+  const [session, setSession] = useState<NonNullable<Awaited<ReturnType<typeof getOperatorSession>>> | null>(null);
   const [username, setUsername] = useState('');
   const [password, setPassword] = useState('');
   const [error, setError] = useState('');
 
   useEffect(() => setAuthenticationFailureHandler(() => {
     setAuthenticated(false);
+    setSession(null);
     setPassword('');
     setError('Your operator session ended or no longer has access. Sign in again.');
   }), []);
@@ -35,10 +54,11 @@ export const AuthGate: React.FC<{ children: React.ReactNode }> = ({ children }) 
         const session = await getOperatorSession();
         if (!active) return;
 
-        setAuthenticated(Boolean(session?.authenticated && session.is_staff));
-        if (session?.authenticated && !session.is_staff) {
+        setAuthenticated(canEnterOperations(session));
+        setSession(canEnterOperations(session) ? session : null);
+        if (session?.authenticated && !canEnterOperations(session)) {
           await signOutOperator().catch(() => undefined);
-          if (active) setError('This account does not have operator access.');
+          if (active) setError('This account does not have operational site access. Ask an administrator to assign a site role.');
         }
       } catch (requestError) {
         if (active) setError(errorMessage(requestError));
@@ -57,24 +77,29 @@ export const AuthGate: React.FC<{ children: React.ReactNode }> = ({ children }) 
     try {
       await initialiseCsrf();
       const session = await signInOperator(username, password);
-      if (!session.is_staff) {
+      if (!canEnterOperations(session)) {
         await signOutOperator().catch(() => undefined);
-        setError('This account does not have operator access.');
+        setError('This account does not have operational site access. Ask an administrator to assign a site role.');
         return;
       }
       setPassword('');
       setAuthenticated(true);
+      setSession(session);
     } catch (requestError) {
       setError(errorMessage(requestError));
     }
   };
 
   const signOut = async () => {
+    // Leave the protected UI immediately. A slow or interrupted logout request
+    // must never trap an operator in the cockpit.
+    setAuthenticated(false);
+    setSession(null);
+    setPassword('');
     try {
       await signOutOperator();
-    } finally {
-      setAuthenticated(false);
-      setPassword('');
+    } catch {
+      setError('You have left the operator interface. The server could not confirm session termination; refresh before using this browser again.');
     }
   };
 
@@ -87,5 +112,6 @@ export const AuthGate: React.FC<{ children: React.ReactNode }> = ({ children }) 
       {error && <p role="alert" className="auth-error">{error}</p>}<button type="submit">Sign in</button>
     </form></main>
   );
-  return <>{children}<button className="auth-signout" onClick={() => void signOut()}>Sign out</button></>;
+  if (!session) return null;
+  return <AuthContext.Provider value={{ session, signOut }}>{children}</AuthContext.Provider>;
 };
