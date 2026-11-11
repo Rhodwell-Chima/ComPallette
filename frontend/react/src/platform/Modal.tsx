@@ -58,7 +58,7 @@ export function Modal({
             overflowY: 'auto',
           }}
         >
-          {/* Backdrop with blur */}
+          {/* Backdrop overlay (darkened + blurred) - separate stacking from dialog */}
           <motion.div
             initial={{ opacity: 0 }}
             animate={{ opacity: 1 }}
@@ -68,13 +68,14 @@ export function Modal({
             style={{
               position: 'fixed',
               inset: 0,
+              zIndex: 0,
               backgroundColor: 'rgba(11, 18, 37, 0.65)',
               backdropFilter: 'blur(6px)',
               WebkitBackdropFilter: 'blur(6px)',
             }}
           />
 
-          {/* Centered Dialog Window */}
+          {/* Centered Dialog Window (Opaque surface, strictly above backdrop) */}
           <motion.div
             ref={modalRef}
             initial={{ opacity: 0, scale: 0.95, y: 12 }}
@@ -83,19 +84,20 @@ export function Modal({
             transition={springPresets.smooth}
             style={{
               position: 'relative',
+              zIndex: 1,
               width: '100%',
               maxWidth,
               maxHeight: 'calc(100vh - 3rem)',
               display: 'flex',
               flexDirection: 'column',
-              backgroundColor: 'var(--surface)',
-              border: '1px solid var(--border)',
+              backgroundColor: 'var(--surface, #ffffff)',
+              border: '1px solid var(--border, #dce3ee)',
               borderRadius: '12px',
-              boxShadow: '0 24px 60px rgba(0, 0, 0, 0.35)',
-              color: 'var(--text)',
-              zIndex: 1,
+              boxShadow: '0 24px 60px rgba(0, 0, 0, 0.45)',
+              color: 'var(--text, #172033)',
               overflow: 'hidden',
               margin: 'auto',
+              isolation: 'isolate',
             }}
           >
             {/* Modal Header */}
@@ -106,8 +108,8 @@ export function Modal({
                 justifyContent: 'space-between',
                 gap: '1rem',
                 padding: '1.25rem 1.5rem',
-                borderBottom: '1px solid var(--border)',
-                backgroundColor: 'var(--surface)',
+                borderBottom: '1px solid var(--border, #dce3ee)',
+                backgroundColor: 'var(--surface, #ffffff)',
               }}
             >
               <div>
@@ -116,7 +118,7 @@ export function Modal({
                     margin: 0,
                     fontSize: '1.15rem',
                     fontWeight: 700,
-                    color: 'var(--text)',
+                    color: 'var(--text, #172033)',
                     letterSpacing: '-0.02em',
                   }}
                 >
@@ -127,7 +129,7 @@ export function Modal({
                     style={{
                       margin: '4px 0 0',
                       fontSize: '0.8rem',
-                      color: 'var(--muted)',
+                      color: 'var(--muted, #64748b)',
                       lineHeight: 1.4,
                     }}
                   >
@@ -144,7 +146,7 @@ export function Modal({
                   border: 'none',
                   padding: '4px',
                   borderRadius: '6px',
-                  color: 'var(--muted)',
+                  color: 'var(--muted, #64748b)',
                   cursor: 'pointer',
                   display: 'flex',
                   alignItems: 'center',
@@ -152,11 +154,11 @@ export function Modal({
                   transition: 'all 0.15s ease',
                 }}
                 onMouseEnter={(e) => {
-                  e.currentTarget.style.color = 'var(--text)';
-                  e.currentTarget.style.backgroundColor = 'var(--surface-muted)';
+                  e.currentTarget.style.color = 'var(--text, #172033)';
+                  e.currentTarget.style.backgroundColor = 'var(--surface-muted, #f7f9fc)';
                 }}
                 onMouseLeave={(e) => {
-                  e.currentTarget.style.color = 'var(--muted)';
+                  e.currentTarget.style.color = 'var(--muted, #64748b)';
                   e.currentTarget.style.backgroundColor = 'transparent';
                 }}
               >
@@ -170,6 +172,8 @@ export function Modal({
                 padding: '1.5rem',
                 overflowY: 'auto',
                 flex: 1,
+                backgroundColor: 'var(--surface, #ffffff)',
+                color: 'var(--text, #172033)',
               }}
             >
               {children}
