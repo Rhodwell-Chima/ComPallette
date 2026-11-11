@@ -134,15 +134,55 @@ button:focus-visible, a:focus-visible, input:focus-visible, textarea:focus-visib
   stroke-width: 1;
 }
 
+.twin-zone.operational {
+  fill: rgba(37, 99, 235, 0.16);
+  stroke: #2563eb;
+  stroke-width: 1.8;
+}
+:root[data-theme='dark'] .twin-zone.operational {
+  fill: rgba(30, 58, 102, 0.85);
+  stroke: #60a5fa;
+  stroke-width: 1.5;
+}
+
+.twin-zone.corridor {
+  fill: rgba(226, 232, 240, 0.5);
+  stroke: #94a3b8;
+  stroke-width: 1;
+  stroke-dasharray: 2 1;
+}
+:root[data-theme='dark'] .twin-zone.corridor {
+  fill: rgba(15, 23, 42, 0.65);
+  stroke: #334e68;
+  stroke-dasharray: 2 1;
+  stroke-width: 0.9;
+}
+
 .twin-zone-label {
   fill: #1e3a8a;
-  font-size: 4px;
+  font-size: 3.8px;
   font-weight: 700;
   text-anchor: middle;
+  dominant-baseline: central;
   pointer-events: none;
 }
 :root[data-theme='dark'] .twin-zone-label {
   fill: #b8d6ff;
+}
+
+.twin-zone-label.corridor {
+  fill: #64748b;
+  font-size: 2.9px;
+  font-weight: 600;
+  opacity: 0.88;
+}
+:root[data-theme='dark'] .twin-zone-label.corridor {
+  fill: #7b93b2;
+}
+
+.twin-zone-label.operational {
+  font-size: 4.2px;
+  font-weight: 800;
 }
 
 .zone-entity-group { cursor: pointer; }

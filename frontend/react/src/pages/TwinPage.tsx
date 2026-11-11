@@ -78,22 +78,27 @@ function Twin2D({ data, visible, selected, onSelect, theme }: { data: TwinData; 
           className="twin-background"
         />
 
-        {/* Render Chamber Zones */}
-        {features.map(feature => (
-          <g key={feature.id}>
-            <polygon
-              className="twin-zone"
-              points={feature.points.map(point => point.join(',')).join(' ')}
-            />
-            <text
-              x={centre(feature.points)[0]}
-              y={centre(feature.points)[1]}
-              className="twin-zone-label"
-            >
-              {feature.label}
-            </text>
-          </g>
-        ))}
+        {/* Render Chamber Zones & Corridors */}
+        {features.map(feature => {
+          const isOperational = Boolean(feature.zoneCode);
+          return (
+            <g key={feature.id}>
+              <polygon
+                className={`twin-zone ${isOperational ? 'operational' : 'corridor'}`}
+                points={feature.points.map(point => point.join(',')).join(' ')}
+              >
+                <title>{feature.label}</title>
+              </polygon>
+              <text
+                x={centre(feature.points)[0]}
+                y={centre(feature.points)[1]}
+                className={`twin-zone-label ${isOperational ? 'operational' : 'corridor'}`}
+              >
+                {feature.label}
+              </text>
+            </g>
+          );
+        })}
 
         {/* Render Grouped Telemetry Pins */}
         {groups.map(group => {
@@ -139,15 +144,21 @@ function NormalizedZone({ polygon, frame, onClick, theme }: { polygon: Polygon; 
     [frame.height, frame.minX, frame.minY, frame.width, polygon.points, scale]
   );
   const isLight = theme === 'light';
+  const isOperational = Boolean(polygon.zoneCode);
+
   return (
     <mesh rotation={[-Math.PI / 2, 0, 0]} onClick={onClick}>
-      <extrudeGeometry args={[shape, { depth: 0.22, bevelEnabled: false }]} />
+      <extrudeGeometry args={[shape, { depth: isOperational ? 0.38 : 0.16, bevelEnabled: false }]} />
       <meshStandardMaterial
-        color={isLight ? '#2563eb' : '#1f6feb'}
+        color={
+          isLight
+            ? (isOperational ? '#2563eb' : '#94a3b8')
+            : (isOperational ? '#38bdf8' : '#1e3352')
+        }
         transparent
-        opacity={isLight ? 0.75 : 0.65}
-        roughness={0.4}
-        metalness={0.1}
+        opacity={isLight ? (isOperational ? 0.85 : 0.55) : (isOperational ? 0.82 : 0.48)}
+        roughness={isOperational ? 0.35 : 0.6}
+        metalness={isOperational ? 0.25 : 0.05}
       />
     </mesh>
   );
