@@ -23,6 +23,7 @@ import {
   Settings2,
   ShieldAlert,
   ShieldCheck,
+  Sparkles,
   Square,
   Trash2,
   Unlock,
@@ -838,6 +839,54 @@ export function AccessPage() {
   );
 }
 
+const DEMO_MINING_GEOMETRY = {
+  version: 1,
+  features: [
+    {
+      id: 'surface-portal',
+      label: 'Surface Portal & Headframe',
+      zone_code: 'SURFACE-PORTAL',
+      points: [[20, 20], [80, 20], [80, 60], [20, 60]],
+    },
+    {
+      id: 'shaft-corridor',
+      label: 'Main Decline Corridor',
+      zone_code: 'LEVEL-1-STATION',
+      points: [[40, 60], [60, 60], [60, 110], [40, 110]],
+    },
+    {
+      id: 'level-1-station',
+      label: 'Level 1 Station & Battery Bay',
+      zone_code: 'LEVEL-1-STATION',
+      points: [[10, 110], [90, 110], [90, 160], [10, 160]],
+    },
+    {
+      id: 'level-2-haulage',
+      label: 'Level 2 Arterial Haulage Way',
+      zone_code: 'LEVEL-2-HAULAGE-WAY',
+      points: [[30, 160], [140, 160], [140, 210], [30, 210]],
+    },
+    {
+      id: 'level-2-north-drift',
+      label: 'Level 2 North Drift',
+      zone_code: 'LEVEL-2-NORTH-DRIFT',
+      points: [[140, 120], [220, 120], [220, 170], [140, 170]],
+    },
+    {
+      id: 'level-250-south',
+      label: 'Level 250 South Decline & Refuge',
+      zone_code: 'LEVEL-250-SOUTH',
+      points: [[30, 210], [110, 210], [110, 260], [30, 260]],
+    },
+    {
+      id: 'level-3-active-stope',
+      label: 'Level 3 Active Production Stope',
+      zone_code: 'LEVEL-3-ACTIVE-STOPE',
+      points: [[110, 240], [210, 240], [210, 310], [110, 310]],
+    },
+  ],
+};
+
 export function SitesZonesPage() {
   const { selectedSite, selectedSiteId, can } = usePlatform();
   const [showZoneForm, setShowZoneForm] = useState(false);
@@ -850,6 +899,12 @@ export function SitesZonesPage() {
   const createZone = useMutation({ mutationFn: () => platformApi.createZone(selectedSiteId!, zoneForm), onSuccess: () => { setZoneForm({ code: '', name: '', zone_type: 'OPERATIONAL', description: '', is_restricted: false, is_hazardous: false }); setShowZoneForm(false); void queryClient.invalidateQueries({ queryKey: ['zones'] }); } });
   const saveLayout = useMutation({ mutationFn: (geometry: Record<string, unknown>) => platformApi.updateLayout(selectedSiteId!, geometry), onSuccess: () => { void queryClient.invalidateQueries({ queryKey: ['layout'] }); void queryClient.invalidateQueries({ queryKey: ['twin'] }); } });
   useEffect(() => { if (layout.data) setLayoutText(JSON.stringify(layout.data.geometry, null, 2)); }, [layout.data]);
+
+  const handleLoadDemoGeometry = () => {
+    const formatted = JSON.stringify(DEMO_MINING_GEOMETRY, null, 2);
+    setLayoutText(formatted);
+    saveLayout.mutate(DEMO_MINING_GEOMETRY);
+  };
   if (!selectedSiteId || !selectedSite) return <EmptyState title="No site selected" detail="Select a permitted site before editing its hierarchy or facility layout." />;
   if (zones.isLoading || structures.isLoading || layout.isLoading) return <LoadingState label="Loading site configuration…" />;
   if (zones.isError || structures.isError || layout.isError || !zones.data || !structures.data || !layout.data) return <ErrorState message="Site configuration could not be loaded." retry={() => { void zones.refetch(); void structures.refetch(); void layout.refetch(); }} />;
@@ -960,7 +1015,39 @@ export function SitesZonesPage() {
         </form>
       </Modal>
 
-    <form className="panel layout-editor" onSubmit={submitLayout}><div className="panel-heading"><div><p className="eyebrow">FACILITY LAYOUT</p><h2>Shared 2D / 3D geometry</h2><p>Only persisted geometry is rendered in the Digital Twin. An empty layout intentionally produces a setup state.</p></div><Code2 size={19} /></div><textarea value={layoutText} onChange={event => setLayoutText(event.target.value)} disabled={!can('manage_sites')} aria-label="Facility layout geometry JSON" />{can('manage_sites') && <div className="page-actions"><button className="button primary" disabled={saveLayout.isPending}><Save size={16} /> Save layout</button></div>}{saveLayout.isError && <p className="form-error">The layout was not saved. Confirm that the JSON object is valid.</p>}</form>
+    <form className="panel layout-editor" onSubmit={submitLayout}>
+      <div className="panel-heading">
+        <div>
+          <p className="eyebrow">FACILITY LAYOUT</p>
+          <h2>Shared 2D / 3D geometry</h2>
+          <p>Only persisted geometry is rendered in the Digital Twin. An empty layout intentionally produces a setup state.</p>
+        </div>
+        <Code2 size={19} />
+      </div>
+      <textarea
+        value={layoutText}
+        onChange={event => setLayoutText(event.target.value)}
+        disabled={!can('manage_sites')}
+        aria-label="Facility layout geometry JSON"
+      />
+      {can('manage_sites') && (
+        <div className="page-actions" style={{ display: 'flex', gap: '0.75rem', alignItems: 'center' }}>
+          <button
+            type="button"
+            className="button secondary"
+            onClick={handleLoadDemoGeometry}
+            disabled={saveLayout.isPending}
+            title="Populate and save multi-level underground mining facility geometry"
+          >
+            <Sparkles size={16} /> Load Demo Mining Geometry
+          </button>
+          <button className="button primary" disabled={saveLayout.isPending}>
+            <Save size={16} /> Save layout
+          </button>
+        </div>
+      )}
+      {saveLayout.isError && <p className="form-error">The layout was not saved. Confirm that the JSON object is valid.</p>}
+    </form>
   </>;
 }
 
