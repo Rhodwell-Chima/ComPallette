@@ -221,3 +221,93 @@ export const staggerItemScaleVariants: Variants = {
     transition: { duration: 0.15 },
   },
 };
+
+// =========================================================================
+// INDUSTRIAL MOTION & PHYSICS PRESETS
+// =========================================================================
+
+/**
+ * Spring presets calibrated for industrial tactile feedback
+ */
+export const springPresets = {
+  snappy: { type: 'spring', stiffness: 400, damping: 30 } as const,
+  smooth: { type: 'spring', stiffness: 200, damping: 25 } as const,
+  bouncy: { type: 'spring', stiffness: 300, damping: 10 } as const,
+  gentle: { type: 'spring', stiffness: 100, damping: 15 } as const,
+};
+
+/**
+ * Tween presets for predictable timed animations
+ */
+export const tweenPresets = {
+  fast: { duration: 0.15, ease: 'easeOut' } as const,
+  normal: { duration: 0.25, ease: INDUSTRIAL_EASE } as const,
+  slow: { duration: 0.4, ease: INDUSTRIAL_EASE } as const,
+};
+
+/**
+ * Interactive micro-gestures (whileHover, whileTap)
+ */
+export const microGestures = {
+  buttonPress: {
+    whileHover: { scale: 1.02, transition: { duration: 0.15 } },
+    whileTap: { scale: 0.97, transition: { duration: 0.1 } },
+  },
+  cardInteractive: {
+    whileHover: { y: -2, transition: springPresets.snappy },
+    whileTap: { scale: 0.99, transition: { duration: 0.1 } },
+  },
+  iconRotate: {
+    whileHover: { rotate: 15, transition: springPresets.bouncy },
+  },
+};
+
+/**
+ * Component-specific animation variants
+ */
+export const dropdownVariants: Variants = {
+  hidden: { opacity: 0, y: -8, scale: 0.98 },
+  visible: {
+    opacity: 1,
+    y: 0,
+    scale: 1,
+    transition: springPresets.snappy,
+  },
+  exit: {
+    opacity: 0,
+    y: -4,
+    scale: 0.98,
+    transition: tweenPresets.fast,
+  },
+};
+
+export const toastVariants: Variants = {
+  hidden: { opacity: 0, y: 16, scale: 0.94 },
+  visible: {
+    opacity: 1,
+    y: 0,
+    scale: 1,
+    transition: springPresets.bouncy,
+  },
+  exit: {
+    opacity: 0,
+    y: 8,
+    scale: 0.96,
+    transition: tweenPresets.fast,
+  },
+};
+
+export const drawerVariants: Variants = {
+  hidden: { x: '100%', opacity: 0.5 },
+  visible: {
+    x: '0%',
+    opacity: 1,
+    transition: springPresets.smooth,
+  },
+  exit: {
+    x: '100%',
+    opacity: 0,
+    transition: tweenPresets.normal,
+  },
+};
+
