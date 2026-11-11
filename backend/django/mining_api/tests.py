@@ -9,7 +9,8 @@ from rest_framework.test import APIClient
 from rest_framework import status
 from .models import (
     Node, NodeRole, NodeStatus, TelemetryRecord, SafetyAlert, AlertSeverity,
-    AlertStatus, AuditEntry, ProvisioningRequest, ProvisioningStatus
+    AlertStatus, AuditEntry, ProvisioningRequest, ProvisioningStatus, MeasurementReading,
+    Site, LocationEvidence, Zone, SiteMembership, MembershipRole,
 )
 from .views import check_and_update_watchdog
 
@@ -21,6 +22,7 @@ class MiningApiTests(TestCase):
         self.auth_headers = {'HTTP_X_API_KEY': self.api_key}
         self.operator = get_user_model().objects.create_user(username='test-operator', password='test-password', is_staff=True)
         self.client.force_authenticate(user=self.operator)
+        self.site = Site.objects.get(code='MINING-PILOT')
 
     def test_operator_reads_and_actions_require_authentication(self):
         anonymous = APIClient()
@@ -45,6 +47,24 @@ class MiningApiTests(TestCase):
 
         client.logout()
         self.assertEqual(client.get('/api/v1/nodes').status_code, status.HTTP_403_FORBIDDEN)
+
+    def test_site_member_can_log_in_without_django_staff_flag(self):
+        member = get_user_model().objects.create_user(username='site-viewer', password='viewer-password')
+        SiteMembership.objects.create(
+            user=member,
+            organisation=self.site.organisation,
+            site=self.site,
+            role=MembershipRole.VIEWER,
+        )
+        client = APIClient(enforce_csrf_checks=True)
+        token = client.get('/api/v1/auth/csrf').json()['csrfToken']
+        response = client.post(
+            '/api/v1/auth/session', {'username': 'site-viewer', 'password': 'viewer-password'},
+            format='json', HTTP_X_CSRFTOKEN=token,
+        )
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertIn('view', response.json()['capabilities'])
+        self.assertFalse(response.json()['is_staff'])
 
     def test_wire_envelope_rejects_wrong_type_and_invalid_values(self):
         invalid = {
@@ -72,7 +92,7 @@ class MiningApiTests(TestCase):
 
     def test_operator_identity_is_taken_from_session_not_request_body(self):
         alert = SafetyAlert.objects.create(
-            node=Node.objects.create(node_id='MINER-AUTH', last_seen_ts=int(time.time() * 1000)),
+            node=Node.objects.create(node_id='MINER-AUTH', last_seen_ts=int(time.time() * 1000), organisation=self.site.organisation, site=self.site),
             alert_code='TEST', created_at=int(time.time() * 1000),
         )
         response = self.client.post(f'/api/v1/alerts/{alert.id}/ack', {'officer_name': 'forged'}, format='json')
@@ -255,7 +275,9 @@ class MiningApiTests(TestCase):
             current_zone="LEVEL-450-NORTH",
             last_seen_ts=int(time.time() * 1000),
             status=NodeStatus.ONLINE,
-            latest_co=35.0 # Warning >= 25
+            latest_co=35.0, # Warning >= 25
+            organisation=self.site.organisation,
+            site=self.site,
         )
 
         res = self.client.get('/api/v1/system/summary')
@@ -331,3 +353,36 @@ class MiningApiTests(TestCase):
         # Verify pending list is now empty
         res_pending_after = self.client.get('/api/v1/provision/pending')
         self.assertEqual(len(res_pending_after.json()['pending_nodes']), 0)
+
+    def test_industrial_operator_views_use_persisted_site_data(self):
+        Zone.objects.create(site=self.site, code='LEVEL-1-STATION', name='Level 1 Station')
+        payload = {
+            "ver": 1, "type": "TELEMETRY", "seq": 901, "sender": "MINER-PLATFORM",
+            "role": "WEARABLE", "zone": "LEVEL-1-STATION", "uptime": 1000,
+            "payload": {"co": 12.5, "temp": 25.4, "hum": 62.0, "fall": False, "batt": 3.9, "sim": False, "ok": True},
+        }
+        response = self.client.post('/api/v1/telemetry', payload, format='json', **self.auth_headers)
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        node = Node.objects.get(node_id='MINER-PLATFORM')
+        self.assertEqual(node.site, self.site)
+        self.assertEqual(node.location_evidence, LocationEvidence.CONFIRMED)
+        self.assertEqual(MeasurementReading.objects.filter(node=node).count(), 3)
+
+        environment = self.client.get(f'/api/v1/environment/overview?site={self.site.id}')
+        self.assertEqual(environment.status_code, status.HTTP_200_OK)
+        self.assertEqual({channel['key'] for channel in environment.json()['channels']}, {'co_ppm', 'temperature_c', 'humidity_pct'})
+
+        twin = self.client.get(f'/api/v1/digital-twin?site={self.site.id}')
+        self.assertEqual(twin.status_code, status.HTTP_200_OK)
+        self.assertEqual(twin.json()['topology'], [])
+        self.assertEqual(twin.json()['topology_status'], 'UNAVAILABLE_PENDING_VALIDATED_DIRECT_LINK_EVIDENCE')
+
+    def test_alert_can_be_assigned_with_authenticated_actor_attribution(self):
+        node = Node.objects.create(node_id='MINER-ASSIGN', organisation=self.site.organisation, site=self.site, last_seen_ts=int(time.time() * 1000))
+        alert = SafetyAlert.objects.create(node=node, alert_code='CHECK', created_at=int(time.time() * 1000))
+        response = self.client.post(f'/api/v1/alerts/{alert.id}/assign', {'notes': 'Investigating ventilation.'}, format='json')
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        alert.refresh_from_db()
+        self.assertEqual(alert.status, AlertStatus.INVESTIGATING)
+        self.assertEqual(alert.assigned_to, self.operator)
+        self.assertTrue(AuditEntry.objects.filter(action='ALERT_ASSIGNED', site=self.site).exists())
