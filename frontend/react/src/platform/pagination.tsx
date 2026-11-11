@@ -150,8 +150,16 @@ export function Pagination({
               onChange={(e) => onPageSizeChange(Number(e.target.value))}
               className="pagination-pagesize-select"
               aria-label="Items per page"
-              style={{ padding: '0.25rem 0.5rem', borderRadius: '4px', background: 'var(--surface, #1e222b)', color: 'inherit', border: '1px solid var(--border-subtle, rgba(255,255,255,0.1))' }}
+              style={{
+                padding: '0.25rem 0.5rem',
+                borderRadius: '6px',
+                background: 'var(--surface)',
+                color: 'var(--text)',
+                border: '1px solid var(--border)',
+                fontSize: '0.82rem',
+              }}
             >
+
               {pageSizeOptions.map((opt) => (
                 <option key={opt} value={opt}>
                   {opt}

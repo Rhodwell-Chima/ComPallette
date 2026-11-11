@@ -47,7 +47,7 @@ export const SearchInput = forwardRef<HTMLInputElement, SearchInputProps>(functi
         background: 'none',
         border: 'none',
         padding: '2px',
-        color: 'var(--color-text-muted, #94a3b8)',
+        color: 'var(--muted)',
         cursor: 'pointer',
         display: 'flex',
         alignItems: 'center',
@@ -61,6 +61,7 @@ export const SearchInput = forwardRef<HTMLInputElement, SearchInputProps>(functi
       </svg>
     </button>
   ) : undefined;
+
 
   return (
     <Input

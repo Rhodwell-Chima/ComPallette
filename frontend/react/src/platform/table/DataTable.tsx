@@ -69,8 +69,8 @@ export function DataTable<T>({
     onSortChange({ field: nextDirection ? col.key : '', direction: nextDirection });
   };
 
-  const rowPadding = density === 'compact' ? '0.5rem 0.75rem' : '0.85rem 1rem';
-  const fontSize = density === 'compact' ? '0.84rem' : '0.92rem';
+  const rowPadding = density === 'compact' ? '0.55rem 0.85rem' : '0.85rem 1rem';
+  const fontSize = density === 'compact' ? '0.84rem' : '0.90rem';
 
   return (
     <div className={`data-table-container ${className}`} style={{ width: '100%' }}>
@@ -94,16 +94,17 @@ export function DataTable<T>({
             onClick={() => setDensity(density === 'compact' ? 'comfortable' : 'compact')}
             title={`Switch to ${density === 'compact' ? 'comfortable' : 'compact'} view`}
             style={{
-              background: 'var(--color-surface, rgba(255, 255, 255, 0.05))',
-              border: '1px solid var(--color-border, rgba(255, 255, 255, 0.12))',
+              background: 'var(--surface)',
+              border: '1px solid var(--border)',
               borderRadius: '6px',
-              padding: '0.4rem 0.6rem',
-              color: 'var(--color-text-muted, #94a3b8)',
+              padding: '0.4rem 0.65rem',
+              color: 'var(--muted)',
               fontSize: '0.78rem',
               cursor: 'pointer',
               display: 'flex',
               alignItems: 'center',
-              gap: '4px',
+              gap: '5px',
+              transition: 'all 0.15s ease',
             }}
           >
             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
@@ -111,7 +112,7 @@ export function DataTable<T>({
               <line x1="3" y1="12" x2="21" y2="12" />
               <line x1="3" y1="18" x2="21" y2="18" />
             </svg>
-            {density === 'compact' ? 'Compact' : 'Comfortable'}
+            <span>{density === 'compact' ? 'Compact' : 'Comfortable'}</span>
           </button>
 
           {/* Column Visibility Menu */}
@@ -120,22 +121,23 @@ export function DataTable<T>({
             onClick={() => setShowColPicker(!showColPicker)}
             title="Configure visible columns"
             style={{
-              background: 'var(--color-surface, rgba(255, 255, 255, 0.05))',
-              border: '1px solid var(--color-border, rgba(255, 255, 255, 0.12))',
+              background: 'var(--surface)',
+              border: '1px solid var(--border)',
               borderRadius: '6px',
-              padding: '0.4rem 0.6rem',
-              color: 'var(--color-text-muted, #94a3b8)',
+              padding: '0.4rem 0.65rem',
+              color: 'var(--muted)',
               fontSize: '0.78rem',
               cursor: 'pointer',
               display: 'flex',
               alignItems: 'center',
-              gap: '4px',
+              gap: '5px',
+              transition: 'all 0.15s ease',
             }}
           >
             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
               <polygon points="22 3 2 3 10 12.46 10 19 14 21 14 12.46 22 3" />
             </svg>
-            Columns
+            <span>Columns</span>
           </button>
 
           {showColPicker && (
@@ -144,17 +146,17 @@ export function DataTable<T>({
                 position: 'absolute',
                 right: 0,
                 top: '110%',
-                background: 'var(--color-bg, #0f172a)',
-                border: '1px solid var(--color-border, rgba(255, 255, 255, 0.15))',
-                borderRadius: '6px',
-                padding: '0.5rem',
-                zIndex: 20,
-                boxShadow: '0 8px 24px rgba(0,0,0,0.5)',
-                minWidth: '160px',
+                background: 'var(--surface)',
+                border: '1px solid var(--border)',
+                borderRadius: '8px',
+                padding: '0.65rem',
+                zIndex: 25,
+                boxShadow: '0 12px 30px rgba(0, 0, 0, 0.2)',
+                minWidth: '170px',
               }}
             >
-              <div style={{ fontSize: '0.75rem', fontWeight: 600, marginBottom: '0.35rem', color: '#94a3b8' }}>
-                Display Columns
+              <div style={{ fontSize: '0.75rem', fontWeight: 700, marginBottom: '0.4rem', color: 'var(--muted)', textTransform: 'uppercase', letterSpacing: '0.04em' }}>
+                Visible Columns
               </div>
               {columns.map((col) => (
                 <label
@@ -162,10 +164,10 @@ export function DataTable<T>({
                   style={{
                     display: 'flex',
                     alignItems: 'center',
-                    gap: '6px',
-                    fontSize: '0.8rem',
-                    color: '#f8fafc',
-                    padding: '3px 0',
+                    gap: '8px',
+                    fontSize: '0.82rem',
+                    color: 'var(--text)',
+                    padding: '4px 2px',
                     cursor: 'pointer',
                   }}
                 >
@@ -180,7 +182,7 @@ export function DataTable<T>({
                       }
                     }}
                   />
-                  {col.header}
+                  <span>{col.header}</span>
                 </label>
               ))}
             </div>
@@ -196,10 +198,10 @@ export function DataTable<T>({
             animate={{ opacity: 1, y: 0 }}
             exit={{ opacity: 0, y: -8 }}
             style={{
-              background: 'var(--color-accent-dim, rgba(59, 130, 246, 0.12))',
-              border: '1px solid var(--color-accent, #3b82f6)',
-              borderRadius: '6px',
-              padding: '0.5rem 0.85rem',
+              background: 'color-mix(in srgb, var(--primary) 10%, var(--surface))',
+              border: '1px solid var(--primary)',
+              borderRadius: '8px',
+              padding: '0.55rem 1rem',
               marginBottom: '0.75rem',
               display: 'flex',
               alignItems: 'center',
@@ -207,7 +209,7 @@ export function DataTable<T>({
               gap: '1rem',
             }}
           >
-            <div style={{ fontSize: '0.84rem', fontWeight: 600, color: 'var(--color-text, #f8fafc)' }}>
+            <div style={{ fontSize: '0.84rem', fontWeight: 600, color: 'var(--text)' }}>
               {selectedIds.length} item{selectedIds.length > 1 ? 's' : ''} selected
             </div>
             <div>{renderBulkActions(selectedIds)}</div>
@@ -219,17 +221,17 @@ export function DataTable<T>({
       <div
         style={{
           overflowX: 'auto',
-          border: '1px solid var(--color-border, rgba(255, 255, 255, 0.1))',
+          border: '1px solid var(--border)',
           borderRadius: '8px',
-          background: 'var(--color-surface, rgba(15, 23, 42, 0.4))',
+          background: 'var(--surface)',
         }}
       >
         <table style={{ width: '100%', borderCollapse: 'collapse', textAlign: 'left' }}>
           <thead>
             <tr
               style={{
-                borderBottom: '1px solid var(--color-border, rgba(255, 255, 255, 0.12))',
-                background: 'rgba(255, 255, 255, 0.03)',
+                borderBottom: '1px solid var(--border)',
+                background: 'var(--surface-muted)',
               }}
             >
               {onSelectionChange && (
@@ -255,11 +257,11 @@ export function DataTable<T>({
                     onClick={() => handleHeaderClick(col)}
                     style={{
                       padding: rowPadding,
-                      fontSize: '0.78rem',
-                      fontWeight: 600,
+                      fontSize: '0.72rem',
+                      fontWeight: 700,
                       textTransform: 'uppercase',
-                      letterSpacing: '0.04em',
-                      color: isSorted ? 'var(--color-accent, #3b82f6)' : 'var(--color-text-muted, #94a3b8)',
+                      letterSpacing: '0.05em',
+                      color: isSorted ? 'var(--primary)' : 'var(--muted)',
                       cursor: col.sortable ? 'pointer' : 'default',
                       userSelect: 'none',
                       textAlign: col.align || 'left',
@@ -297,7 +299,7 @@ export function DataTable<T>({
           <tbody>
             {isLoading ? (
               Array.from({ length: 5 }).map((_, idx) => (
-                <tr key={idx} style={{ borderBottom: '1px solid rgba(255, 255, 255, 0.05)' }}>
+                <tr key={idx} style={{ borderBottom: '1px solid var(--border)' }}>
                   {onSelectionChange && (
                     <td style={{ padding: rowPadding, textAlign: 'center' }}>
                       <Skeleton width="16px" height="16px" />
@@ -317,7 +319,7 @@ export function DataTable<T>({
                   style={{
                     padding: '2.5rem',
                     textAlign: 'center',
-                    color: 'var(--color-text-muted, #94a3b8)',
+                    color: 'var(--muted)',
                     fontSize: '0.88rem',
                   }}
                 >
@@ -346,12 +348,12 @@ export function DataTable<T>({
                 return (
                   <motion.tr
                     key={rowKey}
-                    whileHover={{ backgroundColor: 'rgba(255, 255, 255, 0.02)' }}
+                    whileHover={{ backgroundColor: 'var(--surface-muted)' }}
                     style={{
-                      borderBottom: '1px solid var(--color-border, rgba(255, 255, 255, 0.06))',
-                      backgroundColor: isSelected ? 'rgba(59, 130, 246, 0.06)' : 'transparent',
+                      borderBottom: '1px solid var(--border)',
+                      backgroundColor: isSelected ? 'color-mix(in srgb, var(--primary) 8%, var(--surface))' : 'var(--surface)',
                       fontSize,
-                      color: 'var(--color-text, #f8fafc)',
+                      color: 'var(--text)',
                       transition: 'background-color 0.15s ease',
                     }}
                   >
@@ -373,6 +375,7 @@ export function DataTable<T>({
                         style={{
                           padding: rowPadding,
                           textAlign: col.align || 'left',
+                          color: 'var(--text)',
                         }}
                       >
                         {col.render ? col.render(row) : (row as any)[col.key]}
