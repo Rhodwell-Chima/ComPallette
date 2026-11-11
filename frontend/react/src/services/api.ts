@@ -5,6 +5,22 @@ import {
   ProvisioningRequest,
   SystemSummary,
   TelemetryItem,
+  AssetItem,
+  DashboardData,
+  EnhancedDashboardData,
+  EnvironmentChannel,
+  FacilityLayout,
+  MeasurementReading,
+  Organisation,
+  PersonnelItem,
+  SearchResult,
+  Site,
+  Structure,
+  SiteMembership,
+  TwinData,
+  Zone,
+  AdminUserItem,
+  AdminUserListResponse,
 } from '../types';
 
 const API_BASE = '';
@@ -26,6 +42,8 @@ export interface OperatorSession {
   authenticated: boolean;
   username?: string;
   is_staff?: boolean;
+  capabilities?: string[];
+  sites?: Site[];
 }
 
 export interface BackendHealth {
@@ -39,16 +57,14 @@ export interface BackendHealth {
 type AuthenticationFailureHandler = () => void;
 let authenticationFailureHandler: AuthenticationFailureHandler | undefined;
 
-/**
- * Registers the UI boundary that owns the operator session. Protected API
- * calls use it to stop dashboard polling when that session is no longer valid.
- */
 export function setAuthenticationFailureHandler(handler: AuthenticationFailureHandler): () => void {
   authenticationFailureHandler = handler;
   return () => {
     if (authenticationFailureHandler === handler) authenticationFailureHandler = undefined;
   };
 }
+
+export const registerAuthenticationFailureHandler = setAuthenticationFailureHandler;
 
 function csrfToken(): string {
   return decodeURIComponent(
@@ -80,7 +96,7 @@ interface RequestOptions {
   notifyAuthenticationFailure?: boolean;
 }
 
-async function request(path: string, init: RequestInit = {}, options: RequestOptions = {}): Promise<Response> {
+export async function request(path: string, init: RequestInit = {}, options: RequestOptions = {}): Promise<Response> {
   let response: Response;
   try {
     response = await fetch(`${API_BASE}${path}`, {
@@ -100,7 +116,7 @@ async function request(path: string, init: RequestInit = {}, options: RequestOpt
   throw new ApiError(await responseMessage(response), response.status, kind);
 }
 
-function jsonRequest(method: 'POST' | 'DELETE', body?: unknown): RequestInit {
+function jsonRequest(method: string, body?: unknown): RequestInit {
   return {
     method,
     headers: {
@@ -113,6 +129,11 @@ function jsonRequest(method: 'POST' | 'DELETE', body?: unknown): RequestInit {
 
 export async function initialiseCsrf(): Promise<void> {
   await request('/api/v1/auth/csrf', {}, { notifyAuthenticationFailure: false });
+}
+
+export async function fetchCsrfToken(): Promise<string> {
+  await initialiseCsrf();
+  return csrfToken();
 }
 
 export async function getOperatorSession(): Promise<OperatorSession | null> {
@@ -143,6 +164,93 @@ export async function fetchBackendHealth(): Promise<BackendHealth> {
 export async function fetchSummary(): Promise<SystemSummary> {
   return (await request('/api/v1/system/summary')).json();
 }
+
+export async function fetchSystemSummary(): Promise<SystemSummary> {
+  return fetchSummary();
+}
+
+function siteQuery(siteId?: number, params: Record<string, string | number | undefined> = {}): string {
+  const search = new URLSearchParams();
+  if (siteId) search.set('site_id', String(siteId));
+  for (const [key, value] of Object.entries(params)) {
+    if (value !== undefined && value !== '') search.set(key, String(value));
+  }
+  const serialized = search.toString();
+  return serialized ? `?${serialized}` : '';
+}
+
+async function json<T>(path: string, init?: RequestInit): Promise<T> {
+  return (await request(path, init)).json() as Promise<T>;
+}
+
+export const platformApi = {
+  bootstrap: () => json<{ organisations: Organisation[]; sites: Site[]; capabilities: string[] }>('/api/v1/platform/bootstrap'),
+  dashboard: (siteId?: number, params: { start_date?: string; end_date?: string; range?: string } = {}) =>
+    json<EnhancedDashboardData>(`/api/v1/dashboard${siteQuery(siteId, params)}`),
+  sites: () => json<{ sites: Site[] }>('/api/v1/sites'),
+  createSite: (input: Pick<Site, 'organisation' | 'name' | 'code' | 'industry' | 'timezone'>) => json<Site>('/api/v1/sites', jsonRequest('POST', input)),
+  updateSite: (siteId: number, input: Partial<Site>) => json<Site>(`/api/v1/sites/${siteId}`, jsonRequest('PATCH', input)),
+  structures: (siteId: number) => json<{ structures: Structure[] }>(`/api/v1/sites/${siteId}/structures`),
+  zones: (siteId: number) => json<{ zones: Zone[] }>(`/api/v1/sites/${siteId}/zones`),
+  createZone: (siteId: number, input: Pick<Zone, 'code' | 'name' | 'zone_type' | 'description' | 'is_restricted' | 'is_hazardous'>) => json<Zone>(`/api/v1/sites/${siteId}/zones`, jsonRequest('POST', input)),
+  layout: (siteId: number) => json<FacilityLayout>(`/api/v1/sites/${siteId}/layout`),
+  updateLayout: (siteId: number, geometry: Record<string, unknown>) => json<FacilityLayout>(`/api/v1/sites/${siteId}/layout`, jsonRequest('PUT', { geometry })),
+  personnel: (siteId?: number, q?: string) => json<{ personnel: PersonnelItem[]; count: number }>(`/api/v1/personnel${siteQuery(siteId, { q })}`),
+  createPersonnel: (input: Pick<PersonnelItem, 'identifier' | 'display_name' | 'team' | 'employment_status'> & { site?: number; assigned_node?: string | null }) => json<PersonnelItem>('/api/v1/personnel', jsonRequest('POST', input)),
+  assets: (siteId?: number, q?: string) => json<{ assets: AssetItem[]; count: number }>(`/api/v1/assets${siteQuery(siteId, { q })}`),
+  createAsset: (input: Pick<AssetItem, 'identifier' | 'name' | 'asset_type' | 'operational_status'> & { site?: number; assigned_node?: string | null }) => json<AssetItem>('/api/v1/assets', jsonRequest('POST', input)),
+  devices: (siteId?: number, status?: string) => json<{ nodes: NodeItem[]; count: number }>(`/api/v1/nodes${siteQuery(siteId, { status })}`),
+  environment: (siteId?: number) => json<{ channels: EnvironmentChannel[]; readings: MeasurementReading[] }>(`/api/v1/environment/overview${siteQuery(siteId)}`),
+  readings: (
+    siteId?: number,
+    key?: string,
+    params: { page?: number; page_size?: number } = {},
+  ) =>
+    json<{
+      readings: MeasurementReading[];
+      total: number;
+      page: number;
+      page_size: number;
+      total_pages: number;
+    }>(
+      `/api/v1/environment/readings${siteQuery(siteId, {
+        key,
+        page: params.page,
+        page_size: params.page_size,
+      })}`,
+    ),
+  twin: (siteId?: number) => json<TwinData>(`/api/v1/digital-twin${siteQuery(siteId)}`),
+  alerts: (siteId?: number, status?: string, limit = 100) => json<{ alerts: AlertItem[]; count: number }>(`/api/v1/alerts${siteQuery(siteId, { status, limit })}`),
+  acknowledgeAlert: (id: number) => json<void>(`/api/v1/alerts/${id}/ack`, jsonRequest('POST')),
+  assignAlert: (id: number, notes: string) => json<void>(`/api/v1/alerts/${id}/assign`, jsonRequest('POST', { notes })),
+  resolveAlert: (id: number, notes: string) => json<void>(`/api/v1/alerts/${id}/resolve`, jsonRequest('POST', { notes })),
+  audit: (siteId?: number, params: { limit?: number; offset?: number } = {}) =>
+    json<{ audit_log: AuditItem[]; count: number; total?: number; offset?: number; limit?: number }>(
+      `/api/v1/audit${siteQuery(siteId, { limit: params.limit ?? 20, offset: params.offset ?? 0 })}`,
+    ),
+  search: (siteId: number | undefined, q: string) => json<{ results: SearchResult[] }>(`/api/v1/search${siteQuery(siteId, { q })}`),
+  reports: (siteId?: number) => json<{ site: Site | null; summary: Record<string, number> }>(`/api/v1/reports/summary${siteQuery(siteId)}`),
+  integrations: () => json<{ integrations: unknown[]; message: string }>('/api/v1/integrations'),
+  memberships: (siteId?: number) => json<{ memberships: SiteMembership[] }>(`/api/v1/access/memberships${siteQuery(siteId)}`),
+  assignMembership: (siteId: number | undefined, username: string, role: string) => json<SiteMembership>(`/api/v1/access/memberships${siteQuery(siteId)}`, jsonRequest('POST', { username, role })),
+
+  // User Administration APIs
+  users: (params: { site_id?: number; page?: number; page_size?: number; search?: string; role?: string; status?: string } = {}) =>
+    json<AdminUserListResponse>(`/api/v1/users${siteQuery(params.site_id, {
+      page: params.page,
+      page_size: params.page_size,
+      search: params.search,
+      role: params.role,
+      status: params.status,
+    })}`),
+  userDetail: (userId: number) => json<AdminUserItem>(`/api/v1/users/${userId}`),
+  updateUser: (userId: number, input: Partial<AdminUserItem>) =>
+    json<AdminUserItem>(`/api/v1/users/${userId}`, jsonRequest('PATCH', input)),
+  bulkUserAction: (action: 'activate' | 'suspend' | 'delete' | 'change_role', userIds: number[], extra?: Record<string, unknown>) =>
+    json<{ message: string; updated: number }>('/api/v1/users/bulk', jsonRequest('POST', { action, user_ids: userIds, ...extra })),
+  resetUserPassword: (userId: number) =>
+    json<{ message: string; temporary_password?: string }>(`/api/v1/users/${userId}/reset-password`, jsonRequest('POST')),
+};
 
 export async function fetchNodes(statusFilter?: string): Promise<NodeItem[]> {
   let url = '/api/v1/nodes';
