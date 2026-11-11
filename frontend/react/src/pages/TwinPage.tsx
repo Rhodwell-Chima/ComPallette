@@ -227,6 +227,16 @@ function Twin2D({
   );
 }
 
+function getFeatureDepth(feature: Polygon): number {
+  if (feature.id === 'headframe-hoist') return 1.4; // Tallest surface headframe tower
+  if (feature.id === 'surface-vent-substation') return 0.95;
+  if (feature.id === 'surface-portal') return 0.95;
+  if (feature.id === 'level-3-active-stope') return 1.05; // Prominent deep extraction cavern
+  if (feature.zoneCode) return 0.9; // Major operational horizons & stations
+  if (feature.id === 'main-shaft-barrel') return 0.45;
+  return 0.32; // Inter-level drifts, decline ramps, and corridors
+}
+
 function NormalizedZone({
   polygon,
   frame,
@@ -252,11 +262,20 @@ function NormalizedZone({
 }) {
   const scale = 12 / Math.max(frame.width, frame.height);
   const shape = useMemo(
-    () => new THREE.Shape(polygon.points.map(([x, y]) => new THREE.Vector2((x - (frame.minX + frame.width / 2)) * scale, (y - (frame.minY + frame.height / 2)) * scale))),
+    () =>
+      new THREE.Shape(
+        polygon.points.map(([x, y]) =>
+          new THREE.Vector2(
+            (x - (frame.minX + frame.width / 2)) * scale,
+            -(y - (frame.minY + frame.height / 2)) * scale
+          )
+        )
+      ),
     [frame.height, frame.minX, frame.minY, frame.width, polygon.points, scale]
   );
   const isLight = theme === 'light';
   const isOperational = Boolean(polygon.zoneCode);
+  const depth = getFeatureDepth(polygon);
 
   return (
     <mesh
@@ -282,7 +301,7 @@ function NormalizedZone({
         onLeave();
       }}
     >
-      <extrudeGeometry args={[shape, { depth: isOperational ? 0.38 : 0.16, bevelEnabled: false }]} />
+      <extrudeGeometry args={[shape, { depth, bevelEnabled: false }]} />
       <meshStandardMaterial
         color={
           isSelected
@@ -296,7 +315,7 @@ function NormalizedZone({
         emissive={isSelected ? '#d97706' : (isHovered ? (isLight ? '#0284c7' : '#0369a1') : '#000000')}
         emissiveIntensity={isSelected || isHovered ? 0.35 : 0}
         transparent
-        opacity={isLight ? (isOperational ? 0.88 : 0.55) : (isOperational ? 0.85 : 0.48)}
+        opacity={isLight ? (isOperational ? 0.9 : 0.6) : (isOperational ? 0.88 : 0.52)}
         roughness={isOperational ? 0.35 : 0.6}
         metalness={isOperational ? 0.25 : 0.05}
       />
@@ -334,12 +353,13 @@ function Anchor3D({
   const z3d = (cy - (frame.minY + frame.height / 2)) * scale;
   const isLight = theme === 'light';
   const target = anchor ?? (entities.length ? entities[0] : undefined);
+  const depth = getFeatureDepth(feature);
 
   return (
-    <group position={[x3d, 0.38, z3d]}>
+    <group position={[x3d, depth, z3d]}>
       {/* Anchor Physical Mast */}
-      <mesh position={[0, 0.22, 0]}>
-        <cylinderGeometry args={[0.04, 0.07, 0.44, 16]} />
+      <mesh position={[0, 0.25, 0]}>
+        <cylinderGeometry args={[0.04, 0.07, 0.5, 16]} />
         <meshStandardMaterial
           color={isLight ? '#64748b' : '#94a3b8'}
           metalness={0.6}
@@ -349,7 +369,7 @@ function Anchor3D({
 
       {/* Anchor Beacon Glowing Head */}
       <mesh
-        position={[0, 0.46, 0]}
+        position={[0, 0.52, 0]}
         onClick={(e) => {
           e.stopPropagation();
           if (target) onSelect(target.id);
@@ -371,7 +391,7 @@ function Anchor3D({
           onLeave();
         }}
       >
-        <sphereGeometry args={[0.13, 24, 24]} />
+        <sphereGeometry args={[0.14, 24, 24]} />
         <meshStandardMaterial
           color={isSelected ? '#f59e0b' : (isHovered ? '#38bdf8' : '#10b981')}
           emissive={isSelected ? '#d97706' : (isHovered ? '#0284c7' : '#059669')}
@@ -381,7 +401,7 @@ function Anchor3D({
       </mesh>
 
       {/* Floating 3D Anchor HTML Tag */}
-      <Html position={[0, 0.76, 0]} center distanceFactor={14}>
+      <Html position={[0, 0.85, 0]} center distanceFactor={14}>
         <div
           className={`twin-3d-anchor-tag ${isSelected ? 'selected' : ''} ${isHovered ? 'hovered' : ''}`}
           onClick={(e) => {
@@ -437,7 +457,7 @@ function Twin3D({
 
   return (
     <div className="twin-three">
-      <Canvas camera={{ position: [0, 11, 16], fov: 40 }}>
+      <Canvas camera={{ position: [0, 13, 18], fov: 40 }}>
         <color attach="background" args={[isLight ? '#f8fafc' : '#08111f']} />
         <ambientLight intensity={isLight ? 1.1 : 0.8} />
         <directionalLight position={[6, 12, 9]} intensity={isLight ? 1.6 : 1.4} />
