@@ -40,7 +40,9 @@ import { EmptyState, ErrorState, LoadingState, PageHeader, StatusPill, formatTim
 import { LoadingButton, SkeletonTable } from '../platform/loading';
 import { Pagination } from '../platform/pagination';
 import { FormField, Input, Select, SearchInput } from '../platform/form';
+import { Modal } from '../platform/Modal';
 import { AdminUserItem, UserStatus } from '../types';
+
 
 
 /**
@@ -849,7 +851,107 @@ export function SitesZonesPage() {
     <PageHeader eyebrow="INFRASTRUCTURE" title="Sites & zones" description="Industry-neutral facility configuration: structures may be shafts, tunnels, buildings or warehouses, while zones hold restrictions, hazards and optional persisted geometry." actions={can('manage_sites') ? <button className="button primary" onClick={() => setShowZoneForm(value => !value)}><Plus size={16} /> Add zone</button> : undefined} />
     <section className="site-config-grid"><article className="panel"><div className="panel-heading"><div><p className="eyebrow">SITE HIERARCHY</p><h2>{selectedSite.name}</h2></div><Building2 size={19} /></div><dl className="metadata-list"><div><dt>Organisation</dt><dd>{selectedSite.organisation_name}</dd></div><div><dt>Industry</dt><dd>{selectedSite.industry}</dd></div><div><dt>Timezone</dt><dd>{selectedSite.timezone}</dd></div><div><dt>Structures</dt><dd>{structures.data.structures.length}</dd></div></dl></article>
       <article className="panel zone-list"><div className="panel-heading"><div><p className="eyebrow">MANAGED ZONES</p><h2>{zones.data.zones.length} configured</h2></div></div>{zones.data.zones.length ? zones.data.zones.map(zone => <div className="zone-row" key={zone.id}><div><strong>{zone.name}</strong><small>{zone.code} · {zone.zone_type}</small></div><div>{zone.is_restricted && <StatusPill value="Restricted" tone="warning" />}{zone.is_hazardous && <StatusPill value="Hazard" tone="critical" />}</div></div>) : <EmptyState title="No zones yet" detail="Create meaningful operational zones before positioning entities in the Twin." />}</article></section>
-    {showZoneForm && <form className="inline-form panel" onSubmit={submitZone}><h2>Add a managed zone</h2><label>Code<input required value={zoneForm.code} onChange={event => setZoneForm({ ...zoneForm, code: event.target.value.toUpperCase() })} /></label><label>Name<input required value={zoneForm.name} onChange={event => setZoneForm({ ...zoneForm, name: event.target.value })} /></label><label>Type<input value={zoneForm.zone_type} onChange={event => setZoneForm({ ...zoneForm, zone_type: event.target.value })} /></label><label>Description<input value={zoneForm.description} onChange={event => setZoneForm({ ...zoneForm, description: event.target.value })} /></label><label className="check-field"><input type="checkbox" checked={zoneForm.is_restricted} onChange={event => setZoneForm({ ...zoneForm, is_restricted: event.target.checked })} /> Restricted access</label><label className="check-field"><input type="checkbox" checked={zoneForm.is_hazardous} onChange={event => setZoneForm({ ...zoneForm, is_hazardous: event.target.checked })} /> Hazard area</label><div><button className="button primary" disabled={createZone.isPending}>Save zone</button><button type="button" className="button ghost" onClick={() => setShowZoneForm(false)}>Cancel</button></div>{createZone.isError && <p className="form-error">Zone could not be created. The zone code must be unique for this site.</p>}</form>}
+      {/* Add Zone Pop-up Modal */}
+      <Modal
+        isOpen={showZoneForm}
+        onClose={() => setShowZoneForm(false)}
+        title="Add Managed Zone"
+        subtitle="Configure physical sectors, boundaries, or hazardous operational zones."
+        maxWidth="500px"
+      >
+        <form onSubmit={submitZone} style={{ display: 'flex', flexDirection: 'column', gap: '0.5rem' }}>
+          <FormField label="Zone Code" required helperText="Unique identifier for spatial telemetry">
+            <Input
+              required
+              value={zoneForm.code}
+              placeholder="e.g. ZONE-SEC-04"
+              onChange={(e) => setZoneForm({ ...zoneForm, code: e.target.value.toUpperCase() })}
+            />
+          </FormField>
+
+          <FormField label="Zone Name" required helperText="Descriptive sector name">
+            <Input
+              required
+              value={zoneForm.name}
+              placeholder="e.g. Level 3 Extraction Shaft"
+              onChange={(e) => setZoneForm({ ...zoneForm, name: e.target.value })}
+            />
+          </FormField>
+
+          <FormField label="Zone Type">
+            <Input
+              value={zoneForm.zone_type}
+              placeholder="e.g. OPERATIONAL, REFUGE, WORKSHOP"
+              onChange={(e) => setZoneForm({ ...zoneForm, zone_type: e.target.value })}
+            />
+          </FormField>
+
+          <FormField label="Description">
+            <Input
+              value={zoneForm.description}
+              placeholder="Optional notes or safety directives"
+              onChange={(e) => setZoneForm({ ...zoneForm, description: e.target.value })}
+            />
+          </FormField>
+
+          <div style={{ display: 'flex', flexDirection: 'column', gap: '0.6rem', margin: '0.5rem 0' }}>
+            <label style={{ display: 'flex', alignItems: 'center', gap: '8px', cursor: 'pointer', fontSize: '0.85rem' }}>
+              <input
+                type="checkbox"
+                checked={zoneForm.is_restricted}
+                onChange={(e) => setZoneForm({ ...zoneForm, is_restricted: e.target.checked })}
+              />
+              <span>Restricted Access (Authorized personnel only)</span>
+            </label>
+
+            <label style={{ display: 'flex', alignItems: 'center', gap: '8px', cursor: 'pointer', fontSize: '0.85rem' }}>
+              <input
+                type="checkbox"
+                checked={zoneForm.is_hazardous}
+                onChange={(e) => setZoneForm({ ...zoneForm, is_hazardous: e.target.checked })}
+              />
+              <span style={{ color: zoneForm.is_hazardous ? 'var(--danger, #ef4444)' : 'inherit' }}>
+                Hazard Area (Atmospheric or geotechnical risk)
+              </span>
+            </label>
+          </div>
+
+          {createZone.isError && (
+            <div
+              style={{
+                backgroundColor: 'rgba(239, 68, 68, 0.1)',
+                border: '1px solid var(--danger, #ef4444)',
+                borderRadius: '7px',
+                padding: '0.65rem 0.85rem',
+                color: 'var(--danger, #ef4444)',
+                fontSize: '0.82rem',
+              }}
+            >
+              Zone could not be created. Ensure the zone code is unique for this site.
+            </div>
+          )}
+
+          <div
+            style={{
+              display: 'flex',
+              justifyContent: 'flex-end',
+              gap: '0.75rem',
+              marginTop: '1.25rem',
+              paddingTop: '1rem',
+              borderTop: '1px solid var(--border)',
+            }}
+          >
+            <button type="button" className="button ghost" onClick={() => setShowZoneForm(false)}>
+              Cancel
+            </button>
+            <button type="submit" className="button primary" disabled={createZone.isPending}>
+              <Plus size={16} />
+              {createZone.isPending ? 'Saving...' : 'Save Zone'}
+            </button>
+          </div>
+        </form>
+      </Modal>
+
     <form className="panel layout-editor" onSubmit={submitLayout}><div className="panel-heading"><div><p className="eyebrow">FACILITY LAYOUT</p><h2>Shared 2D / 3D geometry</h2><p>Only persisted geometry is rendered in the Digital Twin. An empty layout intentionally produces a setup state.</p></div><Code2 size={19} /></div><textarea value={layoutText} onChange={event => setLayoutText(event.target.value)} disabled={!can('manage_sites')} aria-label="Facility layout geometry JSON" />{can('manage_sites') && <div className="page-actions"><button className="button primary" disabled={saveLayout.isPending}><Save size={16} /> Save layout</button></div>}{saveLayout.isError && <p className="form-error">The layout was not saved. Confirm that the JSON object is valid.</p>}</form>
   </>;
 }

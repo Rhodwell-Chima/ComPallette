@@ -1,17 +1,18 @@
 import { FormEvent, useMemo, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { Box, Plus, Users } from 'lucide-react';
+import { Box, Plus, Users, UserPlus, PackagePlus } from 'lucide-react';
 import { platformApi } from '../services/api';
 import { AssetItem, PersonnelItem } from '../types';
 import { usePlatform } from '../platform/PlatformContext';
 import { EmptyState, ErrorState, LoadingState, LocationLabel, NodeStatusPill, PageHeader, StatusPill } from '../platform/ui';
 import { FormField, Input, Select, SearchInput } from '../platform/form';
 import { DataTable, ColumnDef, SortState } from '../platform/table';
+import { Modal } from '../platform/Modal';
 
 export function PersonnelPage() {
   const { selectedSiteId, can } = usePlatform();
   const [search, setSearch] = useState('');
-  const [showForm, setShowForm] = useState(false);
+  const [showModal, setShowModal] = useState(false);
   const [sortState, setSortState] = useState<SortState>({ field: 'display_name', direction: 'asc' });
   const [selectedIds, setSelectedIds] = useState<(string | number)[]>([]);
   const [form, setForm] = useState({ identifier: '', display_name: '', team: '', employment_status: 'ACTIVE' });
@@ -27,7 +28,7 @@ export function PersonnelPage() {
     mutationFn: () => platformApi.createPersonnel({ ...form, site: selectedSiteId }),
     onSuccess: () => {
       setForm({ identifier: '', display_name: '', team: '', employment_status: 'ACTIVE' });
-      setShowForm(false);
+      setShowModal(false);
       void queryClient.invalidateQueries({ queryKey: ['personnel'] });
       void queryClient.invalidateQueries({ queryKey: ['dashboard'] });
     },
@@ -45,8 +46,8 @@ export function PersonnelPage() {
       sortable: true,
       render: (person) => (
         <div>
-          <strong style={{ display: 'block', color: 'var(--color-text, #f8fafc)' }}>{person.display_name}</strong>
-          <small style={{ color: 'var(--color-text-muted, #94a3b8)', fontSize: '0.75rem' }}>{person.identifier}</small>
+          <strong style={{ display: 'block', color: 'var(--text)' }}>{person.display_name}</strong>
+          <small style={{ color: 'var(--muted)', fontSize: '0.75rem' }}>{person.identifier}</small>
         </div>
       ),
     },
@@ -97,70 +98,95 @@ export function PersonnelPage() {
         description="A site-scoped people registry that keeps reported location evidence separate from identity and assignment."
         actions={
           can('manage_assets') ? (
-            <button className="button primary" onClick={() => setShowForm((value) => !value)}>
+            <button className="button primary" onClick={() => setShowModal(true)}>
               <Plus size={16} /> Register person
             </button>
           ) : undefined
         }
       />
 
-      {showForm && (
-        <form className="inline-form panel" onSubmit={submit} style={{ padding: '1.25rem', marginBottom: '1.5rem' }}>
-          <h2 style={{ fontSize: '1.1rem', marginBottom: '1rem' }}>Register Personnel</h2>
-          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: '1rem' }}>
-            <FormField label="Identifier" required>
-              <Input
-                required
-                value={form.identifier}
-                placeholder="e.g. PER-0082"
-                onChange={(e) => setForm({ ...form, identifier: e.target.value })}
-              />
-            </FormField>
+      {/* Pop-up Modal for Personnel Registration */}
+      <Modal
+        isOpen={showModal}
+        onClose={() => setShowModal(false)}
+        title="Register Personnel"
+        subtitle="Create an operational personnel identity mapped to site tracking credentials."
+        maxWidth="500px"
+      >
+        <form onSubmit={submit} style={{ display: 'flex', flexDirection: 'column', gap: '0.5rem' }}>
+          <FormField label="Personnel Identifier" required helperText="Unique organizational badge or payroll ID">
+            <Input
+              required
+              value={form.identifier}
+              placeholder="e.g. PER-0082"
+              onChange={(e) => setForm({ ...form, identifier: e.target.value })}
+            />
+          </FormField>
 
-            <FormField label="Display Name" required>
-              <Input
-                required
-                value={form.display_name}
-                placeholder="e.g. John Doe"
-                onChange={(e) => setForm({ ...form, display_name: e.target.value })}
-              />
-            </FormField>
+          <FormField label="Display Name" required helperText="Full operational name displayed in Twin and tables">
+            <Input
+              required
+              value={form.display_name}
+              placeholder="e.g. John Doe"
+              onChange={(e) => setForm({ ...form, display_name: e.target.value })}
+            />
+          </FormField>
 
-            <FormField label="Team">
-              <Input
-                value={form.team}
-                placeholder="e.g. Ventilation Crew"
-                onChange={(e) => setForm({ ...form, team: e.target.value })}
-              />
-            </FormField>
+          <FormField label="Team / Crew" helperText="Operational department or assignment">
+            <Input
+              value={form.team}
+              placeholder="e.g. Ventilation Crew Shift-1"
+              onChange={(e) => setForm({ ...form, team: e.target.value })}
+            />
+          </FormField>
 
-            <FormField label="Status">
-              <Select
-                value={form.employment_status}
-                options={[
-                  { value: 'ACTIVE', label: 'ACTIVE' },
-                  { value: 'INACTIVE', label: 'INACTIVE' },
-                ]}
-                onChange={(e) => setForm({ ...form, employment_status: e.target.value })}
-              />
-            </FormField>
-          </div>
+          <FormField label="Employment Status" required>
+            <Select
+              value={form.employment_status}
+              options={[
+                { value: 'ACTIVE', label: 'ACTIVE' },
+                { value: 'INACTIVE', label: 'INACTIVE' },
+              ]}
+              onChange={(e) => setForm({ ...form, employment_status: e.target.value })}
+            />
+          </FormField>
 
-          <div style={{ display: 'flex', gap: '0.75rem', marginTop: '1rem' }}>
-            <button className="button primary" disabled={create.isPending}>
-              {create.isPending ? 'Saving...' : 'Save person'}
-            </button>
-            <button type="button" className="button ghost" onClick={() => setShowForm(false)}>
+          {create.error && (
+            <div
+              style={{
+                backgroundColor: 'rgba(239, 68, 68, 0.1)',
+                border: '1px solid var(--danger, #ef4444)',
+                borderRadius: '7px',
+                padding: '0.65rem 0.85rem',
+                color: 'var(--danger, #ef4444)',
+                fontSize: '0.82rem',
+                marginTop: '0.25rem',
+              }}
+            >
+              The person could not be registered. Ensure the identifier is unique and permissions are valid.
+            </div>
+          )}
+
+          <div
+            style={{
+              display: 'flex',
+              justifyContent: 'flex-end',
+              gap: '0.75rem',
+              marginTop: '1.25rem',
+              paddingTop: '1rem',
+              borderTop: '1px solid var(--border)',
+            }}
+          >
+            <button type="button" className="button ghost" onClick={() => setShowModal(false)}>
               Cancel
             </button>
+            <button type="submit" className="button primary" disabled={create.isPending}>
+              <UserPlus size={16} />
+              {create.isPending ? 'Saving...' : 'Register Person'}
+            </button>
           </div>
-          {create.error && (
-            <p className="form-error" style={{ color: 'var(--color-error, #ef4444)', marginTop: '0.5rem', fontSize: '0.84rem' }}>
-              The person could not be registered. Check the identifier and site permissions.
-            </p>
-          )}
         </form>
-      )}
+      </Modal>
 
       <section className="panel registry-panel" style={{ padding: '1.25rem' }}>
         <DataTable
@@ -201,7 +227,7 @@ export function PersonnelPage() {
 export function AssetsPage() {
   const { selectedSiteId, can } = usePlatform();
   const [search, setSearch] = useState('');
-  const [showForm, setShowForm] = useState(false);
+  const [showModal, setShowModal] = useState(false);
   const [sortState, setSortState] = useState<SortState>({ field: 'name', direction: 'asc' });
   const [selectedIds, setSelectedIds] = useState<(string | number)[]>([]);
   const [form, setForm] = useState({ identifier: '', name: '', asset_type: '', operational_status: 'ACTIVE' });
@@ -217,7 +243,7 @@ export function AssetsPage() {
     mutationFn: () => platformApi.createAsset({ ...form, site: selectedSiteId }),
     onSuccess: () => {
       setForm({ identifier: '', name: '', asset_type: '', operational_status: 'ACTIVE' });
-      setShowForm(false);
+      setShowModal(false);
       void queryClient.invalidateQueries({ queryKey: ['assets'] });
       void queryClient.invalidateQueries({ queryKey: ['dashboard'] });
     },
@@ -235,8 +261,8 @@ export function AssetsPage() {
       sortable: true,
       render: (asset) => (
         <div>
-          <strong style={{ display: 'block', color: 'var(--color-text, #f8fafc)' }}>{asset.name}</strong>
-          <small style={{ color: 'var(--color-text-muted, #94a3b8)', fontSize: '0.75rem' }}>{asset.identifier}</small>
+          <strong style={{ display: 'block', color: 'var(--text)' }}>{asset.name}</strong>
+          <small style={{ color: 'var(--muted)', fontSize: '0.75rem' }}>{asset.identifier}</small>
         </div>
       ),
     },
@@ -288,71 +314,96 @@ export function AssetsPage() {
         description="Track equipment identities and their last reported zone without claiming more precision than backend evidence supports."
         actions={
           can('manage_assets') ? (
-            <button className="button primary" onClick={() => setShowForm((value) => !value)}>
+            <button className="button primary" onClick={() => setShowModal(true)}>
               <Plus size={16} /> Register asset
             </button>
           ) : undefined
         }
       />
 
-      {showForm && (
-        <form className="inline-form panel" onSubmit={submit} style={{ padding: '1.25rem', marginBottom: '1.5rem' }}>
-          <h2 style={{ fontSize: '1.1rem', marginBottom: '1rem' }}>Register Asset</h2>
-          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: '1rem' }}>
-            <FormField label="Identifier" required>
-              <Input
-                required
-                value={form.identifier}
-                placeholder="e.g. VEH-HAUL-04"
-                onChange={(e) => setForm({ ...form, identifier: e.target.value })}
-              />
-            </FormField>
+      {/* Pop-up Modal for Asset Registration */}
+      <Modal
+        isOpen={showModal}
+        onClose={() => setShowModal(false)}
+        title="Register Asset"
+        subtitle="Register mobile machinery, fixed infrastructure, or industrial tools for tracking."
+        maxWidth="500px"
+      >
+        <form onSubmit={submit} style={{ display: 'flex', flexDirection: 'column', gap: '0.5rem' }}>
+          <FormField label="Asset Identifier" required helperText="Unique equipment serial or asset number">
+            <Input
+              required
+              value={form.identifier}
+              placeholder="e.g. VEH-HAUL-04"
+              onChange={(e) => setForm({ ...form, identifier: e.target.value })}
+            />
+          </FormField>
 
-            <FormField label="Name" required>
-              <Input
-                required
-                value={form.name}
-                placeholder="e.g. Haul Truck 04"
-                onChange={(e) => setForm({ ...form, name: e.target.value })}
-              />
-            </FormField>
+          <FormField label="Asset Name" required helperText="Operational label visible across maps and telemetry">
+            <Input
+              required
+              value={form.name}
+              placeholder="e.g. Haul Truck 04 (Cat 793F)"
+              onChange={(e) => setForm({ ...form, name: e.target.value })}
+            />
+          </FormField>
 
-            <FormField label="Classification">
-              <Input
-                value={form.asset_type}
-                placeholder="e.g. Heavy Equipment"
-                onChange={(e) => setForm({ ...form, asset_type: e.target.value })}
-              />
-            </FormField>
+          <FormField label="Classification" helperText="Equipment category (e.g. Hauler, Drill, Ventilation)">
+            <Input
+              value={form.asset_type}
+              placeholder="e.g. Heavy Haulage"
+              onChange={(e) => setForm({ ...form, asset_type: e.target.value })}
+            />
+          </FormField>
 
-            <FormField label="Status">
-              <Select
-                value={form.operational_status}
-                options={[
-                  { value: 'ACTIVE', label: 'ACTIVE' },
-                  { value: 'MAINTENANCE', label: 'MAINTENANCE' },
-                  { value: 'INACTIVE', label: 'INACTIVE' },
-                ]}
-                onChange={(e) => setForm({ ...form, operational_status: e.target.value })}
-              />
-            </FormField>
-          </div>
+          <FormField label="Operational Status" required>
+            <Select
+              value={form.operational_status}
+              options={[
+                { value: 'ACTIVE', label: 'ACTIVE' },
+                { value: 'MAINTENANCE', label: 'MAINTENANCE' },
+                { value: 'INACTIVE', label: 'INACTIVE' },
+              ]}
+              onChange={(e) => setForm({ ...form, operational_status: e.target.value })}
+            />
+          </FormField>
 
-          <div style={{ display: 'flex', gap: '0.75rem', marginTop: '1rem' }}>
-            <button className="button primary" disabled={create.isPending}>
-              {create.isPending ? 'Saving...' : 'Save asset'}
-            </button>
-            <button type="button" className="button ghost" onClick={() => setShowForm(false)}>
+          {create.error && (
+            <div
+              style={{
+                backgroundColor: 'rgba(239, 68, 68, 0.1)',
+                border: '1px solid var(--danger, #ef4444)',
+                borderRadius: '7px',
+                padding: '0.65rem 0.85rem',
+                color: 'var(--danger, #ef4444)',
+                fontSize: '0.82rem',
+                marginTop: '0.25rem',
+              }}
+            >
+              The asset could not be registered. Ensure the identifier is unique and permissions are valid.
+            </div>
+          )}
+
+          <div
+            style={{
+              display: 'flex',
+              justifyContent: 'flex-end',
+              gap: '0.75rem',
+              marginTop: '1.25rem',
+              paddingTop: '1rem',
+              borderTop: '1px solid var(--border)',
+            }}
+          >
+            <button type="button" className="button ghost" onClick={() => setShowModal(false)}>
               Cancel
             </button>
+            <button type="submit" className="button primary" disabled={create.isPending}>
+              <PackagePlus size={16} />
+              {create.isPending ? 'Saving...' : 'Register Asset'}
+            </button>
           </div>
-          {create.error && (
-            <p className="form-error" style={{ color: 'var(--color-error, #ef4444)', marginTop: '0.5rem', fontSize: '0.84rem' }}>
-              The asset could not be registered. Check the identifier and site permissions.
-            </p>
-          )}
         </form>
-      )}
+      </Modal>
 
       <section className="panel registry-panel" style={{ padding: '1.25rem' }}>
         <DataTable
@@ -389,4 +440,3 @@ export function AssetsPage() {
     </>
   );
 }
-
