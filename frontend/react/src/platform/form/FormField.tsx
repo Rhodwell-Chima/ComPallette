@@ -96,7 +96,7 @@ export function FormField({
           display: 'flex',
           flexDirection: 'column',
           position: 'relative',
-          marginBottom: '1rem',
+          marginBottom: '0.85rem',
           width: '100%',
         }}
       >
@@ -104,17 +104,17 @@ export function FormField({
           <label
             htmlFor={id}
             style={{
-              fontSize: size === 'sm' ? '0.78rem' : size === 'lg' ? '0.92rem' : '0.84rem',
+              fontSize: size === 'sm' ? '0.76rem' : size === 'lg' ? '0.90rem' : '0.82rem',
               fontWeight: 600,
               marginBottom: '0.35rem',
-              color: error ? 'var(--color-error, #ef4444)' : 'var(--color-text, #e2e8f0)',
+              color: error ? 'var(--danger, #ef4444)' : 'var(--text)',
               display: 'flex',
               alignItems: 'center',
               gap: '4px',
             }}
           >
             {label}
-            {required && <span style={{ color: 'var(--color-error, #ef4444)', fontSize: '0.85em' }}>*</span>}
+            {required && <span style={{ color: 'var(--danger, #ef4444)', fontSize: '0.85em' }}>*</span>}
           </label>
         )}
 
@@ -129,14 +129,14 @@ export function FormField({
                 left: variant === 'underline' ? '0' : '0.85rem',
                 top: isFloated ? '-0.55rem' : '50%',
                 transform: isFloated ? 'none' : 'translateY(-50%)',
-                fontSize: isFloated ? '0.72rem' : size === 'sm' ? '0.8rem' : '0.88rem',
+                fontSize: isFloated ? '0.72rem' : size === 'sm' ? '0.8rem' : '0.86rem',
                 fontWeight: isFloated ? 700 : 500,
                 color: error
-                  ? 'var(--color-error, #ef4444)'
+                  ? 'var(--danger, #ef4444)'
                   : isFocused
-                  ? 'var(--color-accent, #3b82f6)'
-                  : 'var(--color-text-muted, #94a3b8)',
-                background: isFloated && variant !== 'underline' ? 'var(--color-bg, #0f172a)' : 'transparent',
+                  ? 'var(--primary)'
+                  : 'var(--muted)',
+                background: isFloated && variant !== 'underline' ? 'var(--surface)' : 'transparent',
                 padding: isFloated && variant !== 'underline' ? '0 4px' : '0',
                 transition: 'all 0.18s cubic-bezier(0.32, 0.72, 0, 1)',
                 pointerEvents: 'none',
@@ -144,7 +144,7 @@ export function FormField({
               }}
             >
               {label}
-              {required && <span style={{ color: 'var(--color-error, #ef4444)', marginLeft: '2px' }}>*</span>}
+              {required && <span style={{ color: 'var(--danger, #ef4444)', marginLeft: '2px' }}>*</span>}
             </label>
           )}
         </div>
@@ -154,9 +154,9 @@ export function FormField({
             id={errorId}
             role="alert"
             style={{
-              fontSize: '0.76rem',
-              color: 'var(--color-error, #ef4444)',
-              marginTop: '0.35rem',
+              fontSize: '0.75rem',
+              color: 'var(--danger, #ef4444)',
+              marginTop: '0.3rem',
               display: 'flex',
               alignItems: 'center',
               gap: '4px',
@@ -176,9 +176,9 @@ export function FormField({
           <span
             id={descriptionId}
             style={{
-              fontSize: '0.76rem',
-              color: 'var(--color-text-muted, #64748b)',
-              marginTop: '0.35rem',
+              fontSize: '0.75rem',
+              color: 'var(--muted)',
+              marginTop: '0.3rem',
             }}
           >
             {helperText}

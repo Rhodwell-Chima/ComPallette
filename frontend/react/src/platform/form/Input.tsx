@@ -61,23 +61,23 @@ export const Input = forwardRef<HTMLInputElement, InputProps>(function Input(
   const getBorderAndBg = () => {
     if (variant === 'filled') {
       return {
-        background: 'var(--color-surface-hover, rgba(255, 255, 255, 0.05))',
+        background: 'var(--surface-muted)',
         border: '1px solid transparent',
-        borderRadius: '6px',
+        borderRadius: '7px',
       };
     }
     if (variant === 'underline') {
       return {
         background: 'transparent',
         border: 'none',
-        borderBottom: `2px solid ${hasError ? 'var(--color-error, #ef4444)' : 'var(--color-border, rgba(255, 255, 255, 0.15))'}`,
+        borderBottom: `2px solid ${hasError ? 'var(--danger, #ef4444)' : 'var(--border)'}`,
         borderRadius: '0',
       };
     }
     return {
-      background: 'var(--color-surface, rgba(15, 23, 42, 0.6))',
-      border: `1px solid ${hasError ? 'var(--color-error, #ef4444)' : 'var(--color-border, rgba(255, 255, 255, 0.15))'}`,
-      borderRadius: '6px',
+      background: 'var(--surface)',
+      border: `1px solid ${hasError ? 'var(--danger, #ef4444)' : 'var(--border)'}`,
+      borderRadius: '7px',
     };
   };
 
@@ -92,7 +92,7 @@ export const Input = forwardRef<HTMLInputElement, InputProps>(function Input(
             left: '0.75rem',
             display: 'flex',
             alignItems: 'center',
-            color: 'var(--color-text-muted, #94a3b8)',
+            color: 'var(--muted)',
             pointerEvents: 'none',
             zIndex: 1,
           }}
@@ -134,13 +134,13 @@ export const Input = forwardRef<HTMLInputElement, InputProps>(function Input(
           paddingBottom: paddingYMap[size],
           paddingLeft: leftIcon ? '2.4rem' : '0.85rem',
           paddingRight: rightIcon || isSuccess ? '2.4rem' : '0.85rem',
-          color: 'var(--color-text, #f8fafc)',
-          fontSize: size === 'sm' ? '0.82rem' : size === 'lg' ? '1rem' : '0.9rem',
+          color: 'var(--text)',
+          fontSize: size === 'sm' ? '0.82rem' : size === 'lg' ? '1rem' : '0.88rem',
           fontFamily: 'inherit',
           outline: 'none',
           transition: 'all 0.18s cubic-bezier(0.32, 0.72, 0, 1)',
           boxShadow: field?.isFocused && !hasError && variant !== 'underline'
-            ? '0 0 0 2px var(--color-accent-dim, rgba(59, 130, 246, 0.3))'
+            ? '0 0 0 2px color-mix(in srgb, var(--primary) 28%, transparent)'
             : 'none',
           ...styling,
           ...style,
@@ -156,7 +156,7 @@ export const Input = forwardRef<HTMLInputElement, InputProps>(function Input(
             right: '0.75rem',
             display: 'flex',
             alignItems: 'center',
-            color: isSuccess ? 'var(--color-success, #10b981)' : 'var(--color-text-muted, #94a3b8)',
+            color: isSuccess ? 'var(--success, #10b981)' : 'var(--muted)',
             zIndex: 1,
           }}
         >

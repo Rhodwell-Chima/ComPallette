@@ -47,23 +47,23 @@ export const Select = forwardRef<HTMLSelectElement, SelectProps>(function Select
   const getBorderAndBg = () => {
     if (variant === 'filled') {
       return {
-        background: 'var(--color-surface-hover, rgba(255, 255, 255, 0.05))',
+        background: 'var(--surface-muted)',
         border: '1px solid transparent',
-        borderRadius: '6px',
+        borderRadius: '7px',
       };
     }
     if (variant === 'underline') {
       return {
         background: 'transparent',
         border: 'none',
-        borderBottom: `2px solid ${hasError ? 'var(--color-error, #ef4444)' : 'var(--color-border, rgba(255, 255, 255, 0.15))'}`,
+        borderBottom: `2px solid ${hasError ? 'var(--danger, #ef4444)' : 'var(--border)'}`,
         borderRadius: '0',
       };
     }
     return {
-      background: 'var(--color-surface, rgba(15, 23, 42, 0.6))',
-      border: `1px solid ${hasError ? 'var(--color-error, #ef4444)' : 'var(--color-border, rgba(255, 255, 255, 0.15))'}`,
-      borderRadius: '6px',
+      background: 'var(--surface)',
+      border: `1px solid ${hasError ? 'var(--danger, #ef4444)' : 'var(--border)'}`,
+      borderRadius: '7px',
     };
   };
 
@@ -97,14 +97,14 @@ export const Select = forwardRef<HTMLSelectElement, SelectProps>(function Select
           height: heightMap[size],
           paddingLeft: '0.85rem',
           paddingRight: '2.4rem',
-          color: 'var(--color-text, #f8fafc)',
-          fontSize: size === 'sm' ? '0.82rem' : size === 'lg' ? '1rem' : '0.9rem',
+          color: 'var(--text)',
+          fontSize: size === 'sm' ? '0.82rem' : size === 'lg' ? '1rem' : '0.88rem',
           fontFamily: 'inherit',
           outline: 'none',
           appearance: 'none',
           cursor: disabled ? 'not-allowed' : 'pointer',
           boxShadow: field?.isFocused && !hasError && variant !== 'underline'
-            ? '0 0 0 2px var(--color-accent-dim, rgba(59, 130, 246, 0.3))'
+            ? '0 0 0 2px color-mix(in srgb, var(--primary) 28%, transparent)'
             : 'none',
           ...getBorderAndBg(),
           ...style,
@@ -118,7 +118,7 @@ export const Select = forwardRef<HTMLSelectElement, SelectProps>(function Select
                 key={opt.value}
                 value={opt.value}
                 disabled={opt.disabled}
-                style={{ background: '#0f172a', color: '#f8fafc' }}
+                style={{ background: 'var(--surface)', color: 'var(--text)' }}
               >
                 {opt.label}
               </option>
@@ -133,7 +133,7 @@ export const Select = forwardRef<HTMLSelectElement, SelectProps>(function Select
           display: 'flex',
           alignItems: 'center',
           pointerEvents: 'none',
-          color: 'var(--color-text-muted, #94a3b8)',
+          color: 'var(--muted)',
         }}
       >
         <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">

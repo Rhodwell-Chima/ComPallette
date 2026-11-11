@@ -53,32 +53,32 @@ export const Textarea = forwardRef<HTMLTextAreaElement, TextareaProps>(function 
   const getBorderAndBg = () => {
     if (variant === 'filled') {
       return {
-        background: 'var(--color-surface-hover, rgba(255, 255, 255, 0.05))',
+        background: 'var(--surface-muted)',
         border: '1px solid transparent',
-        borderRadius: '6px',
+        borderRadius: '7px',
       };
     }
     if (variant === 'underline') {
       return {
         background: 'transparent',
         border: 'none',
-        borderBottom: `2px solid ${hasError ? 'var(--color-error, #ef4444)' : 'var(--color-border, rgba(255, 255, 255, 0.15))'}`,
+        borderBottom: `2px solid ${hasError ? 'var(--danger, #ef4444)' : 'var(--border)'}`,
         borderRadius: '0',
       };
     }
     return {
-      background: 'var(--color-surface, rgba(15, 23, 42, 0.6))',
-      border: `1px solid ${hasError ? 'var(--color-error, #ef4444)' : 'var(--color-border, rgba(255, 255, 255, 0.15))'}`,
-      borderRadius: '6px',
+      background: 'var(--surface)',
+      border: `1px solid ${hasError ? 'var(--danger, #ef4444)' : 'var(--border)'}`,
+      borderRadius: '7px',
     };
   };
 
   const getCountColor = () => {
-    if (!maxLength) return 'var(--color-text-muted, #64748b)';
+    if (!maxLength) return 'var(--muted)';
     const ratio = charCount / maxLength;
-    if (ratio >= 1) return 'var(--color-error, #ef4444)';
-    if (ratio >= 0.85) return 'var(--color-warning, #f59e0b)';
-    return 'var(--color-text-muted, #64748b)';
+    if (ratio >= 1) return 'var(--danger, #ef4444)';
+    if (ratio >= 0.85) return 'var(--warning, #f59e0b)';
+    return 'var(--muted)';
   };
 
   return (
@@ -115,13 +115,13 @@ export const Textarea = forwardRef<HTMLTextAreaElement, TextareaProps>(function 
         style={{
           width: '100%',
           padding: size === 'sm' ? '0.4rem 0.6rem' : '0.65rem 0.85rem',
-          color: 'var(--color-text, #f8fafc)',
-          fontSize: size === 'sm' ? '0.82rem' : size === 'lg' ? '1rem' : '0.9rem',
+          color: 'var(--text)',
+          fontSize: size === 'sm' ? '0.82rem' : size === 'lg' ? '1rem' : '0.88rem',
           fontFamily: 'inherit',
           outline: 'none',
           resize: 'vertical',
           boxShadow: field?.isFocused && !hasError && variant !== 'underline'
-            ? '0 0 0 2px var(--color-accent-dim, rgba(59, 130, 246, 0.3))'
+            ? '0 0 0 2px color-mix(in srgb, var(--primary) 28%, transparent)'
             : 'none',
           ...getBorderAndBg(),
           ...style,
