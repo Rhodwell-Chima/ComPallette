@@ -1,8 +1,8 @@
 import { useMemo, useState } from 'react';
 import { Canvas } from '@react-three/fiber';
-import { OrbitControls } from '@react-three/drei';
+import { Html, OrbitControls } from '@react-three/drei';
 import * as THREE from 'three';
-import { Box, Eye, Layers3, Map, MonitorCog, Sun, Moon, Users } from 'lucide-react';
+import { Box, Eye, Layers3, Map, MonitorCog, Radio, Sun, Moon, Users, Wifi } from 'lucide-react';
 import { useQuery } from '@tanstack/react-query';
 import { platformApi } from '../services/api';
 import { TwinData, TwinEntity } from '../types';
@@ -55,13 +55,38 @@ function groupedEntities(features: Polygon[], entities: TwinEntity[], visible: S
   return features.map(feature => ({ feature, entities: entities.filter(entity => visible.has(entity.kind) && entity.evidence !== 'UNKNOWN' && entity.zone_code === feature.zoneCode) })).filter(group => group.entities.length);
 }
 
-function Twin2D({ data, visible, selected, onSelect, theme }: { data: TwinData; visible: Set<TwinEntity['kind']>; selected?: string; onSelect: (entityId: string) => void; theme: 'light' | 'dark' }) {
+interface HoveredInfo {
+  sectionId: string;
+  sectionLabel: string;
+  zoneCode?: string;
+  anchor?: TwinEntity;
+  entities: TwinEntity[];
+  x: number;
+  y: number;
+}
+
+function Twin2D({
+  data,
+  visible,
+  selected,
+  onSelect,
+  theme,
+  onHover,
+  onLeave,
+  hoveredSectionId,
+}: {
+  data: TwinData;
+  visible: Set<TwinEntity['kind']>;
+  selected?: string;
+  onSelect: (entityId: string) => void;
+  theme: 'light' | 'dark';
+  onHover: (info: HoveredInfo) => void;
+  onLeave: () => void;
+  hoveredSectionId?: string;
+}) {
   const features = useMemo(() => polygons(data), [data]);
   if (!features.length) return <EmptyState title="Facility geometry has not been configured" detail="Add a persisted layout with polygon features before the 2D Twin can render this site. No decorative facility map is shown." />;
   const frame = bounds(features);
-  const groups = groupedEntities(features, data.entities, visible);
-
-  const isLight = theme === 'light';
 
   return (
     <div className="twin-canvas">
@@ -81,13 +106,36 @@ function Twin2D({ data, visible, selected, onSelect, theme }: { data: TwinData; 
         {/* Render Chamber Zones & Corridors */}
         {features.map(feature => {
           const isOperational = Boolean(feature.zoneCode);
+          const isHovered = hoveredSectionId === feature.id;
+          const anchor = data.entities.find(e => e.role === 'ANCHOR' && e.zone_code === feature.zoneCode);
+          const sectionEntities = data.entities.filter(
+            e => visible.has(e.kind) && e.evidence !== 'UNKNOWN' && e.zone_code === feature.zoneCode
+          );
+          const isSelected = selected && (selected === anchor?.id || sectionEntities.some(e => e.id === selected));
+
           return (
             <g key={feature.id}>
               <polygon
-                className={`twin-zone ${isOperational ? 'operational' : 'corridor'}`}
+                className={`twin-zone ${isOperational ? 'operational' : 'corridor'} ${isHovered ? 'hovered' : ''} ${isSelected ? 'selected' : ''}`}
                 points={feature.points.map(point => point.join(',')).join(' ')}
+                onMouseMove={(e) => {
+                  onHover({
+                    sectionId: feature.id,
+                    sectionLabel: feature.label,
+                    zoneCode: feature.zoneCode,
+                    anchor,
+                    entities: sectionEntities,
+                    x: e.clientX,
+                    y: e.clientY,
+                  });
+                }}
+                onMouseLeave={onLeave}
+                onClick={() => {
+                  const target = anchor ?? (sectionEntities.length ? sectionEntities[0] : undefined);
+                  if (target) onSelect(target.id);
+                }}
               >
-                <title>{feature.label}</title>
+                <title>{`${feature.label}${feature.zoneCode ? ` (${feature.zoneCode})` : ''}`}</title>
               </polygon>
               <text
                 x={centre(feature.points)[0]}
@@ -100,44 +148,108 @@ function Twin2D({ data, visible, selected, onSelect, theme }: { data: TwinData; 
           );
         })}
 
-        {/* Render Grouped Telemetry Pins */}
-        {groups.map(group => {
-          const [x, y] = centre(group.feature.points);
-          const active = group.entities.some(entity => entity.id === selected);
-          const radius = Math.max(frame.width, frame.height) * 0.026;
-          return (
-            <g
-              className={`zone-entity-group ${active ? 'selected' : ''}`}
-              key={group.feature.id}
-              onClick={() => onSelect(group.entities[0].id)}
-              role="button"
-              tabIndex={0}
-              onKeyDown={event => {
-                if (event.key === 'Enter' || event.key === ' ') onSelect(group.entities[0].id);
-              }}
-            >
-              <circle
-                cx={x}
-                cy={y}
-                r={radius}
-                filter={isLight ? 'drop-shadow(0 2px 4px rgba(0,0,0,0.15))' : 'none'}
-              />
-              <text x={x} y={y} className="zone-entity-count">
-                {group.entities.length}
-              </text>
-              <text x={x} y={y + Math.max(frame.width, frame.height) * 0.052} className="zone-entity-label">
-                {group.entities.map(entity => entity.kind).filter((kind, index, values) => values.indexOf(kind) === index).join(' + ')}
-              </text>
-            </g>
-          );
-        })}
+        {/* Render Interactive Anchor Pins on Operational Horizons */}
+        {features
+          .filter(feature => Boolean(feature.zoneCode))
+          .map(feature => {
+            const [x, y] = centre(feature.points);
+            const anchor = data.entities.find(e => e.role === 'ANCHOR' && e.zone_code === feature.zoneCode);
+            const sectionEntities = data.entities.filter(
+              e => visible.has(e.kind) && e.evidence !== 'UNKNOWN' && e.zone_code === feature.zoneCode
+            );
+            const isSelected = selected && (selected === anchor?.id || sectionEntities.some(e => e.id === selected));
+            const isHovered = hoveredSectionId === feature.id;
+            const radius = Math.max(frame.width, frame.height) * 0.024;
+            const target = anchor ?? (sectionEntities.length ? sectionEntities[0] : undefined);
+
+            return (
+              <g
+                className={`twin-anchor-pin ${isSelected ? 'selected' : ''}`}
+                key={`pin-${feature.id}`}
+                onClick={(e) => {
+                  e.stopPropagation();
+                  if (target) onSelect(target.id);
+                }}
+                onMouseMove={(e) => {
+                  e.stopPropagation();
+                  onHover({
+                    sectionId: feature.id,
+                    sectionLabel: feature.label,
+                    zoneCode: feature.zoneCode,
+                    anchor,
+                    entities: sectionEntities,
+                    x: e.clientX,
+                    y: e.clientY,
+                  });
+                }}
+                onMouseLeave={onLeave}
+                role="button"
+                tabIndex={0}
+                onKeyDown={(e) => {
+                  if ((e.key === 'Enter' || e.key === ' ') && target) onSelect(target.id);
+                }}
+              >
+                {/* Glowing beacon concentric pulse ring */}
+                <circle
+                  className="twin-anchor-pulse"
+                  cx={x}
+                  cy={y}
+                  r={radius * 1.45}
+                  fill={isHovered ? 'rgba(56, 189, 248, 0.35)' : 'rgba(16, 185, 129, 0.25)'}
+                />
+                {/* Solid Anchor Beacon Center */}
+                <circle
+                  cx={x}
+                  cy={y}
+                  r={radius}
+                  fill={isSelected ? '#f59e0b' : (isHovered ? '#38bdf8' : '#10b981')}
+                  stroke="#ffffff"
+                  strokeWidth="1.5"
+                />
+                {/* Detected occupants counter or beacon dot */}
+                {sectionEntities.length > 0 ? (
+                  <text x={x} y={y} className="zone-entity-count">
+                    {sectionEntities.length}
+                  </text>
+                ) : (
+                  <circle cx={x} cy={y} r={radius * 0.32} fill="#ffffff" />
+                )}
+                {/* Anchor tag text below */}
+                <text x={x} y={y + radius * 2.2} className="zone-entity-label">
+                  {anchor ? `⚓ ${anchor.node_id.replace('ANCHOR-', '')}` : 'Station'}
+                </text>
+              </g>
+            );
+          })}
       </svg>
-      <p className="twin-caption">Entity badges represent a zone grouping, not an exact physical coordinate.</p>
+      <p className="twin-caption">Hover on any anchor beacon or section to inspect details; click to view telemetry in the sidebar.</p>
     </div>
   );
 }
 
-function NormalizedZone({ polygon, frame, onClick, theme }: { polygon: Polygon; frame: ReturnType<typeof bounds>; onClick: () => void; theme: 'light' | 'dark' }) {
+function NormalizedZone({
+  polygon,
+  frame,
+  onClick,
+  onHover,
+  onLeave,
+  theme,
+  isHovered,
+  isSelected,
+  anchor,
+  entities,
+}: {
+  polygon: Polygon;
+  frame: ReturnType<typeof bounds>;
+  onClick: () => void;
+  onHover: (info: HoveredInfo) => void;
+  onLeave: () => void;
+  theme: 'light' | 'dark';
+  isHovered: boolean;
+  isSelected: boolean;
+  anchor?: TwinEntity;
+  entities: TwinEntity[];
+}) {
   const scale = 12 / Math.max(frame.width, frame.height);
   const shape = useMemo(
     () => new THREE.Shape(polygon.points.map(([x, y]) => new THREE.Vector2((x - (frame.minX + frame.width / 2)) * scale, (y - (frame.minY + frame.height / 2)) * scale))),
@@ -147,16 +259,44 @@ function NormalizedZone({ polygon, frame, onClick, theme }: { polygon: Polygon; 
   const isOperational = Boolean(polygon.zoneCode);
 
   return (
-    <mesh rotation={[-Math.PI / 2, 0, 0]} onClick={onClick}>
+    <mesh
+      rotation={[-Math.PI / 2, 0, 0]}
+      onClick={(e) => {
+        e.stopPropagation();
+        onClick();
+      }}
+      onPointerOver={(e) => {
+        e.stopPropagation();
+        onHover({
+          sectionId: polygon.id,
+          sectionLabel: polygon.label,
+          zoneCode: polygon.zoneCode,
+          anchor,
+          entities,
+          x: e.nativeEvent.clientX,
+          y: e.nativeEvent.clientY,
+        });
+      }}
+      onPointerOut={(e) => {
+        e.stopPropagation();
+        onLeave();
+      }}
+    >
       <extrudeGeometry args={[shape, { depth: isOperational ? 0.38 : 0.16, bevelEnabled: false }]} />
       <meshStandardMaterial
         color={
-          isLight
+          isSelected
+            ? '#f59e0b'
+            : isHovered
+            ? (isLight ? '#0284c7' : '#38bdf8')
+            : isLight
             ? (isOperational ? '#2563eb' : '#94a3b8')
             : (isOperational ? '#38bdf8' : '#1e3352')
         }
+        emissive={isSelected ? '#d97706' : (isHovered ? (isLight ? '#0284c7' : '#0369a1') : '#000000')}
+        emissiveIntensity={isSelected || isHovered ? 0.35 : 0}
         transparent
-        opacity={isLight ? (isOperational ? 0.85 : 0.55) : (isOperational ? 0.82 : 0.48)}
+        opacity={isLight ? (isOperational ? 0.88 : 0.55) : (isOperational ? 0.85 : 0.48)}
         roughness={isOperational ? 0.35 : 0.6}
         metalness={isOperational ? 0.25 : 0.05}
       />
@@ -164,11 +304,136 @@ function NormalizedZone({ polygon, frame, onClick, theme }: { polygon: Polygon; 
   );
 }
 
-function Twin3D({ data, onSelect, theme }: { data: TwinData; onSelect: (entityId: string) => void; theme: 'light' | 'dark' }) {
+function Anchor3D({
+  feature,
+  frame,
+  scale,
+  anchor,
+  entities,
+  isSelected,
+  isHovered,
+  onHover,
+  onLeave,
+  onSelect,
+  theme,
+}: {
+  feature: Polygon;
+  frame: ReturnType<typeof bounds>;
+  scale: number;
+  anchor?: TwinEntity;
+  entities: TwinEntity[];
+  isSelected: boolean;
+  isHovered: boolean;
+  onHover: (info: HoveredInfo) => void;
+  onLeave: () => void;
+  onSelect: (entityId: string) => void;
+  theme: 'light' | 'dark';
+}) {
+  const [cx, cy] = centre(feature.points);
+  const x3d = (cx - (frame.minX + frame.width / 2)) * scale;
+  const z3d = (cy - (frame.minY + frame.height / 2)) * scale;
+  const isLight = theme === 'light';
+  const target = anchor ?? (entities.length ? entities[0] : undefined);
+
+  return (
+    <group position={[x3d, 0.38, z3d]}>
+      {/* Anchor Physical Mast */}
+      <mesh position={[0, 0.22, 0]}>
+        <cylinderGeometry args={[0.04, 0.07, 0.44, 16]} />
+        <meshStandardMaterial
+          color={isLight ? '#64748b' : '#94a3b8'}
+          metalness={0.6}
+          roughness={0.2}
+        />
+      </mesh>
+
+      {/* Anchor Beacon Glowing Head */}
+      <mesh
+        position={[0, 0.46, 0]}
+        onClick={(e) => {
+          e.stopPropagation();
+          if (target) onSelect(target.id);
+        }}
+        onPointerOver={(e) => {
+          e.stopPropagation();
+          onHover({
+            sectionId: feature.id,
+            sectionLabel: feature.label,
+            zoneCode: feature.zoneCode,
+            anchor,
+            entities,
+            x: e.nativeEvent.clientX,
+            y: e.nativeEvent.clientY,
+          });
+        }}
+        onPointerOut={(e) => {
+          e.stopPropagation();
+          onLeave();
+        }}
+      >
+        <sphereGeometry args={[0.13, 24, 24]} />
+        <meshStandardMaterial
+          color={isSelected ? '#f59e0b' : (isHovered ? '#38bdf8' : '#10b981')}
+          emissive={isSelected ? '#d97706' : (isHovered ? '#0284c7' : '#059669')}
+          emissiveIntensity={0.8}
+          roughness={0.1}
+        />
+      </mesh>
+
+      {/* Floating 3D Anchor HTML Tag */}
+      <Html position={[0, 0.76, 0]} center distanceFactor={14}>
+        <div
+          className={`twin-3d-anchor-tag ${isSelected ? 'selected' : ''} ${isHovered ? 'hovered' : ''}`}
+          onClick={(e) => {
+            e.stopPropagation();
+            if (target) onSelect(target.id);
+          }}
+          onPointerEnter={(e) => {
+            onHover({
+              sectionId: feature.id,
+              sectionLabel: feature.label,
+              zoneCode: feature.zoneCode,
+              anchor,
+              entities,
+              x: e.clientX,
+              y: e.clientY,
+            });
+          }}
+          onPointerLeave={onLeave}
+        >
+          <Radio size={12} className="anchor-tag-icon" />
+          <span>{anchor?.node_id ?? feature.label.split(' ')[0]}</span>
+          {entities.length > 0 && <span className="anchor-tag-badge">{entities.length}</span>}
+        </div>
+      </Html>
+    </group>
+  );
+}
+
+function Twin3D({
+  data,
+  visible,
+  selected,
+  onSelect,
+  theme,
+  onHover,
+  onLeave,
+  hoveredSectionId,
+}: {
+  data: TwinData;
+  visible: Set<TwinEntity['kind']>;
+  selected?: string;
+  onSelect: (entityId: string) => void;
+  theme: 'light' | 'dark';
+  onHover: (info: HoveredInfo) => void;
+  onLeave: () => void;
+  hoveredSectionId?: string;
+}) {
   const features = useMemo(() => polygons(data), [data]);
   if (!features.length) return <EmptyState title="No geometry for 3D mode" detail="The 3D workspace uses the same persisted facility geometry as 2D. Configure the layout first." />;
   const frame = bounds(features);
   const isLight = theme === 'light';
+  const scale = 12 / Math.max(frame.width, frame.height);
 
   return (
     <div className="twin-three">
@@ -177,21 +442,65 @@ function Twin3D({ data, onSelect, theme }: { data: TwinData; onSelect: (entityId
         <ambientLight intensity={isLight ? 1.1 : 0.8} />
         <directionalLight position={[6, 12, 9]} intensity={isLight ? 1.6 : 1.4} />
         <directionalLight position={[-6, -4, -5]} intensity={isLight ? 0.6 : 0.3} />
-        {features.map(feature => (
-          <NormalizedZone
-            key={feature.id}
-            polygon={feature}
-            frame={frame}
-            theme={theme}
-            onClick={() => {
-              const entity = data.entities.find(item => item.zone_code === feature.zoneCode);
-              if (entity) onSelect(entity.id);
-            }}
-          />
-        ))}
+
+        {features.map(feature => {
+          const anchor = data.entities.find(e => e.role === 'ANCHOR' && e.zone_code === feature.zoneCode);
+          const sectionEntities = data.entities.filter(
+            e => visible.has(e.kind) && e.evidence !== 'UNKNOWN' && e.zone_code === feature.zoneCode
+          );
+          const isSelected = selected && (selected === anchor?.id || sectionEntities.some(e => e.id === selected));
+          const target = anchor ?? (sectionEntities.length ? sectionEntities[0] : undefined);
+
+          return (
+            <NormalizedZone
+              key={feature.id}
+              polygon={feature}
+              frame={frame}
+              theme={theme}
+              isHovered={hoveredSectionId === feature.id}
+              isSelected={Boolean(isSelected)}
+              anchor={anchor}
+              entities={sectionEntities}
+              onHover={onHover}
+              onLeave={onLeave}
+              onClick={() => {
+                if (target) onSelect(target.id);
+              }}
+            />
+          );
+        })}
+
+        {/* 3D Anchor Beacons */}
+        {features
+          .filter(feature => Boolean(feature.zoneCode))
+          .map(feature => {
+            const anchor = data.entities.find(e => e.role === 'ANCHOR' && e.zone_code === feature.zoneCode);
+            const sectionEntities = data.entities.filter(
+              e => visible.has(e.kind) && e.evidence !== 'UNKNOWN' && e.zone_code === feature.zoneCode
+            );
+            const isSelected = selected && (selected === anchor?.id || sectionEntities.some(e => e.id === selected));
+
+            return (
+              <Anchor3D
+                key={`anchor-3d-${feature.id}`}
+                feature={feature}
+                frame={frame}
+                scale={scale}
+                anchor={anchor}
+                entities={sectionEntities}
+                isSelected={Boolean(isSelected)}
+                isHovered={hoveredSectionId === feature.id}
+                onHover={onHover}
+                onLeave={onLeave}
+                onSelect={onSelect}
+                theme={theme}
+              />
+            );
+          })}
+
         <OrbitControls makeDefault />
       </Canvas>
-      <p className="twin-caption">3D mode is generated from the configured facility geometry. Drag to rotate, scroll to zoom.</p>
+      <p className="twin-caption">3D mode is generated from the configured facility geometry. Drag to rotate, scroll to zoom. Hover on anchor markers to inspect.</p>
     </div>
   );
 }
@@ -201,6 +510,7 @@ export function TwinPage() {
   const [mode, setMode] = useState<'2d' | '3d'>('2d');
   const [visible, setVisible] = useState<Set<TwinEntity['kind']>>(new Set(['personnel', 'asset', 'device']));
   const [selectedId, setSelectedId] = useState<string>();
+  const [hoveredInfo, setHoveredInfo] = useState<HoveredInfo | null>(null);
 
   const twin = useQuery({
     queryKey: ['twin', selectedSiteId],
@@ -225,8 +535,56 @@ export function TwinPage() {
       <PageHeader
         eyebrow="OPERATIONS WORKSPACE"
         title="Digital Twin"
-        description="A real-time spatial operations workspace displaying persisted facility geometry and server-backed zone evidence."
+        description="A real-time spatial operations workspace displaying persisted facility geometry, anchor infrastructure, and server-backed zone evidence."
       />
+
+      {/* Floating Hover Card (Shows which section is labeled what on hover) */}
+      {hoveredInfo && (
+        <div
+          className="twin-hover-card"
+          style={{
+            left: `${Math.min(hoveredInfo.x + 14, window.innerWidth - 320)}px`,
+            top: `${Math.max(hoveredInfo.y - 45, 75)}px`,
+          }}
+        >
+          <div className="hover-card-header">
+            <Radio size={16} className="hover-radio-icon" />
+            <div>
+              <strong>{hoveredInfo.sectionLabel}</strong>
+              {hoveredInfo.zoneCode && <span className="hover-zone-tag">{hoveredInfo.zoneCode}</span>}
+            </div>
+          </div>
+
+          <div className="hover-card-body">
+            <div className="hover-row">
+              <span className="hover-key">Anchor Device:</span>
+              <span className="hover-val">
+                {hoveredInfo.anchor ? (
+                  <span className="anchor-pill-inline">
+                    <Wifi size={12} /> {hoveredInfo.anchor.node_id} ({hoveredInfo.anchor.status})
+                  </span>
+                ) : (
+                  <span className="text-muted">Structural Conduit</span>
+                )}
+              </span>
+            </div>
+
+            <div className="hover-row">
+              <span className="hover-key">Occupancy:</span>
+              <span className="hover-val">
+                {hoveredInfo.entities.length > 0 ? (
+                  <strong>
+                    {hoveredInfo.entities.filter(e => e.kind === 'personnel').length} Personnel
+                    {hoveredInfo.entities.some(e => e.kind === 'asset') ? `, ${hoveredInfo.entities.filter(e => e.kind === 'asset').length} Assets` : ''}
+                  </strong>
+                ) : (
+                  <span className="text-muted">No mobile personnel detected</span>
+                )}
+              </span>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Toolbar: 2D/3D Mode, Entity Filters, Theme Switcher */}
       <div className="twin-toolbar">
@@ -282,12 +640,20 @@ export function TwinPage() {
               selected={selectedId}
               onSelect={setSelectedId}
               theme={theme}
+              onHover={setHoveredInfo}
+              onLeave={() => setHoveredInfo(null)}
+              hoveredSectionId={hoveredInfo?.sectionId}
             />
           ) : (
             <Twin3D
               data={twin.data}
+              visible={visible}
+              selected={selectedId}
               onSelect={setSelectedId}
               theme={theme}
+              onHover={setHoveredInfo}
+              onLeave={() => setHoveredInfo(null)}
+              hoveredSectionId={hoveredInfo?.sectionId}
             />
           )}
           {twin.data.topology_status && (
@@ -299,33 +665,64 @@ export function TwinPage() {
 
         {/* Sidebar Telemetry Inspector */}
         <aside className="twin-inspector">
-          <p className="eyebrow">ENTITY INSPECTOR</p>
+          <p className="eyebrow">{selected?.role === 'ANCHOR' ? 'ANCHOR INSPECTOR' : 'ENTITY INSPECTOR'}</p>
           {selected ? (
             <>
-              <h2>{selected.label}</h2>
-              <StatusPill value={selected.kind} />
+              <h2>{selected.label || selected.node_id}</h2>
+              <div style={{ display: 'flex', gap: '6px', alignItems: 'center', marginBottom: '12px' }}>
+                <StatusPill value={selected.role === 'ANCHOR' ? 'Infrastructure Anchor' : selected.kind} />
+                <NodeStatusPill status={selected.status} />
+              </div>
               <dl className="metadata-list">
                 <div>
-                  <dt>Device</dt>
-                  <dd>{selected.node_id}</dd>
+                  <dt>Device ID</dt>
+                  <dd style={{ fontFamily: 'monospace', fontWeight: 700 }}>{selected.node_id}</dd>
                 </div>
                 <div>
-                  <dt>Reported zone</dt>
+                  <dt>Network Role</dt>
+                  <dd>{selected.role}</dd>
+                </div>
+                <div>
+                  <dt>Reported Zone</dt>
                   <dd><LocationLabel evidence={selected.evidence} zone={selected.zone_code} /></dd>
                 </div>
                 <div>
-                  <dt>Observed</dt>
+                  <dt>Last Observed</dt>
                   <dd>{formatTimestamp(selected.observed_at)}</dd>
                 </div>
-                <div>
-                  <dt>Device health</dt>
-                  <dd><NodeStatusPill status={selected.status} /></dd>
-                </div>
               </dl>
+
+              {/* If this is an Anchor, display all personnel/assets currently detected at this anchor */}
+              {selected.role === 'ANCHOR' && (
+                <div style={{ marginTop: '16px', borderTop: '1px solid var(--border)', paddingTop: '12px' }}>
+                  <p className="eyebrow" style={{ marginBottom: '8px' }}>
+                    OCCUPANTS AT THIS ANCHOR ({twin.data.entities.filter(e => e.zone_code === selected.zone_code && e.id !== selected.id).length})
+                  </p>
+                  <div className="twin-entity-list" style={{ maxHeight: '240px' }}>
+                    {twin.data.entities
+                      .filter(e => e.zone_code === selected.zone_code && e.id !== selected.id)
+                      .map(entity => (
+                        <button
+                          key={entity.id}
+                          className={selectedId === entity.id ? 'selected' : ''}
+                          onClick={() => setSelectedId(entity.id)}
+                        >
+                          <span style={{ fontWeight: 600 }}>{entity.label}</span>
+                          <StatusPill value={entity.kind} />
+                        </button>
+                      ))}
+                    {!twin.data.entities.some(e => e.zone_code === selected.zone_code && e.id !== selected.id) && (
+                      <p className="text-muted" style={{ fontSize: '0.78rem', margin: '4px 0' }}>
+                        No personnel or assets currently reporting at this anchor station.
+                      </p>
+                    )}
+                  </div>
+                </div>
+              )}
             </>
           ) : (
             <>
-              <p>Select a zone grouping or entity below to inspect its server-provided evidence.</p>
+              <p>Select an anchor beacon, zone, or entity to inspect its server-backed spatial evidence.</p>
               <div className="twin-entity-list">
                 {twin.data.entities
                   .filter(entity => visible.has(entity.kind))
@@ -335,7 +732,12 @@ export function TwinPage() {
                       onClick={() => setSelectedId(entity.id)}
                       key={entity.id}
                     >
-                      <span style={{ fontWeight: 600 }}>{entity.label}</span>
+                      <div style={{ display: 'flex', flexDirection: 'column' }}>
+                        <span style={{ fontWeight: 600 }}>{entity.label}</span>
+                        <small style={{ color: 'var(--muted)', fontSize: '0.68rem' }}>
+                          {entity.role === 'ANCHOR' ? '⚓ Stationary Anchor' : entity.node_id}
+                        </small>
+                      </div>
                       <LocationLabel evidence={entity.evidence} zone={entity.zone_code} />
                     </button>
                   ))}
