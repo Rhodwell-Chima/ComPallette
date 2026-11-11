@@ -1,4 +1,5 @@
 import { ReactNode, useEffect, useRef } from 'react';
+import { createPortal } from 'react-dom';
 import { motion, AnimatePresence } from 'framer-motion';
 import { X } from 'lucide-react';
 import { springPresets } from './motion';
@@ -40,18 +41,21 @@ export function Modal({
     };
   }, [isOpen, onClose]);
 
-  return (
+  if (typeof document === 'undefined') return null;
+
+  return createPortal(
     <AnimatePresence>
       {isOpen && (
         <div
           style={{
             position: 'fixed',
             inset: 0,
-            zIndex: 1000,
+            zIndex: 9999, // Render above sticky navbar (zIndex 40)
             display: 'flex',
             alignItems: 'center',
             justifyContent: 'center',
-            padding: '1rem',
+            padding: '1.5rem',
+            overflowY: 'auto',
           }}
         >
           {/* Backdrop with blur */}
@@ -64,7 +68,7 @@ export function Modal({
             style={{
               position: 'fixed',
               inset: 0,
-              backgroundColor: 'rgba(11, 18, 37, 0.72)',
+              backgroundColor: 'rgba(11, 18, 37, 0.65)',
               backdropFilter: 'blur(6px)',
               WebkitBackdropFilter: 'blur(6px)',
             }}
@@ -73,15 +77,15 @@ export function Modal({
           {/* Centered Dialog Window */}
           <motion.div
             ref={modalRef}
-            initial={{ opacity: 0, scale: 0.95, y: 10 }}
+            initial={{ opacity: 0, scale: 0.95, y: 12 }}
             animate={{ opacity: 1, scale: 1, y: 0 }}
-            exit={{ opacity: 0, scale: 0.95, y: 10 }}
+            exit={{ opacity: 0, scale: 0.95, y: 12 }}
             transition={springPresets.smooth}
             style={{
               position: 'relative',
               width: '100%',
               maxWidth,
-              maxHeight: '90vh',
+              maxHeight: 'calc(100vh - 3rem)',
               display: 'flex',
               flexDirection: 'column',
               backgroundColor: 'var(--surface)',
@@ -91,6 +95,7 @@ export function Modal({
               color: 'var(--text)',
               zIndex: 1,
               overflow: 'hidden',
+              margin: 'auto',
             }}
           >
             {/* Modal Header */}
@@ -172,6 +177,7 @@ export function Modal({
           </motion.div>
         </div>
       )}
-    </AnimatePresence>
+    </AnimatePresence>,
+    document.body
   );
 }
