@@ -459,87 +459,95 @@ export function AccessPage() {
       />
 
       {/* Add Operator Modal */}
-      {showAddUserModal && (
-        <div
-          className="panel"
-          style={{
-            position: 'fixed',
-            inset: 0,
-            margin: 'auto',
-            width: 'min(440px, 92vw)',
-            height: 'fit-content',
-            zIndex: 100,
-            padding: '24px',
-            boxShadow: '0 20px 60px rgba(0,0,0,0.4)',
-            border: '1px solid var(--border)',
+      <Modal
+        isOpen={showAddUserModal}
+        onClose={() => setShowAddUserModal(false)}
+        title="Provision New Operator"
+        subtitle="Create an authorized operational account on this deployment."
+        maxWidth="460px"
+      >
+        <form
+          onSubmit={(e) => {
+            e.preventDefault();
+            createUserMutation.mutate();
           }}
+          style={{ display: 'flex', flexDirection: 'column', gap: '0.5rem' }}
         >
-          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '16px' }}>
-            <h2 style={{ margin: 0, fontSize: '1.15rem' }}>Provision New Operator</h2>
-            <button type="button" className="icon-button" onClick={() => setShowAddUserModal(false)}>
-              <X size={18} />
-            </button>
-          </div>
-          <form
-            onSubmit={(e) => {
-              e.preventDefault();
-              createUserMutation.mutate();
-            }}
-            style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}
-          >
-            <FormField label="Django Username" required>
-              <Input
-                required
-                value={newUsername}
-                onChange={(e) => setNewUsername(e.target.value)}
-                placeholder="e.g. jdoe_shift1"
-              />
-            </FormField>
+          <FormField label="Django Username" required helperText="Unique operational username">
+            <Input
+              required
+              value={newUsername}
+              onChange={(e) => setNewUsername(e.target.value)}
+              placeholder="e.g. jdoe_shift1"
+            />
+          </FormField>
 
-            <FormField label="Email Address">
-              <Input
-                type="email"
-                value={newEmail}
-                onChange={(e) => setNewEmail(e.target.value)}
-                placeholder="operator@mine.internal"
-              />
-            </FormField>
+          <FormField label="Email Address" helperText="Corporate or shift alert email">
+            <Input
+              type="email"
+              value={newEmail}
+              onChange={(e) => setNewEmail(e.target.value)}
+              placeholder="operator@mine.internal"
+            />
+          </FormField>
 
-            <FormField label="Role" required>
-              <Select
-                value={newRole}
-                options={['ORG_ADMIN', 'SITE_ADMIN', 'OPERATIONS', 'SAFETY', 'TECHNICIAN', 'VIEWER'].map((r) => ({
-                  value: r,
-                  label: r,
-                }))}
-                onChange={(e) => setNewRole(e.target.value)}
-              />
-            </FormField>
+          <FormField label="Role" required>
+            <Select
+              value={newRole}
+              options={['ORG_ADMIN', 'SITE_ADMIN', 'OPERATIONS', 'SAFETY', 'TECHNICIAN', 'VIEWER'].map((r) => ({
+                value: r,
+                label: r,
+              }))}
+              onChange={(e) => setNewRole(e.target.value)}
+            />
+          </FormField>
 
-            <div style={{ display: 'flex', gap: '8px', marginTop: '10px' }}>
-              <LoadingButton
-                type="submit"
-                className="primary"
-                isLoading={createUserMutation.isPending}
-                loadingText="Registering..."
-                icon={<UserPlus size={15} />}
-              >
-                Create Account
-              </LoadingButton>
-              <button
-                type="button"
-                className="button ghost"
-                onClick={() => setShowAddUserModal(false)}
-              >
-                Cancel
-              </button>
+          {createUserMutation.isError && (
+            <div
+              style={{
+                backgroundColor: 'rgba(239, 68, 68, 0.1)',
+                border: '1px solid var(--danger, #ef4444)',
+                borderRadius: '7px',
+                padding: '0.65rem 0.85rem',
+                color: 'var(--danger, #ef4444)',
+                fontSize: '0.82rem',
+                marginTop: '0.25rem',
+              }}
+            >
+              Could not register user. Ensure the username is unique and valid.
             </div>
-            {createUserMutation.isError && (
-              <p className="form-error">Could not register user. Ensure the username is unique and valid.</p>
-            )}
-          </form>
-        </div>
-      )}
+          )}
+
+          <div
+            style={{
+              display: 'flex',
+              justifyContent: 'flex-end',
+              gap: '0.75rem',
+              marginTop: '1.25rem',
+              paddingTop: '1rem',
+              borderTop: '1px solid var(--border)',
+            }}
+          >
+            <button
+              type="button"
+              className="button ghost"
+              onClick={() => setShowAddUserModal(false)}
+            >
+              Cancel
+            </button>
+            <LoadingButton
+              type="submit"
+              className="primary"
+              isLoading={createUserMutation.isPending}
+              loadingText="Registering..."
+              icon={<UserPlus size={15} />}
+            >
+              Create Account
+            </LoadingButton>
+          </div>
+        </form>
+      </Modal>
+
 
       {/* Slide-over User Detail Drawer */}
       {activeDrawerUserId !== null && (
