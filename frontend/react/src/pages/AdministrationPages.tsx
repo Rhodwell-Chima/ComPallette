@@ -39,7 +39,9 @@ import { usePlatform } from '../platform/PlatformContext';
 import { EmptyState, ErrorState, LoadingState, PageHeader, StatusPill, formatTimestamp } from '../platform/ui';
 import { LoadingButton, SkeletonTable } from '../platform/loading';
 import { Pagination } from '../platform/pagination';
+import { FormField, Input, Select, SearchInput } from '../platform/form';
 import { AdminUserItem, UserStatus } from '../types';
+
 
 /**
  * Slide-over User Detail Drawer
@@ -481,36 +483,37 @@ export function AccessPage() {
               e.preventDefault();
               createUserMutation.mutate();
             }}
-            style={{ display: 'flex', flexDirection: 'column', gap: '14px' }}
+            style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}
           >
-            <label className="field-label">
-              Django Username *
-              <input
+            <FormField label="Django Username" required>
+              <Input
                 required
                 value={newUsername}
                 onChange={(e) => setNewUsername(e.target.value)}
                 placeholder="e.g. jdoe_shift1"
               />
-            </label>
-            <label className="field-label">
-              Email Address
-              <input
+            </FormField>
+
+            <FormField label="Email Address">
+              <Input
                 type="email"
                 value={newEmail}
                 onChange={(e) => setNewEmail(e.target.value)}
                 placeholder="operator@mine.internal"
               />
-            </label>
-            <label className="field-label">
-              Role
-              <select value={newRole} onChange={(e) => setNewRole(e.target.value)}>
-                {['ORG_ADMIN', 'SITE_ADMIN', 'OPERATIONS', 'SAFETY', 'TECHNICIAN', 'VIEWER'].map((r) => (
-                  <option key={r} value={r}>
-                    {r}
-                  </option>
-                ))}
-              </select>
-            </label>
+            </FormField>
+
+            <FormField label="Role" required>
+              <Select
+                value={newRole}
+                options={['ORG_ADMIN', 'SITE_ADMIN', 'OPERATIONS', 'SAFETY', 'TECHNICIAN', 'VIEWER'].map((r) => ({
+                  value: r,
+                  label: r,
+                }))}
+                onChange={(e) => setNewRole(e.target.value)}
+              />
+            </FormField>
+
             <div style={{ display: 'flex', gap: '8px', marginTop: '10px' }}>
               <LoadingButton
                 type="submit"
