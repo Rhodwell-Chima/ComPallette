@@ -1,0 +1,7 @@
+menu "ComPallette PPP probe"
+
+config PROBE_DJANGO_URL
+    string "Django health URL reachable from the Linux peer"
+    default ""
+
+endmenu
