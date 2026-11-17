@@ -355,3 +355,9 @@ RSSI-based zones are **not enabled**. Legacy beacon-driven wearable zone changes
 Run direct-link trials with one wearable and one Anchor, then swap WROOM and S3 roles. Collect stationary samples at each intended zone with varied distance, orientation, body placement, and obstruction. Add a third node as a relay and verify only direct parent/child associations create RSSI records. Record Arduino ESP32 Core `3.3.12`, painlessMesh `1.5.7`, AsyncTCP, and ArduinoJson versions with each run. This checkout does not identify its AsyncTCP or ArduinoJson installations, so those still need recording in the trial report.
 
 Do not treat relayed application messages as direct RSSI evidence. Only advance to coarse-zone inference after held-out zone accuracy is at least 95% and static trials show no more than one false zone change per worker-hour. Those are pilot gates for operational decision support, not safety certification. If the gate fails, keep observations experimental and do not present inferred zones as confirmed locations.
+
+### Operator alert resolution contract
+
+`POST /api/v1/alerts/{id}/resolve` requires a JSON `notes` string containing non-whitespace operator-authored resolution evidence. The API trims valid notes. Missing, null, non-string, empty, or whitespace-only values return HTTP 400 with `{"error":"Resolution notes are required."}` and leave alert state and audit history unchanged. Existing permission checks and authenticated operator attribution still apply.
+
+Deploy the updated operator frontend before or alongside this stricter API validation. Other clients must supply notes; no database migration or rewrite of historical resolutions is required. Frontend alert drafts are kept separately by site and alert in memory for the authenticated session, and are cleared on logout or reload.

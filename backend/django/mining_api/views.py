@@ -620,7 +620,10 @@ class AlertResolveView(APIView):
             return Response({"error": "Alert already resolved", "alert_id": alert_id}, status=status.HTTP_404_NOT_FOUND)
 
         officer = request.user.get_username()
-        notes = request.data.get("notes", "Hazard cleared.")
+        notes = request.data.get("notes")
+        if not isinstance(notes, str) or not notes.strip():
+            return Response({"error": "Resolution notes are required."}, status=status.HTTP_400_BAD_REQUEST)
+        notes = notes.strip()
         now_ms = int(time.time() * 1000)
 
         alert.status = AlertStatus.RESOLVED

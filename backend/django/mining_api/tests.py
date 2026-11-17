@@ -226,6 +226,28 @@ class MiningApiTests(TestCase):
         self.assertIn('ALERT_ACKNOWLEDGED', actions)
         self.assertIn('ALERT_RESOLVED', actions)
 
+    def test_resolution_requires_operator_authored_notes(self):
+        node = Node.objects.create(node_id='RESOLUTION-TEST', site=self.site)
+        alert = SafetyAlert.objects.create(node=node, alert_code='TEST', created_at=1)
+        before = AuditEntry.objects.count()
+        for body in ({}, {'notes': None}, {'notes': 12}, {'notes': []}, {'notes': {}}, {'notes': ''}, {'notes': '  \n\t'}):
+            with self.subTest(body=body):
+                response = self.client.post(f'/api/v1/alerts/{alert.id}/resolve', body, format='json')
+                self.assertEqual(response.status_code, 400)
+                self.assertEqual(response.json(), {'error': 'Resolution notes are required.'})
+                alert.refresh_from_db()
+                self.assertEqual(alert.status, AlertStatus.NEW)
+                self.assertIsNone(alert.resolved_at)
+                self.assertEqual(alert.resolution_notes, '')
+                self.assertEqual(AuditEntry.objects.count(), before)
+        response = self.client.post(f'/api/v1/alerts/{alert.id}/resolve', {'notes': '  Ventilation checked; reading verified.  '}, format='json')
+        self.assertEqual(response.status_code, 200)
+        alert.refresh_from_db()
+        self.assertEqual(alert.resolution_notes, 'Ventilation checked; reading verified.')
+        self.assertEqual(alert.resolved_by, self.operator.username)
+        self.assertEqual(alert.status, AlertStatus.RESOLVED)
+        self.assertEqual(AuditEntry.objects.filter(action='ALERT_RESOLVED', site=self.site).count(), 1)
+
     def test_heartbeat_and_watchdog(self):
         # Ingest heartbeat
         hb = {
