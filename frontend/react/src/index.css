@@ -789,3 +789,36 @@ button:focus-visible, a:focus-visible, input:focus-visible, textarea:focus-visib
     display: inline-grid;
   }
 }
+
+/* Operational feedback must remain visible at narrow widths. */
+.backend-connection { display: inline-flex; flex-direction: column; align-items: flex-start; gap: 2px; white-space: normal; }
+.backend-connection small { font-size: .65rem; font-weight: 400; }
+.button:focus-visible, button:focus-visible, summary:focus-visible { outline: 2px solid var(--primary); outline-offset: 3px; }
+.incident-actions, .segmented { flex-wrap: wrap; }
+.timeline-charts { display: grid; gap: 16px; min-width: 0; }
+.timeline-chart { margin: 0; min-width: 0; }
+.timeline-chart figcaption { font-weight: 600; margin-bottom: 6px; }
+.timeline-chart svg { display: block; width: 100%; height: auto; }
+@media (max-width: 960px) {
+  .compallette-navbar { height: auto !important; min-height: 70px; flex-wrap: wrap; padding: 10px 15px !important; gap: 10px; }
+  .compallette-navbar > div { flex-wrap: wrap; min-width: 0; gap: 10px !important; }
+  .backend-connection { display: inline-flex; }
+}
+.dashboard-charts { display: grid; grid-template-columns: minmax(0, 1.8fr) minmax(320px, 1fr); gap: 16px; margin: 20px 0; }
+@media (max-width: 820px) { .dashboard-charts { grid-template-columns: minmax(0, 1fr); } }
+.incident-item small { display: block; margin-top: 3px; }
+.field-label textarea { color: var(--text); background: var(--surface); border: 1px solid var(--border); }
+.field-label textarea:focus-visible { outline: 2px solid var(--primary); outline-offset: 2px; }
+.compallette-navbar { gap: 14px; }
+.compallette-navbar > div { gap: 14px !important; }
+.navbar-desktop-nav { gap: 16px !important; }
+.navbar-link, .navbar-link-btn, .navbar-cta-btn, .user-menu button { white-space: nowrap; }
+.compallette-navbar > div:first-child > a { flex-shrink: 0; }
+@media (min-width: 961px) and (max-width: 1250px) {
+  .navbar-desktop-nav, .navbar-cta-btn { display: none !important; }
+  .navbar-mobile-hamburger { display: inline-grid; }
+  .compallette-navbar { flex-wrap: wrap; height: auto !important; min-height: 70px; padding-block: 10px !important; }
+}
+.compallette-navbar { height: auto !important; min-height: 70px; padding-block: 10px !important; }
+.backend-connection { flex-shrink: 0; min-width: 160px; max-width: 220px; }
+@media (max-width: 1500px) { .compallette-navbar .user-menu > span { display: none; } }

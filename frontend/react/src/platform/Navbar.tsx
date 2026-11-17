@@ -32,6 +32,7 @@ import {
 import { useQuery } from '@tanstack/react-query';
 import { fetchBackendHealth, platformApi } from '../services/api';
 import { usePlatform } from './PlatformContext';
+import { BackendConnection } from './BackendConnection';
 import { useOperatorSession } from '../components/AuthGate';
 
 export interface NavbarProps {
@@ -532,12 +533,7 @@ export function Navbar({ transparent = false, className = '' }: NavbarProps) {
           </label>
 
           {/* Health connection pill */}
-          <span
-            className={`connection ${health.data?.status === 'healthy' ? 'online' : 'offline'}`}
-            title={health.data?.build_revision ?? 'Checking backend'}
-          >
-            {health.data?.status === 'healthy' ? 'Connected' : 'Checking'}
-          </span>
+          <BackendConnection data={health.data} isError={health.isError} dataUpdatedAt={health.dataUpdatedAt} />
 
           {/* Alerts shortcut button */}
           <NavLink to="/alerts" className="icon-button" aria-label="View active alerts">

@@ -63,6 +63,11 @@ function Trend({ readings, unit }: { readings: MeasurementReading[]; unit: strin
 
 export function EnvironmentalPage() {
   const { selectedSiteId } = usePlatform();
+  return <EnvironmentalSitePage key={selectedSiteId ?? 'none'} />;
+}
+
+function EnvironmentalSitePage() {
+  const { selectedSiteId } = usePlatform();
   const [channel, setChannel] = useState<string>();
   const [page, setPage] = useState(1);
   const [pageSize, setPageSize] = useState(25);
@@ -183,21 +188,25 @@ export function EnvironmentalPage() {
               </div>
 
               {/* Trend visualizer in fixed-height bounded container to prevent overlap */}
-              <Trend readings={readings} unit={currentChannelMeta?.unit ?? ''} />
+              {readingsQuery.data && <Trend readings={readings} unit={currentChannelMeta?.unit ?? ''} />}
+              {readingsQuery.isError && <div role="alert">
+                <ErrorState message={readingsQuery.data ? 'Refresh failed—showing previously loaded readings.' : 'Readings could not be loaded.'} retry={() => void readingsQuery.refetch()} />
+                {readingsQuery.data && <p className="muted">Last successful fetch: {formatTimestamp(readingsQuery.dataUpdatedAt)}</p>}
+              </div>}
 
               {/* Paginated Historical Readings Table */}
               <div style={{ padding: '0 18px 18px' }}>
                 <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '12px' }}>
                   <strong style={{ fontSize: '0.88rem' }}>Telemetry Ingestion Log</strong>
                   <span className="muted" style={{ fontSize: '0.78rem' }}>
-                    {totalReadings} total verified readings
+                    {readingsQuery.data ? `${totalReadings} total recorded readings` : readingsQuery.isLoading ? 'Loading readings…' : 'Reading count unavailable'}
                   </span>
                 </div>
 
                 {readingsQuery.isLoading ? (
                   <SkeletonTable rows={5} columns={[140, 100, 100, 80]} />
-                ) : readings.length === 0 ? (
-                  <EmptyState title="No readings recorded" detail="No timestamped records found for this channel." />
+                ) : !readingsQuery.data ? null : readings.length === 0 ? (
+                  <EmptyState title={readingsQuery.isError ? "Previously loaded history was empty" : "No readings recorded"} detail={readingsQuery.isError ? "Current history is unavailable until a refresh succeeds." : "No timestamped records found for this channel."} />
                 ) : (
                   <div className="table-scroll">
                     <table>
@@ -224,7 +233,7 @@ export function EnvironmentalPage() {
                 )}
 
                 {/* Standardized Numeric Pagination */}
-                <Pagination
+                {readingsQuery.data && <Pagination
                   currentPage={page}
                   totalPages={totalPages}
                   totalItems={totalReadings}
@@ -235,7 +244,7 @@ export function EnvironmentalPage() {
                     setPage(1);
                   }}
                   pageSizeOptions={[10, 25, 50, 100]}
-                />
+                />}
               </div>
             </>
           ) : (

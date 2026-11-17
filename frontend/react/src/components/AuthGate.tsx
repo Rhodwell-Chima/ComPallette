@@ -1,4 +1,4 @@
-import React, { FormEvent, createContext, useContext, useEffect, useState } from 'react';
+import React, { FormEvent, createContext, useContext, useEffect, useRef, useState } from 'react';
 import {
   ApiError,
   getOperatorSession,
@@ -37,6 +37,8 @@ export const AuthGate: React.FC<{ children: React.ReactNode }> = ({ children }) 
   const [username, setUsername] = useState('');
   const [password, setPassword] = useState('');
   const [error, setError] = useState('');
+  const [signingIn, setSigningIn] = useState(false);
+  const signInPending = useRef(false);
 
   useEffect(() => setAuthenticationFailureHandler(() => {
     setAuthenticated(false);
@@ -72,6 +74,9 @@ export const AuthGate: React.FC<{ children: React.ReactNode }> = ({ children }) 
 
   const signIn = async (event: FormEvent) => {
     event.preventDefault();
+    if (signInPending.current) return;
+    signInPending.current = true;
+    setSigningIn(true);
     setError('');
 
     try {
@@ -87,6 +92,9 @@ export const AuthGate: React.FC<{ children: React.ReactNode }> = ({ children }) 
       setSession(session);
     } catch (requestError) {
       setError(errorMessage(requestError));
+    } finally {
+      signInPending.current = false;
+      setSigningIn(false);
     }
   };
 
@@ -109,7 +117,7 @@ export const AuthGate: React.FC<{ children: React.ReactNode }> = ({ children }) 
       <h1>ComPallette Operations</h1><p>Sign in with your Django operator account.</p>
       <label>Username<input autoComplete="username" value={username} onChange={e => setUsername(e.target.value)} required /></label>
       <label>Password<input type="password" autoComplete="current-password" value={password} onChange={e => setPassword(e.target.value)} required /></label>
-      {error && <p role="alert" className="auth-error">{error}</p>}<button type="submit">Sign in</button>
+      {error && <p role="alert" className="auth-error">{error}</p>}<button className="button primary" type="submit" disabled={signingIn} aria-busy={signingIn}>{signingIn ? 'Signing in…' : 'Sign in'}</button>
     </form></main>
   );
   if (!session) return null;

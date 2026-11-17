@@ -1,3 +1,4 @@
+import { PrimaryTimelineChart } from '../components/PrimaryTimelineChart';
 import { useEffect, useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { Link, useNavigate } from 'react-router-dom';
@@ -78,96 +79,6 @@ function MiniSparkline({ data, tone = 'default' }: { data: number[]; tone?: 'suc
         points={points}
       />
     </svg>
-  );
-}
-
-/**
- * Primary 2/3 Multi-metric Time-Series Visualizer
- */
-function PrimaryTimelineChart({ points }: { points: ChartTimeSeriesPoint[] }) {
-  const [activeMetric, setActiveMetric] = useState<'all' | 'gas' | 'dust' | 'alerts'>('all');
-  if (!points || !points.length) {
-    return <div className="muted" style={{ padding: '2rem', textAlign: 'center' }}>No historical readings in this range.</div>;
-  }
-
-  const svgWidth = 600;
-  const svgHeight = 180;
-  const paddingX = 35;
-  const paddingY = 25;
-
-  const maxVal = Math.max(...points.map(p => Math.max(p.gas_ppm * 2, p.dust_ugm3, p.active_alerts * 20)), 50);
-
-  const getY = (val: number) => {
-    return svgHeight - paddingY - (val / maxVal) * (svgHeight - paddingY * 2);
-  };
-
-  const getX = (index: number) => {
-    return paddingX + (index / (points.length - 1)) * (svgWidth - paddingX * 2);
-  };
-
-  const gasPoints = points.map((p, i) => `${getX(i)},${getY(p.gas_ppm * 2)}`).join(' ');
-  const dustPoints = points.map((p, i) => `${getX(i)},${getY(p.dust_ugm3)}`).join(' ');
-  const alertPoints = points.map((p, i) => `${getX(i)},${getY(p.active_alerts * 20)}`).join(' ');
-
-  return (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: '0.75rem' }}>
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '0.5rem' }}>
-        <div style={{ display: 'flex', gap: '1rem', fontSize: '0.75rem' }}>
-          <span style={{ display: 'inline-flex', alignItems: 'center', gap: '5px', color: '#00b4d8' }}>
-            <span style={{ width: 8, height: 8, borderRadius: '50%', background: '#00b4d8' }} /> Gas PPM (x2)
-          </span>
-          <span style={{ display: 'inline-flex', alignItems: 'center', gap: '5px', color: '#e0a96d' }}>
-            <span style={{ width: 8, height: 8, borderRadius: '50%', background: '#e0a96d' }} /> Dust &mu;g/m&sup3;
-          </span>
-          <span style={{ display: 'inline-flex', alignItems: 'center', gap: '5px', color: '#c42a2a' }}>
-            <span style={{ width: 8, height: 8, borderRadius: '50%', background: '#c42a2a' }} /> Safety Alarms (x20)
-          </span>
-        </div>
-        <div className="segmented" style={{ margin: 0 }}>
-          <button className={activeMetric === 'all' ? 'active' : ''} onClick={() => setActiveMetric('all')}>All Channels</button>
-          <button className={activeMetric === 'gas' ? 'active' : ''} onClick={() => setActiveMetric('gas')}>Gas</button>
-          <button className={activeMetric === 'dust' ? 'active' : ''} onClick={() => setActiveMetric('dust')}>Dust</button>
-          <button className={activeMetric === 'alerts' ? 'active' : ''} onClick={() => setActiveMetric('alerts')}>Alarms</button>
-        </div>
-      </div>
-
-      <div style={{ width: '100%', overflowX: 'auto' }}>
-        <svg viewBox={`0 0 ${svgWidth} ${svgHeight}`} style={{ width: '100%', height: 'auto', maxHeight: '220px' }}>
-          {/* Grid lines */}
-          <line x1={paddingX} y1={getY(0)} x2={svgWidth - paddingX} y2={getY(0)} stroke="var(--border)" strokeWidth="1" />
-          <line x1={paddingX} y1={getY(maxVal / 2)} x2={svgWidth - paddingX} y2={getY(maxVal / 2)} stroke="var(--border)" strokeDasharray="3 3" opacity="0.6" />
-          <line x1={paddingX} y1={getY(maxVal)} x2={svgWidth - paddingX} y2={getY(maxVal)} stroke="var(--border)" strokeDasharray="3 3" opacity="0.6" />
-
-          {/* Curves */}
-          {(activeMetric === 'all' || activeMetric === 'gas') && (
-            <polyline fill="none" stroke="#00b4d8" strokeWidth="2.5" points={gasPoints} strokeLinecap="round" />
-          )}
-          {(activeMetric === 'all' || activeMetric === 'dust') && (
-            <polyline fill="none" stroke="#e0a96d" strokeWidth="2.5" points={dustPoints} strokeLinecap="round" />
-          )}
-          {(activeMetric === 'all' || activeMetric === 'alerts') && (
-            <polyline fill="none" stroke="#c42a2a" strokeWidth="2.5" strokeDasharray="4 2" points={alertPoints} strokeLinecap="round" />
-          )}
-
-          {/* X axis labels */}
-          {points.filter((_, idx) => idx % 2 === 0).map((pt, i) => {
-            const originalIndex = i * 2;
-            return (
-              <text
-                key={pt.timestamp}
-                x={getX(originalIndex)}
-                y={svgHeight - 6}
-                fill="var(--muted)"
-                fontSize="9"
-                textAnchor="middle"
-              >
-                {pt.label}
-              </text>
-            );
-          })}
-        </svg>
-      </div>
-    </div>
   );
 }
 
@@ -534,7 +445,7 @@ export function DashboardPage() {
       </section>
 
       {/* Visualizations Section: Primary Chart (2/3) + Secondary Breakdown Charts (1/3) */}
-      <section style={{ display: 'grid', gridTemplateColumns: 'minmax(0, 1.8fr) minmax(320px, 1fr)', gap: '16px', margin: '20px 0' }}>
+      <section className="dashboard-charts">
         {/* Primary Chart (2/3 width) */}
         <article className="panel" style={{ padding: '18px' }}>
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: '14px' }}>

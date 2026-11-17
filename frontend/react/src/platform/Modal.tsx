@@ -1,6 +1,6 @@
-import { ReactNode, useEffect, useRef } from 'react';
+import { ReactNode, RefObject, useEffect, useId, useRef } from 'react';
 import { createPortal } from 'react-dom';
-import { motion, AnimatePresence } from 'framer-motion';
+import { motion, AnimatePresence, useReducedMotion } from 'framer-motion';
 import { X } from 'lucide-react';
 import { springPresets } from './motion';
 
@@ -11,6 +11,7 @@ export interface ModalProps {
   subtitle?: string;
   children: ReactNode;
   maxWidth?: string;
+  initialFocusRef?: RefObject<HTMLElement>;
 }
 
 export function Modal({
@@ -20,33 +21,68 @@ export function Modal({
   subtitle,
   children,
   maxWidth = '520px',
+  initialFocusRef,
 }: ModalProps) {
   const modalRef = useRef<HTMLDivElement>(null);
+  const overlayRef = useRef<HTMLDivElement>(null);
+  const titleId = useId();
+  const descriptionId = useId();
+  const reduced = useReducedMotion();
+  const closeRef = useRef(onClose);
+  closeRef.current = onClose;
 
   useEffect(() => {
-    const handleKeyDown = (e: KeyboardEvent) => {
-      if (e.key === 'Escape' && isOpen) {
-        onClose();
+    if (!isOpen) return;
+    const dialog = modalRef.current;
+    if (!dialog) return;
+    const opener = document.activeElement as HTMLElement | null;
+    const overflow = document.body.style.overflow;
+    const backgrounds = Array.from(document.body.children).filter(
+      (element): element is HTMLElement => element instanceof HTMLElement && element !== overlayRef.current,
+    );
+    const previousInert = backgrounds.map(element => element.inert);
+    backgrounds.forEach(element => { element.inert = true; });
+    document.body.style.overflow = 'hidden';
+    const initial = initialFocusRef?.current ?? dialog.querySelector<HTMLElement>('input:not(:disabled), textarea:not(:disabled), select:not(:disabled)') ?? dialog;
+    initial.focus();
+    const focusable = () => Array.from(dialog.querySelectorAll<HTMLElement>(
+      'button:not(:disabled), [href], input:not(:disabled), select:not(:disabled), textarea:not(:disabled), [tabindex]:not([tabindex="-1"])',
+    )).filter(element => !element.hidden && !element.closest('[hidden], [inert]') && getComputedStyle(element).display !== 'none');
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') { event.preventDefault(); event.stopPropagation(); closeRef.current(); }
+      if (event.key !== 'Tab') return;
+      const targets = focusable();
+      const first = targets[0];
+      const last = targets[targets.length - 1];
+      if (!first) { event.preventDefault(); dialog.focus(); return; }
+      if (event.shiftKey && (document.activeElement === first || document.activeElement === dialog)) {
+        event.preventDefault(); last.focus();
+      } else if (!event.shiftKey && (document.activeElement === last || document.activeElement === dialog)) {
+        event.preventDefault(); first.focus();
       }
     };
-
-    if (isOpen) {
-      document.body.style.overflow = 'hidden';
-      window.addEventListener('keydown', handleKeyDown);
-    }
-
-    return () => {
-      document.body.style.overflow = '';
-      window.removeEventListener('keydown', handleKeyDown);
+    const containFocus = (event: FocusEvent) => {
+      if (!dialog.contains(event.target as Node)) (focusable()[0] ?? dialog).focus();
     };
-  }, [isOpen, onClose]);
+    document.addEventListener('keydown', handleKeyDown, true);
+    document.addEventListener('focusin', containFocus);
+    return () => {
+      document.removeEventListener('keydown', handleKeyDown, true);
+      document.removeEventListener('focusin', containFocus);
+      backgrounds.forEach((element, index) => { element.inert = previousInert[index]; });
+      document.body.style.overflow = overflow;
+      if (opener?.isConnected) opener.focus();
+    };
+  }, [isOpen, initialFocusRef]);
 
-  if (typeof document === 'undefined') return null;
+  // Unmount immediately on close so an exiting overlay cannot intercept restored focus.
+  if (typeof document === 'undefined' || !isOpen) return null;
 
   return createPortal(
     <AnimatePresence>
       {isOpen && (
         <div
+          ref={overlayRef}
           style={{
             position: 'fixed',
             inset: 0,
@@ -63,7 +99,7 @@ export function Modal({
             initial={{ opacity: 0 }}
             animate={{ opacity: 1 }}
             exit={{ opacity: 0 }}
-            transition={{ duration: 0.18 }}
+            transition={{ duration: reduced ? 0 : 0.18 }}
             onClick={onClose}
             style={{
               position: 'fixed',
@@ -78,10 +114,15 @@ export function Modal({
           {/* Centered Dialog Window (Opaque surface, strictly above backdrop) */}
           <motion.div
             ref={modalRef}
-            initial={{ opacity: 0, scale: 0.95, y: 12 }}
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby={titleId}
+            aria-describedby={subtitle ? descriptionId : undefined}
+            tabIndex={-1}
+            initial={reduced ? false : { opacity: 0, scale: 0.95, y: 12 }}
             animate={{ opacity: 1, scale: 1, y: 0 }}
-            exit={{ opacity: 0, scale: 0.95, y: 12 }}
-            transition={springPresets.smooth}
+            exit={reduced ? { opacity: 0 } : { opacity: 0, scale: 0.95, y: 12 }}
+            transition={reduced ? { duration: 0 } : springPresets.smooth}
             style={{
               position: 'relative',
               zIndex: 1,
@@ -113,7 +154,7 @@ export function Modal({
               }}
             >
               <div>
-                <h2
+                <h2 id={titleId}
                   style={{
                     margin: 0,
                     fontSize: '1.15rem',
@@ -125,7 +166,7 @@ export function Modal({
                   {title}
                 </h2>
                 {subtitle && (
-                  <p
+                  <p id={descriptionId}
                     style={{
                       margin: '4px 0 0',
                       fontSize: '0.8rem',
