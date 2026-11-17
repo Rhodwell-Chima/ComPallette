@@ -17,7 +17,7 @@
 #define MESH_PREFIX     "MineMesh_Zambia"
 #define MESH_PASSWORD   "SecureMine123"
 #define MESH_PORT       5555
-#define MESH_CHANNEL    6                  // Must match the Gateway's 2.4 GHz router channel
+#define MESH_CHANNEL    11                  // Must match the Gateway's 2.4 GHz router channel
 
 // ----------------------------------------------------------------------------
 // 2. Node Roles & Operational Profile
