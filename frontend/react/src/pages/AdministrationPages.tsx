@@ -58,10 +58,13 @@ function UserDetailDrawer({
   onClose: () => void;
   onSaved: () => void;
 }) {
+  const { selectedSiteId } = usePlatform();
+  const { session } = useOperatorSession();
+  const [newPassword, setNewPassword] = useState('');
   const queryClient = useQueryClient();
   const userQuery = useQuery({
-    queryKey: ['user-detail', userId],
-    queryFn: () => platformApi.userDetail(userId),
+    queryKey: ['user-detail', userId, selectedSiteId],
+    queryFn: () => platformApi.userDetail(userId, selectedSiteId),
   });
 
   const [editForm, setEditForm] = useState<{
@@ -91,21 +94,17 @@ function UserDetailDrawer({
   }, [userQuery.data]);
 
   const updateMutation = useMutation({
-    mutationFn: () => platformApi.updateUser(userId, editForm),
+    mutationFn: () => platformApi.updateUser(userId, session.is_superuser ? editForm : { role: editForm.role, status: editForm.status }, selectedSiteId),
     onSuccess: () => {
       void queryClient.invalidateQueries({ queryKey: ['admin-users'] });
-      void queryClient.invalidateQueries({ queryKey: ['user-detail', userId] });
+      void queryClient.invalidateQueries({ queryKey: ['user-detail', userId, selectedSiteId] });
       onSaved();
     },
   });
 
   const resetMutation = useMutation({
-    mutationFn: () => platformApi.resetUserPassword(userId),
-    onSuccess: (data) => {
-      if (data.temporary_password) {
-        window.alert(`Temporary password generated for operator:\n\n${data.temporary_password}\n\nPlease share securely.`);
-      }
-    },
+    mutationFn: () => platformApi.resetUserPassword(userId, newPassword, selectedSiteId),
+    onSuccess: () => setNewPassword(''),
   });
 
   if (userQuery.isLoading) {
@@ -181,6 +180,7 @@ function UserDetailDrawer({
           <label className="field-label">
             First Name
             <input
+              disabled={!session.is_superuser}
               value={editForm.first_name}
               onChange={(e) => setEditForm({ ...editForm, first_name: e.target.value })}
             />
@@ -188,6 +188,7 @@ function UserDetailDrawer({
           <label className="field-label">
             Last Name
             <input
+              disabled={!session.is_superuser}
               value={editForm.last_name}
               onChange={(e) => setEditForm({ ...editForm, last_name: e.target.value })}
             />
@@ -198,7 +199,8 @@ function UserDetailDrawer({
           Email Address
           <input
             type="email"
-            value={editForm.email}
+            disabled={!session.is_superuser}
+              value={editForm.email}
             onChange={(e) => setEditForm({ ...editForm, email: e.target.value })}
           />
         </label>
@@ -245,7 +247,7 @@ function UserDetailDrawer({
           <button
             type="button"
             className="button secondary"
-            disabled={resetMutation.isPending}
+            disabled={!session.is_superuser || !newPassword || resetMutation.isPending}
             onClick={() => resetMutation.mutate()}
           >
             <KeyRound size={15} /> Reset Password
@@ -253,6 +255,9 @@ function UserDetailDrawer({
         </div>
       </form>
 
+      {session.is_superuser && <label>New password<input type="password" autoComplete="new-password" value={newPassword} onChange={e => setNewPassword(e.target.value)} /></label>}
+      {resetMutation.isSuccess && <p role="status">Password changed.</p>}
+      {resetMutation.isError && <p role="alert">{resetMutation.error.message}</p>}
       <hr style={{ border: '0', borderTop: '1px solid var(--border)', margin: '4px 0' }} />
 
       {/* Permissions Breakdown */}
@@ -317,6 +322,11 @@ function StatusDot({ status }: { status: UserStatus }) {
 }
 
 export function AccessPage() {
+  const { selectedSiteId } = usePlatform();
+  return <AccessContent key={selectedSiteId ?? 'none'} />;
+}
+
+function AccessContent() {
   const { session } = useOperatorSession();
   const { selectedSiteId, selectedSite, capabilities, can } = usePlatform();
   const queryClient = useQueryClient();
@@ -354,7 +364,7 @@ export function AccessPage() {
   // Bulk actions mutation
   const bulkMutation = useMutation({
     mutationFn: (action: 'activate' | 'suspend' | 'delete') =>
-      platformApi.bulkUserAction(action, selectedIds),
+      platformApi.bulkUserAction(action, selectedIds, selectedSiteId),
     onSuccess: () => {
       setSelectedIds([]);
       void queryClient.invalidateQueries({ queryKey: ['admin-users'] });
@@ -365,7 +375,7 @@ export function AccessPage() {
   // Create user mutation
   const createUserMutation = useMutation({
     mutationFn: () =>
-      platformApi.assignMembership(selectedSiteId, newUsername, newRole),
+      platformApi.createUser(selectedSiteId!, { username: newUsername, email: newEmail, role: newRole }),
     onSuccess: () => {
       setNewUsername('');
       setNewEmail('');
@@ -795,16 +805,8 @@ export function AccessPage() {
                           <button
                             type="button"
                             className="button ghost icon-only"
-                            onClick={() => {
-                              platformApi
-                                .resetUserPassword(u.id)
-                                .then((res) => {
-                                  if (res.temporary_password) {
-                                    window.alert(`Temporary password for @${u.username}:\n\n${res.temporary_password}`);
-                                  }
-                                })
-                                .catch(() => window.alert('Failed to reset password.'));
-                            }}
+                            onClick={() => setActiveDrawerUserId(u.id)}
+                            disabled={!session.is_superuser}
                             title="Reset password"
                             style={{ padding: '4px' }}
                           >
@@ -986,7 +988,7 @@ export function SitesZonesPage() {
   const zones = useQuery({ queryKey: ['zones', selectedSiteId], queryFn: () => platformApi.zones(selectedSiteId!), enabled: Boolean(selectedSiteId) });
   const layout = useQuery({ queryKey: ['layout', selectedSiteId], queryFn: () => platformApi.layout(selectedSiteId!), enabled: Boolean(selectedSiteId) });
   const createZone = useMutation({ mutationFn: () => platformApi.createZone(selectedSiteId!, zoneForm), onSuccess: () => { setZoneForm({ code: '', name: '', zone_type: 'OPERATIONAL', description: '', is_restricted: false, is_hazardous: false }); setShowZoneForm(false); void queryClient.invalidateQueries({ queryKey: ['zones'] }); } });
-  const saveLayout = useMutation({ mutationFn: (geometry: Record<string, unknown>) => platformApi.updateLayout(selectedSiteId!, geometry), onSuccess: () => { void queryClient.invalidateQueries({ queryKey: ['layout'] }); void queryClient.invalidateQueries({ queryKey: ['twin'] }); } });
+  const saveLayout = useMutation({ mutationFn: (geometry: Record<string, unknown>) => platformApi.updateLayout(selectedSiteId!, geometry, layout.data!.version), onSuccess: () => { void queryClient.invalidateQueries({ queryKey: ['layout'] }); void queryClient.invalidateQueries({ queryKey: ['twin'] }); } });
   useEffect(() => { if (layout.data) setLayoutText(JSON.stringify(layout.data.geometry, null, 2)); }, [layout.data]);
 
   const handleLoadDemoGeometry = () => {
@@ -1165,12 +1167,4 @@ export function IntegrationsPage() {
   return <><PageHeader eyebrow="MANAGEMENT" title="Integrations" description="External connections are disclosed only when Django confirms they are configured." />{integrations.data.integrations.length ? <section className="panel">Configured integrations will appear here.</section> : <EmptyState title="No integrations are configured" detail={integrations.data.message} />}</>;
 }
 
-export function SettingsPage() {
-  const { selectedSite, can } = usePlatform();
-  const [industry, setIndustry] = useState(selectedSite?.industry ?? ''); const [timezone, setTimezone] = useState(selectedSite?.timezone ?? '');
-  const queryClient = useQueryClient();
-  useEffect(() => { setIndustry(selectedSite?.industry ?? ''); setTimezone(selectedSite?.timezone ?? ''); }, [selectedSite]);
-  const update = useMutation({ mutationFn: () => platformApi.updateSite(selectedSite!.id, { industry, timezone }), onSuccess: () => { void queryClient.invalidateQueries({ queryKey: ['platform-bootstrap'] }); void queryClient.invalidateQueries({ queryKey: ['dashboard'] }); } });
-  if (!selectedSite) return <EmptyState title="No site selected" detail="Select a permitted site before changing its settings." />;
-  return <><PageHeader eyebrow="SYSTEM" title="Settings" description="Site settings are persisted in Django. Device and safety configuration remain governed by supported backend and firmware workflows." /><form className="panel settings-form" onSubmit={event => { event.preventDefault(); update.mutate(); }}><Settings2 size={22} /><label>Industry<input disabled={!can('manage_sites')} value={industry} onChange={event => setIndustry(event.target.value)} /></label><label>Timezone<input disabled={!can('manage_sites')} value={timezone} onChange={event => setTimezone(event.target.value)} /></label>{can('manage_sites') && <button className="button primary" disabled={update.isPending}><Check size={16} /> Save site settings</button>}{update.isError && <p className="form-error">Site settings were not saved. Confirm your access and inputs.</p>}</form></>;
-}
+export { SettingsPage } from './settings';

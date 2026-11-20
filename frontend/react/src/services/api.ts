@@ -42,6 +42,7 @@ export interface OperatorSession {
   authenticated: boolean;
   username?: string;
   is_staff?: boolean;
+  is_superuser?: boolean;
   capabilities?: string[];
   sites?: Site[];
 }
@@ -184,7 +185,14 @@ async function json<T>(path: string, init?: RequestInit): Promise<T> {
 }
 
 export const platformApi = {
-  bootstrap: () => json<{ organisations: Organisation[]; sites: Site[]; capabilities: string[] }>('/api/v1/platform/bootstrap'),
+  entity: (kind: string, id: string) => json<Record<string, any>>(`/api/v1/entities/${kind}/${encodeURIComponent(id)}`),
+  entityAction: (kind: string, id: string, input: Record<string, unknown>) => json<Record<string, unknown>>(`/api/v1/entities/${kind}/${encodeURIComponent(id)}`, jsonRequest('POST', input)),
+  transferPreview: (kind: string, id: string, destination: number) => json<{ assignment_ids: number[]; custody_ids: number[] }>(`/api/v1/entities/${kind}/${encodeURIComponent(id)}?preview_destination=${destination}`),
+  eligibleDevices: (site: number, q = '') => json<{ nodes: NodeItem[] }>(`/api/v1/devices/eligible${siteQuery(site, { q })}`),
+  gateways: (site: number) => json<{ gateways: any[]; discoveries: any[]; commands: any[] }>(`/api/v1/gateways${siteQuery(site)}`),
+  gatewayAction: (input: Record<string, unknown>) => json<Record<string, any>>('/api/v1/gateways', jsonRequest('POST', input)),
+  command: (input: Record<string, unknown>) => json<{ command_id: string; state: string }>('/api/v1/commands', jsonRequest('POST', input)),
+  bootstrap: () => json<{ organisations: Organisation[]; sites: Site[]; capabilities: string[]; site_capabilities?: Record<string, string[]> }>('/api/v1/platform/bootstrap'),
   dashboard: (siteId?: number, params: { start_date?: string; end_date?: string; range?: string } = {}) =>
     json<EnhancedDashboardData>(`/api/v1/dashboard${siteQuery(siteId, params)}`),
   sites: () => json<{ sites: Site[] }>('/api/v1/sites'),
@@ -194,7 +202,7 @@ export const platformApi = {
   zones: (siteId: number) => json<{ zones: Zone[] }>(`/api/v1/sites/${siteId}/zones`),
   createZone: (siteId: number, input: Pick<Zone, 'code' | 'name' | 'zone_type' | 'description' | 'is_restricted' | 'is_hazardous'>) => json<Zone>(`/api/v1/sites/${siteId}/zones`, jsonRequest('POST', input)),
   layout: (siteId: number) => json<FacilityLayout>(`/api/v1/sites/${siteId}/layout`),
-  updateLayout: (siteId: number, geometry: Record<string, unknown>) => json<FacilityLayout>(`/api/v1/sites/${siteId}/layout`, jsonRequest('PUT', { geometry })),
+  updateLayout: (siteId: number, geometry: Record<string, unknown>, expectedVersion: number) => json<FacilityLayout>(`/api/v1/sites/${siteId}/layout`, jsonRequest('PUT', { geometry, expected_version: expectedVersion })),
   personnel: (siteId?: number, q?: string) => json<{ personnel: PersonnelItem[]; count: number }>(`/api/v1/personnel${siteQuery(siteId, { q })}`),
   createPersonnel: (input: Pick<PersonnelItem, 'identifier' | 'display_name' | 'team' | 'employment_status'> & { site?: number; assigned_node?: string | null }) => json<PersonnelItem>('/api/v1/personnel', jsonRequest('POST', input)),
   assets: (siteId?: number, q?: string) => json<{ assets: AssetItem[]; count: number }>(`/api/v1/assets${siteQuery(siteId, { q })}`),
@@ -243,13 +251,15 @@ export const platformApi = {
       role: params.role,
       status: params.status,
     })}`),
-  userDetail: (userId: number) => json<AdminUserItem>(`/api/v1/users/${userId}`),
-  updateUser: (userId: number, input: Partial<AdminUserItem>) =>
-    json<AdminUserItem>(`/api/v1/users/${userId}`, jsonRequest('PATCH', input)),
-  bulkUserAction: (action: 'activate' | 'suspend' | 'delete' | 'change_role', userIds: number[], extra?: Record<string, unknown>) =>
-    json<{ message: string; updated: number }>('/api/v1/users/bulk', jsonRequest('POST', { action, user_ids: userIds, ...extra })),
-  resetUserPassword: (userId: number) =>
-    json<{ message: string; temporary_password?: string }>(`/api/v1/users/${userId}/reset-password`, jsonRequest('POST')),
+  userDetail: (userId: number, siteId?: number) => json<AdminUserItem>(`/api/v1/users/${userId}${siteQuery(siteId)}`),
+  createUser: (siteId: number, input: { username: string; email: string; role: string }) =>
+    json<{ id: number; message: string }>(`/api/v1/users${siteQuery(siteId)}`, jsonRequest('POST', input)),
+  updateUser: (userId: number, input: Partial<AdminUserItem>, siteId?: number) =>
+    json<AdminUserItem>(`/api/v1/users/${userId}${siteQuery(siteId)}`, jsonRequest('PATCH', input)),
+  bulkUserAction: (action: 'activate' | 'suspend' | 'delete' | 'change_role', userIds: number[], siteId?: number, extra?: Record<string, unknown>) =>
+    json<{ message: string; updated: number }>(`/api/v1/users/bulk${siteQuery(siteId)}`, jsonRequest('POST', { action, user_ids: userIds, ...extra })),
+  resetUserPassword: (userId: number, password: string, siteId?: number) =>
+    json<{ message: string }>(`/api/v1/users/${userId}/reset-password${siteQuery(siteId)}`, jsonRequest('POST', { password })),
 };
 
 export async function fetchNodes(statusFilter?: string): Promise<NodeItem[]> {

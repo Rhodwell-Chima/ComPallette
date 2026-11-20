@@ -47,12 +47,12 @@ export function PlatformProvider({ children }: { children: ReactNode }) {
       window.localStorage.setItem(SITE_STORAGE_KEY, String(siteId));
       setSelectedSite(siteId);
     },
-    capabilities: bootstrap.data?.capabilities ?? session.capabilities ?? [],
-    can: (capability) => (bootstrap.data?.capabilities ?? session.capabilities ?? []).includes(capability),
+    capabilities: bootstrap.data?.site_capabilities?.[String(selectedSiteId)] ?? [],
+    can: (capability) => (bootstrap.data?.site_capabilities?.[String(selectedSiteId)] ?? []).includes(capability),
     theme,
     toggleTheme: () => setTheme(current => current === 'light' ? 'dark' : 'light'),
     isLoading: bootstrap.isLoading,
-  }), [bootstrap.data?.capabilities, bootstrap.isLoading, selectedSiteId, session.capabilities, sites, theme]);
+  }), [bootstrap.data, bootstrap.isLoading, selectedSiteId, session.capabilities, sites, theme]);
 
   return <PlatformContext.Provider value={value}>{children}</PlatformContext.Provider>;
 }

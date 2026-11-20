@@ -34,6 +34,7 @@ export function PrimaryTimelineChart({ points }: { points: ChartTimeSeriesPoint[
     </div>
     {metrics.filter(metric => active === 'all' || metric.key === active).map(metric => {
       const values = ordered.filter(point => Number.isFinite(point[metric.key]));
+      if (!values.length) return <figure className="timeline-chart" key={metric.key}><figcaption>{metric.label}</figcaption><p className="muted">No measurements available.</p></figure>;
       const min = Math.min(0, ...values.map(point => point[metric.key]));
       const max = Math.max(1, ...values.map(point => point[metric.key]));
       const y = (value: number) => 130 - (value - min) / (max - min) * 110;

@@ -1,3 +1,4 @@
+import { Link } from 'react-router-dom';
 import { useMemo, useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { Activity, BatteryMedium, Gauge, RadioTower, RefreshCw, ShieldAlert, Sparkles } from 'lucide-react';
@@ -324,7 +325,7 @@ export function DevicesPage() {
                   {paginatedNodes.map((node) => (
                     <tr key={node.node_id}>
                       <td>
-                        <strong>{node.node_id}</strong>
+                        <strong><Link to={`/devices/${encodeURIComponent(node.node_id)}`}>{node.node_id}</Link></strong>
                         <small>{node.assigned_person || node.assigned_asset || 'Unassigned hardware'}</small>
                       </td>
                       <td>{node.role}</td>

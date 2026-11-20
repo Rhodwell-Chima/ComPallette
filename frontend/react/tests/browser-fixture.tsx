@@ -11,7 +11,7 @@ import '../src/index.css';
 
 const now = 1794902400000;
 const sites = [1, 2].map(id => ({ id, organisation: 1, organisation_name: 'TEST ORGANISATION', name: `TEST SITE ${id}`, code: `TEST-${id}`, industry: 'Mining test fixture', timezone: 'Africa/Lusaka', active: true }));
-const capabilities = ['view', 'operate_alerts', 'manage_users', 'manage_sites', 'manage_settings', 'view_audit', 'manage_personnel', 'manage_assets'];
+const capabilities = ['view', 'operate_alerts', 'manage_users', 'manage_sites', 'manage_settings', 'view_audit', 'manage_personnel', 'manage_assets', 'manage_devices'];
 const alerts = [1, 2].map(id => ({ id, node_id: `TEST-NODE-${id}`, zone: 'TEST-ZONE', severity: 'CRITICAL', alert_code: `TEST-ALARM-${id}`, status: 'NEW', created_at: now, trigger_value: 55, details: 'Synthetic fixture: verify alert handling without contacting operational services.', investigation_notes: '', resolution_notes: '', resolved_by: '', acknowledged_by: '' }));
 const channels = [{ key: 'test-co', display_name: 'Test CO', unit: 'ppm', latest_value: 8, latest_at: now, node_id: 'TEST-NODE-1', zone: 'TEST-ZONE', sensor_ok: true }];
 let scenario = 'healthy'; let signedIn = true;
@@ -21,7 +21,7 @@ window.fetch = async (input, init) => {
   if (scenario === 'offline' && !path.includes('/auth/') && !path.includes('/bootstrap')) throw new TypeError('Simulated disconnected backend');
   if (path === '/api/v1/auth/csrf') return response({});
   if (path === '/api/v1/auth/session') { if (init?.method === 'DELETE') signedIn = false; if (init?.method === 'POST') signedIn = true; return response({ authenticated: signedIn, username: 'TEST-OPERATOR', is_staff: true, capabilities, sites }); }
-  if (path === '/api/v1/platform/bootstrap') return response({ sites, organisations: [], capabilities });
+  if (path === '/api/v1/platform/bootstrap') return response({ sites, organisations: [], capabilities, site_capabilities: { 1: capabilities, 2: capabilities } });
   if (path === '/health/') return response({ status: 'healthy', build_revision: 'ISOLATED FIXTURE' });
   if (path === '/api/v1/alerts') { const status = url.searchParams.get('status'); return response({ alerts: alerts.filter(a => !status || a.status === status), count: alerts.length }); }
   const mutation = path.match(/^\/api\/v1\/alerts\/(\d+)\/(ack|assign|resolve)$/);
@@ -43,6 +43,10 @@ window.fetch = async (input, init) => {
     return response({ readings, total: readings.length, page: 1, page_size: 25, total_pages: 1 });
   }
   if (path === '/api/v1/dashboard') return response({ metrics: { active_alerts: 2, critical_alerts: 2, online_personnel: 0, tracked_assets: 0, online_devices: 1, stale_or_offline_devices: 1 }, alerts, activity: [], environment: channels, charts: { primary_timeline: [0, 60000, 600000].map((offset, i) => ({ timestamp: now + offset, gas_ppm: [8, 11, 7][i], dust_ugm3: [15, 25, 20][i], active_alerts: [1, 2, 2][i] })), severity_breakdown: [], zone_occupancy: [] } });
+  const entityMatch = path.match(/^\/api\/v1\/entities\/(personnel|assets|devices)\/([^/]+)$/);
+  if (entityMatch) return response({ id: entityMatch[2], site: 1, organisation: 1, identifier: 'TEST-001', display_name: 'Isolated test person', version: 1, archived: false, location_evidence: 'UNKNOWN', current_assignments: [], current_custody: [], assignment_history: [], custody_history: [], location_observations: [], device_alerts: [], measurements: [], audit: [] });
+  if (path === '/api/v1/devices/eligible') return response({ nodes: [{ node_id: 'TEST-DEVICE-1' }] });
+  if (path === '/api/v1/gateways') return response({ gateways: [], discoveries: [], commands: [] });
   if (path === '/api/v1/personnel') return response({ personnel: [], count: 0 });
   if (path === '/api/v1/assets') return response({ assets: [], count: 0 });
   if (path === '/api/v1/users') return response({ users: [], total: 0, total_pages: 1, page: 1, page_size: 25 });

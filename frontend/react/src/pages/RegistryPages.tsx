@@ -1,3 +1,4 @@
+import { Link } from 'react-router-dom';
 import { FormEvent, useMemo, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Box, Plus, Users, UserPlus, PackagePlus } from 'lucide-react';
@@ -46,7 +47,7 @@ export function PersonnelPage() {
       sortable: true,
       render: (person) => (
         <div>
-          <strong style={{ display: 'block', color: 'var(--text)' }}>{person.display_name}</strong>
+          <strong style={{ display: 'block', color: 'var(--text)' }}><Link to={`/personnel/${person.id}`}>{person.display_name}</Link></strong>
           <small style={{ color: 'var(--muted)', fontSize: '0.75rem' }}>{person.identifier}</small>
         </div>
       ),
@@ -261,7 +262,7 @@ export function AssetsPage() {
       sortable: true,
       render: (asset) => (
         <div>
-          <strong style={{ display: 'block', color: 'var(--text)' }}>{asset.name}</strong>
+          <strong style={{ display: 'block', color: 'var(--text)' }}><Link to={`/assets/${asset.id}`}>{asset.name}</Link></strong>
           <small style={{ color: 'var(--muted)', fontSize: '0.75rem' }}>{asset.identifier}</small>
         </div>
       ),

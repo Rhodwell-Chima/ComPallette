@@ -2,12 +2,26 @@ import { useMemo, useState } from 'react';
 import { Canvas } from '@react-three/fiber';
 import { Html, OrbitControls } from '@react-three/drei';
 import * as THREE from 'three';
-import { Box, Eye, Layers3, Map, MonitorCog, Radio, Sun, Moon, Users, Wifi } from 'lucide-react';
+import {
+  ArrowLeft,
+  Box,
+  Eye,
+  Layers3,
+  Map,
+  MonitorCog,
+  Moon,
+  Radio,
+  Search,
+  Sun,
+  Users,
+  Wifi,
+  X,
+} from 'lucide-react';
 import { useQuery } from '@tanstack/react-query';
 import { platformApi } from '../services/api';
 import { TwinData, TwinEntity } from '../types';
 import { usePlatform } from '../platform/PlatformContext';
-import { EmptyState, ErrorState, LoadingState, LocationLabel, NodeStatusPill, PageHeader, StatusPill, formatTimestamp } from '../platform/ui';
+import { EmptyState, ErrorState, LoadingState, LocationLabel, NodeStatusPill, StatusPill, formatTimestamp } from '../platform/ui';
 
 type Point = [number, number];
 type Polygon = { id: string; label: string; zoneCode?: string; points: Point[] };
@@ -34,7 +48,8 @@ function polygons(data: TwinData): Polygon[] {
     if (!Array.isArray(ring)) return [];
     const points = ring.map(toPoint).filter((point): point is Point => Boolean(point));
     if (points.length < 3) return [];
-    return [{ id: String(feature.id ?? properties.id ?? `feature-${index}`), label: String(properties.label ?? feature.label ?? properties.name ?? `Layout feature ${index + 1}`), zoneCode: typeof properties.zone_code === 'string' ? properties.zone_code : typeof feature.zone_code === 'string' ? feature.zone_code : undefined, points }];
+    const linkedZone = data.zones.find(zone => zone.id === properties.zone_id);
+    return [{ id: String(feature.id ?? properties.id ?? `feature-${index}`), label: String(properties.label ?? feature.label ?? properties.name ?? `Layout feature ${index + 1}`), zoneCode: linkedZone?.code, points }];
   });
 }
 
@@ -49,10 +64,6 @@ function bounds(features: Polygon[]) {
 function centre(points: Point[]): Point {
   const total = points.reduce((sum, point) => [sum[0] + point[0], sum[1] + point[1]] as Point, [0, 0]);
   return [total[0] / points.length, total[1] / points.length];
-}
-
-function groupedEntities(features: Polygon[], entities: TwinEntity[], visible: Set<TwinEntity['kind']>) {
-  return features.map(feature => ({ feature, entities: entities.filter(entity => visible.has(entity.kind) && entity.evidence !== 'UNKNOWN' && entity.zone_code === feature.zoneCode) })).filter(group => group.entities.length);
 }
 
 interface HoveredInfo {
@@ -87,6 +98,7 @@ function Twin2D({
   const features = useMemo(() => polygons(data), [data]);
   if (!features.length) return <EmptyState title="Facility geometry has not been configured" detail="Add a persisted layout with polygon features before the 2D Twin can render this site. No decorative facility map is shown." />;
   const frame = bounds(features);
+  const isLight = theme === 'light';
 
   return (
     <div className="twin-canvas">
@@ -95,12 +107,31 @@ function Twin2D({
         role="img"
         aria-label="Data-backed facility layout"
       >
+        <defs>
+          <pattern id="twinGrid" width="16" height="16" patternUnits="userSpaceOnUse">
+            <path
+              d="M 16 0 L 0 0 0 16"
+              fill="none"
+              stroke={isLight ? 'rgba(0, 0, 0, 0.04)' : 'rgba(255, 255, 255, 0.03)'}
+              strokeWidth="0.8"
+            />
+          </pattern>
+        </defs>
+
+        {/* CAD Blueprint Background */}
         <rect
           x={frame.minX}
           y={frame.minY}
           width={frame.width}
           height={frame.height}
           className="twin-background"
+        />
+        <rect
+          x={frame.minX}
+          y={frame.minY}
+          width={frame.width}
+          height={frame.height}
+          fill="url(#twinGrid)"
         />
 
         {/* Render Chamber Zones & Corridors */}
@@ -206,7 +237,7 @@ function Twin2D({
                   stroke="#ffffff"
                   strokeWidth="1.5"
                 />
-                {/* Detected occupants counter or beacon dot */}
+                {/* Detected occupants counter or beacon center */}
                 {sectionEntities.length > 0 ? (
                   <text x={x} y={y} className="zone-entity-count">
                     {sectionEntities.length}
@@ -222,19 +253,19 @@ function Twin2D({
             );
           })}
       </svg>
-      <p className="twin-caption">Hover on any anchor beacon or section to inspect details; click to view telemetry in the sidebar.</p>
+      <p className="twin-caption">Hover on any chamber or beacon to inspect occupants; click to view real-time telemetry in the inspector.</p>
     </div>
   );
 }
 
 function getFeatureDepth(feature: Polygon): number {
-  if (feature.id === 'headframe-hoist') return 1.4; // Tallest surface headframe tower
+  if (feature.id === 'headframe-hoist') return 1.4;
   if (feature.id === 'surface-vent-substation') return 0.95;
   if (feature.id === 'surface-portal') return 0.95;
-  if (feature.id === 'level-3-active-stope') return 1.05; // Prominent deep extraction cavern
-  if (feature.zoneCode) return 0.9; // Major operational horizons & stations
+  if (feature.id === 'level-3-active-stope') return 1.05;
+  if (feature.zoneCode) return 0.9;
   if (feature.id === 'main-shaft-barrel') return 0.45;
-  return 0.32; // Inter-level drifts, decline ramps, and corridors
+  return 0.32;
 }
 
 function NormalizedZone({
@@ -518,9 +549,9 @@ function Twin3D({
             );
           })}
 
-        <OrbitControls makeDefault />
+        <OrbitControls makeDefault enableDamping dampingFactor={0.06} maxPolarAngle={Math.PI / 2.05} />
       </Canvas>
-      <p className="twin-caption">3D mode is generated from the configured facility geometry. Drag to rotate, scroll to zoom. Hover on anchor markers to inspect.</p>
+      <p className="twin-caption">3D spatial mode generated from persisted facility geometry. Drag to rotate, scroll to zoom. Hover on beacons to inspect.</p>
     </div>
   );
 }
@@ -531,6 +562,8 @@ export function TwinPage() {
   const [visible, setVisible] = useState<Set<TwinEntity['kind']>>(new Set(['personnel', 'asset', 'device']));
   const [selectedId, setSelectedId] = useState<string>();
   const [hoveredInfo, setHoveredInfo] = useState<HoveredInfo | null>(null);
+  const [searchFilter, setSearchFilter] = useState('');
+  const [activeCategory, setActiveCategory] = useState<'ALL' | 'personnel' | 'asset' | 'ANCHOR'>('ALL');
 
   const twin = useQuery({
     queryKey: ['twin', selectedSiteId],
@@ -550,15 +583,46 @@ export function TwinPage() {
     return next;
   });
 
+  // Filter entities for the Inspector sidebar
+  const filteredEntities = twin.data.entities.filter((entity) => {
+    if (activeCategory === 'ANCHOR' && entity.role !== 'ANCHOR') return false;
+    if (activeCategory === 'personnel' && entity.kind !== 'personnel') return false;
+    if (activeCategory === 'asset' && entity.kind !== 'asset') return false;
+    if (searchFilter.trim()) {
+      const q = searchFilter.toLowerCase();
+      const matchLabel = entity.label?.toLowerCase().includes(q);
+      const matchNode = entity.node_id.toLowerCase().includes(q);
+      const matchZone = entity.zone_code?.toLowerCase().includes(q);
+      return matchLabel || matchNode || matchZone;
+    }
+    return true;
+  });
+
   return (
     <div className="twin-workspace">
-      <PageHeader
-        eyebrow="OPERATIONS WORKSPACE"
-        title="Digital Twin"
-        description="A real-time spatial operations workspace displaying persisted facility geometry, anchor infrastructure, and server-backed zone evidence."
-      />
+      {/* Polished Executive Header Bar */}
+      <div className="twin-header-bar">
+        <div>
+          <h1 className="twin-title">Digital Twin</h1>
+          <p className="twin-subtitle">
+            Real-time spatial telemetry across subterranean horizons, anchor stations, and personnel tracking.
+          </p>
+        </div>
+        <div className="twin-header-meta">
+          <span className="twin-meta-badge">
+            <Radio size={13} className="beacon-icon-active" />
+            <span>{twin.data.entities.length} Spatial Trackers</span>
+          </span>
+          {twin.data.topology_status && (
+            <span className="twin-meta-badge">
+              <MonitorCog size={13} />
+              <span>Mesh: {twin.data.topology_status.replace(/_/g, ' ').toLowerCase()}</span>
+            </span>
+          )}
+        </div>
+      </div>
 
-      {/* Floating Hover Card (Shows which section is labeled what on hover) */}
+      {/* Floating Hover Card */}
       {hoveredInfo && (
         <div
           className="twin-hover-card"
@@ -606,29 +670,54 @@ export function TwinPage() {
         </div>
       )}
 
-      {/* Toolbar: 2D/3D Mode, Entity Filters, Theme Switcher */}
+      {/* Floating Cockpit HUD Toolbar */}
       <div className="twin-toolbar">
         <div style={{ display: 'flex', alignItems: 'center', gap: '10px', flexWrap: 'wrap' }}>
-          <div className="segmented">
+          {/* 2D / 3D Segmented Switch */}
+          <div className="segmented" style={{ margin: 0 }}>
             <button className={mode === '2d' ? 'active' : ''} onClick={() => setMode('2d')}>
-              <Map size={15} /> 2D
+              <Map size={15} /> 2D Layout
             </button>
             <button className={mode === '3d' ? 'active' : ''} onClick={() => setMode('3d')}>
-              <Layers3 size={15} /> 3D
+              <Layers3 size={15} /> 3D Extrusion
             </button>
           </div>
 
+          {/* Category Layer Filter Controls */}
           <div className="layer-controls">
-            {(['personnel', 'asset', 'device'] as const).map(kind => (
-              <button
-                className={visible.has(kind) ? 'active' : ''}
-                key={kind}
-                onClick={() => toggle(kind)}
-              >
-                {kind === 'personnel' ? <Users size={14} /> : kind === 'asset' ? <Box size={14} /> : <Eye size={14} />}
-                <span>{kind}</span>
-              </button>
-            ))}
+            <button
+              className={visible.has('personnel') ? 'active' : ''}
+              onClick={() => toggle('personnel')}
+              title="Toggle Personnel visibility"
+            >
+              <Users size={14} />
+              <span>Personnel</span>
+              <span className="layer-count">
+                {twin.data.entities.filter(e => e.kind === 'personnel').length}
+              </span>
+            </button>
+            <button
+              className={visible.has('asset') ? 'active' : ''}
+              onClick={() => toggle('asset')}
+              title="Toggle Heavy Assets visibility"
+            >
+              <Box size={14} />
+              <span>Assets</span>
+              <span className="layer-count">
+                {twin.data.entities.filter(e => e.kind === 'asset').length}
+              </span>
+            </button>
+            <button
+              className={visible.has('device') ? 'active' : ''}
+              onClick={() => toggle('device')}
+              title="Toggle Fixed Nodes & Anchors"
+            >
+              <Wifi size={14} />
+              <span>Nodes</span>
+              <span className="layer-count">
+                {twin.data.entities.filter(e => e.kind === 'device').length}
+              </span>
+            </button>
           </div>
         </div>
 
@@ -636,22 +725,16 @@ export function TwinPage() {
         <button
           type="button"
           onClick={toggleTheme}
-          className="button secondary"
-          style={{
-            padding: '6px 12px',
-            fontSize: '0.8rem',
-            display: 'inline-flex',
-            alignItems: 'center',
-            gap: '6px',
-          }}
+          className="button secondary twin-theme-toggle"
           title={`Switch to ${theme === 'light' ? 'Dark' : 'Light'} Mode`}
         >
-          {theme === 'light' ? <Moon size={15} /> : <Sun size={15} />}
-          <span>{theme === 'light' ? 'Dark Mode' : 'Light Mode'}</span>
+          {theme === 'light' ? <Moon size={14} /> : <Sun size={14} />}
+          <span>{theme === 'light' ? 'Dark Stage' : 'Light Stage'}</span>
         </button>
       </div>
 
       <section className="twin-layout">
+        {/* Main Spatial Stage */}
         <article className="twin-stage">
           {mode === '2d' ? (
             <Twin2D
@@ -683,42 +766,56 @@ export function TwinPage() {
           )}
         </article>
 
-        {/* Sidebar Telemetry Inspector */}
+        {/* Telemetry Inspector Console */}
         <aside className="twin-inspector">
-          <p className="eyebrow">{selected?.role === 'ANCHOR' ? 'ANCHOR INSPECTOR' : 'ENTITY INSPECTOR'}</p>
           {selected ? (
             <>
-              <h2>{selected.label || selected.node_id}</h2>
-              <div style={{ display: 'flex', gap: '6px', alignItems: 'center', marginBottom: '12px' }}>
-                <StatusPill value={selected.role === 'ANCHOR' ? 'Infrastructure Anchor' : selected.kind} />
-                <NodeStatusPill status={selected.status} />
-              </div>
-              <dl className="metadata-list">
-                <div>
-                  <dt>Device ID</dt>
-                  <dd style={{ fontFamily: 'monospace', fontWeight: 700 }}>{selected.node_id}</dd>
-                </div>
-                <div>
-                  <dt>Network Role</dt>
-                  <dd>{selected.role}</dd>
-                </div>
-                <div>
-                  <dt>Reported Zone</dt>
-                  <dd><LocationLabel evidence={selected.evidence} zone={selected.zone_code} /></dd>
-                </div>
-                <div>
-                  <dt>Last Observed</dt>
-                  <dd>{formatTimestamp(selected.observed_at)}</dd>
-                </div>
-              </dl>
+              {/* Back to overview button */}
+              <button
+                type="button"
+                className="twin-back-btn"
+                onClick={() => setSelectedId(undefined)}
+              >
+                <ArrowLeft size={13} />
+                <span>All Trackers</span>
+              </button>
 
-              {/* If this is an Anchor, display all personnel/assets currently detected at this anchor */}
+              <div className="twin-hero-card">
+                <h2 className="twin-hero-title">{selected.label || selected.node_id}</h2>
+                <div style={{ display: 'flex', gap: '6px', alignItems: 'center', flexWrap: 'wrap' }}>
+                  <StatusPill value={selected.role === 'ANCHOR' ? 'Infrastructure Anchor' : selected.kind} />
+                  <NodeStatusPill status={selected.status} />
+                </div>
+              </div>
+
+              <div className="twin-specs-table">
+                <div className="twin-spec-row">
+                  <span className="twin-spec-key">Device ID</span>
+                  <span className="twin-spec-val mono">{selected.node_id}</span>
+                </div>
+                <div className="twin-spec-row">
+                  <span className="twin-spec-key">Role</span>
+                  <span className="twin-spec-val">{selected.role}</span>
+                </div>
+                <div className="twin-spec-row">
+                  <span className="twin-spec-key">Reported Zone</span>
+                  <span className="twin-spec-val">
+                    <LocationLabel evidence={selected.evidence} zone={selected.zone_code} />
+                  </span>
+                </div>
+                <div className="twin-spec-row">
+                  <span className="twin-spec-key">Last Observed</span>
+                  <span className="twin-spec-val">{formatTimestamp(selected.observed_at)}</span>
+                </div>
+              </div>
+
+              {/* If Anchor, display all occupants currently detected at this anchor */}
               {selected.role === 'ANCHOR' && (
                 <div style={{ marginTop: '16px', borderTop: '1px solid var(--border)', paddingTop: '12px' }}>
                   <p className="eyebrow" style={{ marginBottom: '8px' }}>
                     OCCUPANTS AT THIS ANCHOR ({twin.data.entities.filter(e => e.zone_code === selected.zone_code && e.id !== selected.id).length})
                   </p>
-                  <div className="twin-entity-list" style={{ maxHeight: '240px' }}>
+                  <div className="twin-entity-list" style={{ maxHeight: '220px' }}>
                     {twin.data.entities
                       .filter(e => e.zone_code === selected.zone_code && e.id !== selected.id)
                       .map(entity => (
@@ -742,25 +839,93 @@ export function TwinPage() {
             </>
           ) : (
             <>
-              <p>Select an anchor beacon, zone, or entity to inspect its server-backed spatial evidence.</p>
+              {/* Telemetry Inspector Overview */}
+              <div className="twin-inspector-header">
+                <h3 className="twin-inspector-title">
+                  <Radio size={15} style={{ color: 'var(--primary)' }} />
+                  <span>Spatial Trackers</span>
+                </h3>
+                <span className="layer-count">{twin.data.entities.length}</span>
+              </div>
+
+              {/* Live Search Input */}
+              <div className="twin-inspector-search">
+                <Search size={14} style={{ color: 'var(--muted)', flexShrink: 0 }} />
+                <input
+                  type="text"
+                  placeholder="Filter name, node ID, zone..."
+                  value={searchFilter}
+                  onChange={(e) => setSearchFilter(e.target.value)}
+                  aria-label="Filter trackers"
+                />
+                {searchFilter && (
+                  <button
+                    type="button"
+                    onClick={() => setSearchFilter('')}
+                    style={{ background: 'transparent', border: 0, padding: 0, cursor: 'pointer', color: 'var(--muted)' }}
+                    aria-label="Clear filter"
+                  >
+                    <X size={12} />
+                  </button>
+                )}
+              </div>
+
+              {/* Filter Tabs */}
+              <div className="twin-filter-tabs">
+                <button
+                  type="button"
+                  className={`twin-filter-tab ${activeCategory === 'ALL' ? 'active' : ''}`}
+                  onClick={() => setActiveCategory('ALL')}
+                >
+                  All ({twin.data.entities.length})
+                </button>
+                <button
+                  type="button"
+                  className={`twin-filter-tab ${activeCategory === 'personnel' ? 'active' : ''}`}
+                  onClick={() => setActiveCategory('personnel')}
+                >
+                  Personnel ({twin.data.entities.filter(e => e.kind === 'personnel').length})
+                </button>
+                <button
+                  type="button"
+                  className={`twin-filter-tab ${activeCategory === 'asset' ? 'active' : ''}`}
+                  onClick={() => setActiveCategory('asset')}
+                >
+                  Assets ({twin.data.entities.filter(e => e.kind === 'asset').length})
+                </button>
+                <button
+                  type="button"
+                  className={`twin-filter-tab ${activeCategory === 'ANCHOR' ? 'active' : ''}`}
+                  onClick={() => setActiveCategory('ANCHOR')}
+                >
+                  Anchors ({twin.data.entities.filter(e => e.role === 'ANCHOR').length})
+                </button>
+              </div>
+
+              {/* Scrollable Entity List */}
               <div className="twin-entity-list">
-                {twin.data.entities
-                  .filter(entity => visible.has(entity.kind))
-                  .map(entity => (
+                {filteredEntities.length > 0 ? (
+                  filteredEntities.map((entity) => (
                     <button
+                      type="button"
                       className={selectedId === entity.id ? 'selected' : ''}
                       onClick={() => setSelectedId(entity.id)}
                       key={entity.id}
                     >
                       <div style={{ display: 'flex', flexDirection: 'column' }}>
-                        <span style={{ fontWeight: 600 }}>{entity.label}</span>
-                        <small style={{ color: 'var(--muted)', fontSize: '0.68rem' }}>
-                          {entity.role === 'ANCHOR' ? '⚓ Stationary Anchor' : entity.node_id}
+                        <span style={{ fontWeight: 650, fontSize: '0.82rem' }}>{entity.label}</span>
+                        <small style={{ color: 'var(--muted)', fontSize: '0.68rem', marginTop: '2px' }}>
+                          {entity.role === 'ANCHOR' ? '⚓ Anchor Station' : entity.node_id}
                         </small>
                       </div>
                       <LocationLabel evidence={entity.evidence} zone={entity.zone_code} />
                     </button>
-                  ))}
+                  ))
+                ) : (
+                  <p className="text-muted" style={{ fontSize: '0.78rem', textAlign: 'center', padding: '20px 0' }}>
+                    No entities match the current filter.
+                  </p>
+                )}
               </div>
             </>
           )}

@@ -220,13 +220,15 @@ export function DataTable<T>({
       {/* Table Frame */}
       <div
         style={{
-          overflowX: 'auto',
+          overflow: 'auto',
+          maxHeight: '72vh',
           border: '1px solid var(--border)',
-          borderRadius: '8px',
+          borderRadius: '10px',
           background: 'var(--surface)',
+          boxShadow: '0 1px 3px rgba(0, 0, 0, 0.04)',
         }}
       >
-        <table style={{ width: '100%', borderCollapse: 'collapse', textAlign: 'left' }}>
+        <table style={{ width: '100%', borderCollapse: 'collapse', textAlign: 'left', fontVariantNumeric: 'tabular-nums' }}>
           <thead>
             <tr
               style={{
@@ -235,7 +237,18 @@ export function DataTable<T>({
               }}
             >
               {onSelectionChange && (
-                <th style={{ width: '40px', padding: rowPadding, textAlign: 'center' }}>
+                <th
+                  style={{
+                    position: 'sticky',
+                    top: 0,
+                    zIndex: 5,
+                    background: 'var(--surface-muted)',
+                    width: '40px',
+                    padding: rowPadding,
+                    textAlign: 'center',
+                    boxShadow: 'inset 0 -1px 0 var(--border)',
+                  }}
+                >
                   <input
                     type="checkbox"
                     checked={allSelected}
@@ -256,6 +269,10 @@ export function DataTable<T>({
                     key={col.key}
                     onClick={() => handleHeaderClick(col)}
                     style={{
+                      position: 'sticky',
+                      top: 0,
+                      zIndex: 5,
+                      background: 'var(--surface-muted)',
                       padding: rowPadding,
                       fontSize: '0.72rem',
                       fontWeight: 700,
@@ -266,6 +283,7 @@ export function DataTable<T>({
                       userSelect: 'none',
                       textAlign: col.align || 'left',
                       width: col.width,
+                      boxShadow: 'inset 0 -1px 0 var(--border)',
                     }}
                   >
                     <div

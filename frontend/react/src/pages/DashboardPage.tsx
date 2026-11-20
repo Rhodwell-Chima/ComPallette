@@ -50,26 +50,36 @@ function MiniSparkline({ data, tone = 'default' }: { data: number[]; tone?: 'suc
   const min = Math.min(...data);
   const max = Math.max(...data);
   const range = max - min || 1;
-  const width = 64;
-  const height = 24;
+  const width = 72;
+  const height = 26;
 
   const points = data
     .map((val, idx) => {
       const x = (idx / (data.length - 1)) * width;
-      const y = height - ((val - min) / range) * (height - 6) - 3;
+      const y = height - ((val - min) / range) * (height - 8) - 4;
       return `${x.toFixed(1)},${y.toFixed(1)}`;
     })
     .join(' ');
 
   const strokeColors = {
-    success: 'var(--success, #17835d)',
-    warning: 'var(--warning, #b96700)',
-    critical: 'var(--danger, #c42a2a)',
-    default: 'var(--primary, #1666d9)',
+    success: 'var(--success, #0d7a53)',
+    warning: 'var(--warning, #b45309)',
+    critical: 'var(--danger, #b91c1c)',
+    default: 'var(--primary, #155dfc)',
   };
 
+  const areaPoints = `0,${height} ${points} ${width},${height}`;
+  const gradientId = `spark-grad-${tone}`;
+
   return (
-    <svg width={width} height={height} style={{ overflow: 'visible', display: 'block' }}>
+    <svg width={width} height={height} viewBox={`0 0 ${width} ${height}`} style={{ overflow: 'visible', display: 'block' }}>
+      <defs>
+        <linearGradient id={gradientId} x1="0" y1="0" x2="0" y2="1">
+          <stop offset="0%" stopColor={strokeColors[tone]} stopOpacity="0.22" />
+          <stop offset="100%" stopColor={strokeColors[tone]} stopOpacity="0.0" />
+        </linearGradient>
+      </defs>
+      <polygon fill={`url(#${gradientId})`} points={areaPoints} />
       <polyline
         fill="none"
         stroke={strokeColors[tone]}
@@ -88,19 +98,25 @@ function MiniSparkline({ data, tone = 'default' }: { data: number[]; tone?: 'suc
 function SeverityDonutChart({ data }: { data: ChartSeverityBreakdown[] }) {
   const total = data.reduce((acc, curr) => acc + curr.count, 0);
   if (total === 0) {
-    return <div className="muted" style={{ padding: '2rem', textAlign: 'center' }}>No active alarms logged.</div>;
+    return (
+      <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', padding: '1.75rem 1rem', textAlign: 'center', gap: '6px' }}>
+        <CheckCircle2 size={24} style={{ color: 'var(--success)' }} />
+        <span style={{ fontSize: '0.82rem', fontWeight: 600, color: 'var(--text)' }}>All Clear</span>
+        <span className="muted" style={{ fontSize: '0.74rem' }}>No active safety alarms logged.</span>
+      </div>
+    );
   }
 
   let cumulativeAngle = 0;
-  const radius = 38;
-  const strokeWidth = 14;
-  const center = 50;
+  const radius = 36;
+  const strokeWidth = 12;
+  const center = 48;
   const circumference = 2 * Math.PI * radius;
 
   return (
-    <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-around', gap: '1rem', padding: '0.5rem 0' }}>
-      <svg width="100" height="100" viewBox="0 0 100 100">
-        <circle cx={center} cy={center} r={radius} fill="none" stroke="var(--border)" strokeWidth={strokeWidth} opacity="0.3" />
+    <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '1.25rem', padding: '0.75rem 0.5rem' }}>
+      <svg width="96" height="96" viewBox="0 0 96 96" style={{ flexShrink: 0 }}>
+        <circle cx={center} cy={center} r={radius} fill="none" stroke="var(--border)" strokeWidth={strokeWidth} opacity="0.35" />
         {data.map((item) => {
           if (item.count === 0) return null;
           const strokeDasharray = `${(item.count / total) * circumference} ${circumference}`;
@@ -118,24 +134,27 @@ function SeverityDonutChart({ data }: { data: ChartSeverityBreakdown[] }) {
               strokeWidth={strokeWidth}
               strokeDasharray={strokeDasharray}
               strokeDashoffset={strokeDashoffset}
-              transform="rotate(-90 50 50)"
+              transform="rotate(-90 48 48)"
+              strokeLinecap="round"
             />
           );
         })}
-        <text x="50" y="47" textAnchor="middle" fill="var(--text)" fontSize="16" fontWeight="bold">
+        <text x="48" y="45" textAnchor="middle" fill="var(--text)" fontSize="17" fontWeight="800" style={{ fontVariantNumeric: 'tabular-nums' }}>
           {total}
         </text>
-        <text x="50" y="60" textAnchor="middle" fill="var(--muted)" fontSize="8">
+        <text x="48" y="58" textAnchor="middle" fill="var(--muted)" fontSize="8" fontWeight="700" letterSpacing="0.06em">
           ALARMS
         </text>
       </svg>
 
-      <div style={{ display: 'flex', flexDirection: 'column', gap: '6px', fontSize: '0.78rem' }}>
+      <div style={{ display: 'flex', flexDirection: 'column', gap: '8px', flex: 1, fontSize: '0.78rem' }}>
         {data.map((item) => (
-          <div key={item.label} style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-            <span style={{ width: 10, height: 10, borderRadius: '2px', backgroundColor: item.color }} />
-            <span style={{ minWidth: 60 }}>{item.label}</span>
-            <strong>{item.count}</strong>
+          <div key={item.label} style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '8px' }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '7px' }}>
+              <span style={{ width: 8, height: 8, borderRadius: '50%', backgroundColor: item.color, flexShrink: 0 }} />
+              <span style={{ color: 'var(--muted)', fontSize: '0.76rem', fontWeight: 550 }}>{item.label}</span>
+            </div>
+            <strong style={{ fontVariantNumeric: 'tabular-nums', fontSize: '0.84rem' }}>{item.count}</strong>
           </div>
         ))}
       </div>
@@ -223,19 +242,24 @@ export function DashboardPage() {
 
   return (
     <>
-      {/* Header section with welcome greeting & quick actions */}
-      <div style={{ display: 'flex', flexWrap: 'wrap', justifyContent: 'space-between', alignItems: 'flex-start', gap: '16px', marginBottom: '20px' }}>
+      {/* Header section with site badge, breadcrumb & quick actions */}
+      <div style={{ display: 'flex', flexWrap: 'wrap', justifyContent: 'space-between', alignItems: 'center', gap: '16px', marginBottom: '22px' }}>
         <div>
-          <p className="eyebrow">{selectedSite?.industry ?? 'INDUSTRIAL OPERATIONS'} &middot; {selectedSite?.timezone}</p>
-          <h1 style={{ margin: '2px 0 6px', fontSize: '1.75rem', letterSpacing: '-0.03em' }}>
-            Welcome back, {session.username}
+          <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '4px' }}>
+            <span className="status-pill success" style={{ display: 'inline-flex', alignItems: 'center', gap: '4px', fontSize: '0.68rem', padding: '2px 7px' }}>
+              <span style={{ width: 6, height: 6, borderRadius: '50%', background: 'currentColor' }} />
+              LIVE TELEMETRY
+            </span>
+            <span className="muted" style={{ fontSize: '0.74rem' }}>
+              {selectedSite?.name} &middot; {selectedSite?.timezone ?? 'UTC'}
+            </span>
+          </div>
+          <h1 style={{ margin: 0, fontSize: '1.65rem', fontWeight: 800, letterSpacing: '-0.03em', color: 'var(--text)' }}>
+            Operations Cockpit
           </h1>
-          <p className="muted" style={{ margin: 0 }}>
-            Active Command Centre &middot; <strong>{selectedSite?.name}</strong>
-          </p>
         </div>
 
-        <div style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: '10px' }}>
+        <div style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: '8px' }}>
           {/* Date range selector */}
           <div className="segmented" style={{ margin: 0 }}>
             <button className={dateRange === 'today' ? 'active' : ''} onClick={() => setDateRange('today')}>Today</button>
@@ -249,7 +273,7 @@ export function DashboardPage() {
             <UserPlus size={15} /> Add Operator
           </Link>
           <Link className="button secondary" to="/reports">
-            <FileBarChart size={15} /> New Report
+            <FileBarChart size={15} /> Reports
           </Link>
           <Link className="button primary" to="/twin" title="Digital Twin (Key: T)">
             <Map size={15} /> Digital Twin
@@ -259,8 +283,9 @@ export function DashboardPage() {
             className="button ghost icon-only"
             onClick={() => setShowShortcutHelp((v) => !v)}
             title="Keyboard Shortcuts (?)"
+            aria-label="Keyboard shortcuts"
           >
-            <HelpCircle size={18} />
+            <HelpCircle size={17} />
           </button>
         </div>
       </div>
@@ -276,25 +301,27 @@ export function DashboardPage() {
             zIndex: 100,
             maxWidth: '320px',
             padding: '16px',
-            boxShadow: '0 12px 35px rgba(0,0,0,0.3)',
-            border: '1px solid var(--primary)',
+            boxShadow: '0 16px 40px rgba(0,0,0,0.25)',
+            border: '1px solid var(--border)',
+            borderRadius: '12px',
+            background: 'var(--surface)',
           }}
         >
-          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '10px' }}>
-            <strong style={{ fontSize: '0.88rem' }}>Power User Shortcuts</strong>
-            <button type="button" className="icon-button" onClick={() => setShowShortcutHelp(false)}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '12px' }}>
+            <strong style={{ fontSize: '0.86rem', color: 'var(--text)' }}>Command Shortcuts</strong>
+            <button type="button" className="icon-button" onClick={() => setShowShortcutHelp(false)} aria-label="Close shortcuts">
               <X size={15} />
             </button>
           </div>
-          <div style={{ display: 'grid', gridTemplateColumns: 'auto 1fr', gap: '8px 14px', fontSize: '0.78rem' }}>
-            <kbd style={{ padding: '2px 5px', background: 'var(--surface-muted)', borderRadius: '3px' }}>U</kbd>
-            <span>Open User Management</span>
-            <kbd style={{ padding: '2px 5px', background: 'var(--surface-muted)', borderRadius: '3px' }}>T</kbd>
+          <div style={{ display: 'grid', gridTemplateColumns: 'auto 1fr', gap: '8px 12px', fontSize: '0.78rem', alignItems: 'center' }}>
+            <kbd style={{ padding: '2px 6px', background: 'var(--surface-muted)', border: '1px solid var(--border)', borderRadius: '4px', fontFamily: 'monospace', fontWeight: 700, fontSize: '0.72rem' }}>U</kbd>
+            <span>User Management</span>
+            <kbd style={{ padding: '2px 6px', background: 'var(--surface-muted)', border: '1px solid var(--border)', borderRadius: '4px', fontFamily: 'monospace', fontWeight: 700, fontSize: '0.72rem' }}>T</kbd>
             <span>Launch Digital Twin</span>
-            <kbd style={{ padding: '2px 5px', background: 'var(--surface-muted)', borderRadius: '3px' }}>A</kbd>
-            <span>View Safety Alarms</span>
-            <kbd style={{ padding: '2px 5px', background: 'var(--surface-muted)', borderRadius: '3px' }}>?</kbd>
-            <span>Toggle this shortcut cheatsheet</span>
+            <kbd style={{ padding: '2px 6px', background: 'var(--surface-muted)', border: '1px solid var(--border)', borderRadius: '4px', fontFamily: 'monospace', fontWeight: 700, fontSize: '0.72rem' }}>A</kbd>
+            <span>Safety Alarms</span>
+            <kbd style={{ padding: '2px 6px', background: 'var(--surface-muted)', border: '1px solid var(--border)', borderRadius: '4px', fontFamily: 'monospace', fontWeight: 700, fontSize: '0.72rem' }}>?</kbd>
+            <span>Toggle Cheatsheet</span>
           </div>
         </div>
       )}
@@ -311,9 +338,10 @@ export function DashboardPage() {
                 alignItems: 'center',
                 justifyContent: 'space-between',
                 gap: '12px',
-                padding: '10px 16px',
-                borderLeft: `4px solid ${n.severity === 'CRITICAL' ? 'var(--danger)' : 'var(--warning)'}`,
-                background: 'color-mix(in srgb, var(--surface) 95%, transparent)',
+                padding: '12px 18px',
+                borderRadius: '10px',
+                border: `1px solid ${n.severity === 'CRITICAL' ? 'color-mix(in srgb, var(--danger) 45%, var(--border))' : 'color-mix(in srgb, var(--warning) 45%, var(--border))'}`,
+                background: `color-mix(in srgb, ${n.severity === 'CRITICAL' ? 'var(--danger)' : 'var(--warning)'} 5%, var(--surface))`,
               }}
             >
               <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
@@ -435,9 +463,9 @@ export function DashboardPage() {
             )}
           </div>
           <div style={{ display: 'flex', alignItems: 'baseline', gap: '8px' }}>
-            <strong>{trends?.telemetry_rate?.value ?? 98.4}%</strong>
-            <span style={{ fontSize: '0.72rem', color: 'var(--success)', display: 'inline-flex', alignItems: 'center' }}>
-              <CheckCircle2 size={13} /> Stable
+            <strong>{trends?.telemetry_rate ? `${trends.telemetry_rate.value}%` : '99.8%'}</strong>
+            <span style={{ fontSize: '0.72rem', color: 'var(--success)', display: 'inline-flex', alignItems: 'center', gap: '3px' }}>
+              <CheckCircle2 size={13} /> Active
             </span>
           </div>
           <span>Gateway mesh delivery rate</span>
@@ -447,14 +475,19 @@ export function DashboardPage() {
       {/* Visualizations Section: Primary Chart (2/3) + Secondary Breakdown Charts (1/3) */}
       <section className="dashboard-charts">
         {/* Primary Chart (2/3 width) */}
-        <article className="panel" style={{ padding: '18px' }}>
-          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: '14px' }}>
+        <article className="panel" style={{ padding: '20px' }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: '16px', gap: '12px', flexWrap: 'wrap' }}>
             <div>
-              <p className="eyebrow">ENVIRONMENTAL & SAFETY CHRONOLOGY</p>
-              <h2 style={{ margin: '3px 0 0', fontSize: '1.05rem' }}>Atmospheric Readings vs Alarm Events</h2>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '6px', marginBottom: '3px' }}>
+                <span className="status-pill info" style={{ fontSize: '0.65rem' }}>TIME SERIES</span>
+                <span className="muted" style={{ fontSize: '0.74rem' }}>Multivariate sensor trend</span>
+              </div>
+              <h2 style={{ margin: 0, fontSize: '1.05rem', fontWeight: 700, letterSpacing: '-0.02em' }}>
+                Atmospheric Readings vs Alarm Events
+              </h2>
             </div>
-            <Link to="/environment" className="muted" style={{ display: 'inline-flex', alignItems: 'center', gap: '4px', fontSize: '0.78rem' }}>
-              Deep dive <ArrowRight size={14} />
+            <Link to="/environment" className="button secondary" style={{ padding: '5px 10px', fontSize: '0.75rem', display: 'inline-flex', alignItems: 'center', gap: '4px' }}>
+              Full Sensor Telemetry <ArrowRight size={13} />
             </Link>
           </div>
           <PrimaryTimelineChart points={charts?.primary_timeline ?? []} />
@@ -463,10 +496,10 @@ export function DashboardPage() {
         {/* Secondary Charts: Donut + Occupancy */}
         <div style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
           <article className="panel" style={{ padding: '18px' }}>
-            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: '8px' }}>
               <div>
-                <p className="eyebrow">INCIDENT SEVERITY</p>
-                <h2 style={{ margin: '3px 0 0', fontSize: '0.98rem' }}>Active Risk Tiers</h2>
+                <span className="status-pill warning" style={{ fontSize: '0.65rem', marginBottom: '3px' }}>INCIDENT RISK</span>
+                <h2 style={{ margin: '3px 0 0', fontSize: '0.98rem', fontWeight: 700 }}>Severity Distribution</h2>
               </div>
               <Link to="/alerts" className="muted" style={{ fontSize: '0.76rem' }}>View queue</Link>
             </div>
@@ -474,20 +507,25 @@ export function DashboardPage() {
           </article>
 
           {/* Quick Links Grid */}
-          <article className="panel" style={{ padding: '14px 18px' }}>
-            <p className="eyebrow" style={{ marginBottom: '8px' }}>ADMIN SHORTCUTS</p>
+          <article className="panel" style={{ padding: '16px 18px' }}>
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '12px' }}>
+              <h3 style={{ margin: 0, fontSize: '0.78rem', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.04em', color: 'var(--muted)' }}>
+                System Controls
+              </h3>
+              <span className="muted" style={{ fontSize: '0.7rem' }}>Quick Jump</span>
+            </div>
             <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, 1fr)', gap: '8px' }}>
-              <Link to="/sites-zones" className="button ghost" style={{ justifyContent: 'flex-start', padding: '6px 8px', fontSize: '0.76rem' }}>
-                <Layers size={14} /> Sites & Zones
+              <Link to="/sites-zones" className="button secondary" style={{ justifyContent: 'flex-start', padding: '8px 10px', fontSize: '0.78rem' }}>
+                <Layers size={14} style={{ color: 'var(--primary)' }} /> Zones
               </Link>
-              <Link to="/devices" className="button ghost" style={{ justifyContent: 'flex-start', padding: '6px 8px', fontSize: '0.76rem' }}>
-                <Network size={14} /> Mesh Nodes
+              <Link to="/devices" className="button secondary" style={{ justifyContent: 'flex-start', padding: '8px 10px', fontSize: '0.78rem' }}>
+                <Network size={14} style={{ color: 'var(--primary)' }} /> Mesh Nodes
               </Link>
-              <Link to="/reports" className="button ghost" style={{ justifyContent: 'flex-start', padding: '6px 8px', fontSize: '0.76rem' }}>
-                <FileBarChart size={14} /> Compliance Logs
+              <Link to="/reports" className="button secondary" style={{ justifyContent: 'flex-start', padding: '8px 10px', fontSize: '0.78rem' }}>
+                <FileBarChart size={14} style={{ color: 'var(--primary)' }} /> Compliance
               </Link>
-              <Link to="/audit" className="button ghost" style={{ justifyContent: 'flex-start', padding: '6px 8px', fontSize: '0.76rem' }}>
-                <Radio size={14} /> Audit Ledger
+              <Link to="/audit" className="button secondary" style={{ justifyContent: 'flex-start', padding: '8px 10px', fontSize: '0.78rem' }}>
+                <Radio size={14} style={{ color: 'var(--primary)' }} /> Audit Ledger
               </Link>
             </div>
           </article>
@@ -497,26 +535,35 @@ export function DashboardPage() {
       {/* Lower Dashboard Grid: Priority Alerts & Filterable Activity Feed */}
       <section className="dashboard-grid">
         {/* Priority Alarms Queue */}
-        <article className="panel panel-wide">
-          <div className="panel-heading">
+        <article className="panel panel-wide" style={{ overflow: 'hidden' }}>
+          <div className="panel-heading" style={{ borderBottom: '1px solid var(--border)', background: 'var(--surface-muted)' }}>
             <div>
-              <p className="eyebrow">PRIORITY QUEUE</p>
-              <h2>Unresolved Safety Alarms</h2>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '6px', marginBottom: '2px' }}>
+                <span className="status-pill critical" style={{ fontSize: '0.65rem' }}>PRIORITY QUEUE</span>
+                <span className="muted" style={{ fontSize: '0.74rem' }}>{alerts.length} Active Incident{alerts.length === 1 ? '' : 's'}</span>
+              </div>
+              <h2 style={{ margin: 0, fontSize: '0.98rem', fontWeight: 700 }}>Unresolved Safety Alarms</h2>
             </div>
-            <Link to="/alerts">
-              Investigate All <ArrowRight size={15} />
+            <Link to="/alerts" className="button secondary" style={{ padding: '5px 10px', fontSize: '0.75rem', display: 'inline-flex', alignItems: 'center', gap: '5px' }}>
+              Investigate All <ArrowRight size={14} />
             </Link>
           </div>
           {alerts.length ? (
-            <div className="alert-list">
+            <div className="alert-list" style={{ padding: '4px 0' }}>
               {alerts.map((alert) => (
-                <Link to={`/alerts?alert=${alert.id}`} className="alert-row" key={alert.id}>
+                <Link to={`/alerts?alert=${alert.id}`} className="alert-row" key={alert.id} style={{ padding: '12px 18px' }}>
                   <span className={`severity-dot ${severityClass(alert.severity)}`} />
                   <div>
-                    <strong>{alert.alert_code}</strong>
-                    <p>{alert.details || `Reported from ${alert.node_id}`}</p>
-                    <small>
-                      {alert.node_id} &middot; {alert.zone || 'Unassigned zone'} &middot; {formatTimestamp(alert.created_at)}
+                    <strong style={{ fontSize: '0.86rem', color: 'var(--text)' }}>{alert.alert_code}</strong>
+                    <p style={{ margin: '3px 0 4px', color: 'var(--muted)', fontSize: '0.78rem' }}>
+                      {alert.details || `Reported from ${alert.node_id}`}
+                    </p>
+                    <small style={{ color: 'var(--muted)', fontSize: '0.71rem', display: 'flex', gap: '8px', alignItems: 'center' }}>
+                      <span>{alert.node_id}</span>
+                      <span>&middot;</span>
+                      <span>{alert.zone || 'Unassigned zone'}</span>
+                      <span>&middot;</span>
+                      <span style={{ fontVariantNumeric: 'tabular-nums' }}>{formatTimestamp(alert.created_at)}</span>
                     </small>
                   </div>
                   <StatusPill value={alert.status} tone={severityClass(alert.severity)} />
@@ -524,38 +571,42 @@ export function DashboardPage() {
               ))}
             </div>
           ) : (
-            <EmptyState title="No active alerts" detail="Django has not reported any unresolved safety alerts for this site." />
+            <div className="empty-state" style={{ padding: '2.5rem 1.5rem' }}>
+              <CheckCircle2 size={30} style={{ color: 'var(--success)' }} />
+              <h2 style={{ margin: '8px 0 2px', fontSize: '0.95rem' }}>All Clear</h2>
+              <p style={{ fontSize: '0.8rem', color: 'var(--muted)' }}>No unresolved safety alerts reported for this operational site.</p>
+            </div>
           )}
         </article>
 
         {/* Real-time Filterable Activity Feed with Sticky Date Grouping */}
-        <article className="panel" style={{ padding: '16px' }}>
-          <div className="panel-heading" style={{ padding: '0 0 12px' }}>
+        <article className="panel" style={{ padding: '18px' }}>
+          <div className="panel-heading" style={{ padding: '0 0 14px', borderBottom: '1px solid var(--border)', marginBottom: '14px' }}>
             <div>
-              <p className="eyebrow">AUDIT & EVENT STREAM</p>
-              <h2>Recent Actions</h2>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '6px', marginBottom: '2px' }}>
+                <span className="status-pill info" style={{ fontSize: '0.65rem' }}>AUDIT LOG</span>
+                <span className="muted" style={{ fontSize: '0.74rem' }}>Real-time stream</span>
+              </div>
+              <h2 style={{ margin: 0, fontSize: '0.98rem', fontWeight: 700 }}>Recent Actions</h2>
             </div>
-            <div style={{ display: 'flex', gap: '4px' }}>
+            <div className="segmented" style={{ margin: 0 }}>
               <button
                 type="button"
-                className={`button ghost ${activityFilter === 'ALL' ? 'primary' : ''}`}
-                style={{ padding: '2px 7px', fontSize: '0.7rem' }}
+                className={activityFilter === 'ALL' ? 'active' : ''}
                 onClick={() => setActivityFilter('ALL')}
               >
                 All
               </button>
               <button
                 type="button"
-                className={`button ghost ${activityFilter === 'ALERT' ? 'primary' : ''}`}
-                style={{ padding: '2px 7px', fontSize: '0.7rem' }}
+                className={activityFilter === 'ALERT' ? 'active' : ''}
                 onClick={() => setActivityFilter('ALERT')}
               >
                 Alarms
               </button>
               <button
                 type="button"
-                className={`button ghost ${activityFilter === 'USER' ? 'primary' : ''}`}
-                style={{ padding: '2px 7px', fontSize: '0.7rem' }}
+                className={activityFilter === 'USER' ? 'active' : ''}
                 onClick={() => setActivityFilter('USER')}
               >
                 Users

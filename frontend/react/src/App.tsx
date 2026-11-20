@@ -1,3 +1,5 @@
+import { GatewaysPage } from './pages/GatewaysPage';
+import { EntityDetailPage } from './pages/EntityDetailPage';
 import { Navigate, Route, Routes } from 'react-router-dom';
 import { AppShell } from './platform/AppShell';
 import { DashboardPage } from './pages/DashboardPage';
@@ -15,9 +17,13 @@ export function App() {
         <Route index element={<DashboardPage />} />
         <Route path="twin" element={<TwinPage />} />
         <Route path="alerts" element={<AlertsPage />} />
+        <Route path="personnel/:id" element={<EntityDetailPage kind="personnel" />} />
+        <Route path="assets/:id" element={<EntityDetailPage kind="assets" />} />
+        <Route path="devices/:id" element={<EntityDetailPage kind="devices" />} />
         <Route path="personnel" element={<PersonnelPage />} />
         <Route path="assets" element={<AssetsPage />} />
         <Route path="environment" element={<EnvironmentalPage />} />
+        <Route path="gateways" element={<GatewaysPage />} />
         <Route path="devices" element={<DevicesPage />} />
         <Route path="sites-zones" element={<SitesZonesPage />} />
         <Route path="reports" element={<ReportsPage />} />
