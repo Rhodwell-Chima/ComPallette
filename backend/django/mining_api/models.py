@@ -135,9 +135,12 @@ class SiteMembership(models.Model):
 
 
 class Personnel(models.Model):
+    user = models.ForeignKey(settings.AUTH_USER_MODEL, null=True, blank=True, on_delete=models.PROTECT, related_name='personnel_identities')
+    archived = models.BooleanField(default=False)
+    version = models.PositiveIntegerField(default=1)
     organisation = models.ForeignKey(Organisation, on_delete=models.CASCADE, related_name='personnel')
     site = models.ForeignKey(Site, null=True, blank=True, on_delete=models.SET_NULL, related_name='personnel')
-    identifier = models.CharField(max_length=32, unique=True)
+    identifier = models.CharField(max_length=32)
     display_name = models.CharField(max_length=120)
     team = models.CharField(max_length=80, blank=True, default='')
     employment_status = models.CharField(max_length=24, default='ACTIVE')
@@ -145,12 +148,15 @@ class Personnel(models.Model):
 
     class Meta:
         ordering = ['display_name', 'identifier']
+        constraints = [models.UniqueConstraint(fields=['organisation', 'identifier'], name='person_identifier_per_org'), models.UniqueConstraint(fields=['organisation', 'user'], condition=models.Q(user__isnull=False), name='person_user_per_org')]
 
 
 class Asset(models.Model):
+    archived = models.BooleanField(default=False)
+    version = models.PositiveIntegerField(default=1)
     organisation = models.ForeignKey(Organisation, on_delete=models.CASCADE, related_name='assets')
     site = models.ForeignKey(Site, null=True, blank=True, on_delete=models.SET_NULL, related_name='assets')
-    identifier = models.CharField(max_length=32, unique=True)
+    identifier = models.CharField(max_length=32)
     name = models.CharField(max_length=120)
     asset_type = models.CharField(max_length=80, blank=True, default='')
     operational_status = models.CharField(max_length=24, default='ACTIVE')
@@ -158,6 +164,7 @@ class Asset(models.Model):
 
     class Meta:
         ordering = ['name', 'identifier']
+        constraints = [models.UniqueConstraint(fields=['organisation', 'identifier'], name='asset_identifier_per_org')]
 
 
 class DeviceCapability(models.Model):
@@ -174,6 +181,8 @@ class DeviceCapability(models.Model):
 
 
 class MeasurementReading(models.Model):
+    site = models.ForeignKey('Site', null=True, on_delete=models.PROTECT)
+    source_event = models.ForeignKey('IngestedEvent', null=True, on_delete=models.PROTECT)
     node = models.ForeignKey('Node', on_delete=models.CASCADE, related_name='measurements')
     capability = models.ForeignKey(DeviceCapability, null=True, blank=True, on_delete=models.SET_NULL, related_name='readings')
     measurement_key = models.CharField(max_length=48)
@@ -190,6 +199,11 @@ class MeasurementReading(models.Model):
 
 
 class Node(models.Model):
+    archived = models.BooleanField(default=False)
+    version = models.PositiveIntegerField(default=1)
+    commissioned = models.BooleanField(default=False)
+    hardware_id = models.CharField(max_length=32, null=True, blank=True, unique=True)
+    installation_zone = models.ForeignKey(Zone, null=True, blank=True, on_delete=models.PROTECT, related_name='installed_nodes')
     """Represents any tracked physical or simulated node in the mine network."""
     node_id = models.CharField(max_length=32, primary_key=True)
     role = models.CharField(max_length=24, choices=NodeRole.choices, default=NodeRole.WEARABLE)
@@ -223,8 +237,10 @@ class Node(models.Model):
 
 
 class TelemetryRecord(models.Model):
+    site = models.ForeignKey('Site', null=True, on_delete=models.PROTECT)
+    source_event = models.ForeignKey('IngestedEvent', null=True, on_delete=models.PROTECT)
     """Time-series sensor telemetry received from underground wearable tags."""
-    node = models.ForeignKey(Node, on_delete=models.CASCADE, related_name='telemetry')
+    node = models.ForeignKey(Node, on_delete=models.PROTECT, related_name='telemetry')
     seq = models.PositiveIntegerField()
     zone = models.CharField(max_length=64, blank=True, default='')
     co_ppm = models.FloatField(default=0.0)
@@ -252,8 +268,10 @@ class TelemetryRecord(models.Model):
 
 
 class SafetyAlert(models.Model):
+    site = models.ForeignKey('Site', null=True, on_delete=models.PROTECT)
+    source_event = models.ForeignKey('IngestedEvent', null=True, on_delete=models.PROTECT)
     """Safety hazard alarms with an auditable acknowledgement and resolution lifecycle."""
-    node = models.ForeignKey(Node, on_delete=models.CASCADE, related_name='alerts')
+    node = models.ForeignKey(Node, on_delete=models.PROTECT, related_name='alerts')
     zone = models.CharField(max_length=64, blank=True, default='')
     severity = models.CharField(max_length=16, choices=AlertSeverity.choices, default=AlertSeverity.WARNING)
     alert_code = models.CharField(max_length=32)
@@ -285,6 +303,10 @@ class SafetyAlert(models.Model):
 
 
 class AuditEntry(models.Model):
+    actor_user = models.ForeignKey(settings.AUTH_USER_MODEL, null=True, blank=True, on_delete=models.PROTECT)
+    entity_type = models.CharField(max_length=32, blank=True)
+    entity_id = models.CharField(max_length=64, blank=True)
+    metadata = models.JSONField(default=dict, blank=True)
     """Chronological operations ledger capturing officer actions and system events."""
     timestamp = models.BigIntegerField()
     actor = models.CharField(max_length=64)
@@ -329,3 +351,8 @@ class ProvisioningRequest(models.Model):
 
     def __str__(self):
         return f"Chip #{self.chip_id} ({self.status}) -> {self.assigned_id or 'Unassigned'}"
+
+
+from .domain_models import (DeviceAssignment, AssetCustody, PlatformOperation, SiteTransfer,
+                            GatewayRegistration, DeviceDiscovery, IngestedEvent,
+                            LocationObservation, DeviceCommand)

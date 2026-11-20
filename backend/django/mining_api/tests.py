@@ -23,6 +23,14 @@ class MiningApiTests(TestCase):
         self.operator = get_user_model().objects.create_user(username='test-operator', password='test-password', is_staff=True)
         self.client.force_authenticate(user=self.operator)
         self.site = Site.objects.get(code='MINING-PILOT')
+        self.operator.is_superuser = True
+        self.operator.save()
+        from .models import GatewayRegistration
+        from django.contrib.auth.hashers import make_password
+        gateway_node = Node.objects.create(node_id='GW-SURFACE-01', role='GATEWAY', site=self.site, organisation=self.site.organisation, commissioned=True)
+        self.gateway = GatewayRegistration.objects.create(node=gateway_node, site=self.site, credential_hash=make_password(self.api_key))
+        self.auth_headers['HTTP_X_GATEWAY_ID'] = gateway_node.pk
+
 
     def test_operator_reads_and_actions_require_authentication(self):
         anonymous = APIClient()
@@ -92,7 +100,7 @@ class MiningApiTests(TestCase):
 
     def test_operator_identity_is_taken_from_session_not_request_body(self):
         alert = SafetyAlert.objects.create(
-            node=Node.objects.create(node_id='MINER-AUTH', last_seen_ts=int(time.time() * 1000), organisation=self.site.organisation, site=self.site),
+            site=self.site, node=Node.objects.create(node_id='MINER-AUTH', last_seen_ts=int(time.time() * 1000), organisation=self.site.organisation, site=self.site),
             alert_code='TEST', created_at=int(time.time() * 1000),
         )
         response = self.client.post(f'/api/v1/alerts/{alert.id}/ack', {'officer_name': 'forged'}, format='json')
@@ -126,6 +134,7 @@ class MiningApiTests(TestCase):
         self.assertEqual(response.status_code, status.HTTP_401_UNAUTHORIZED)
 
     def test_telemetry_ingest_and_deduplication(self):
+        Node.objects.create(node_id='MINER-106', role='WEARABLE', site=self.site, organisation=self.site.organisation, commissioned=True)
         payload = {
             "ver": 1,
             "type": "TELEMETRY",
@@ -154,7 +163,7 @@ class MiningApiTests(TestCase):
 
         # Verify Node model updated
         node = Node.objects.get(node_id="MINER-106")
-        self.assertEqual(node.current_zone, "LEVEL-250-SOUTH")
+        self.assertEqual(node.current_zone, "UNASSIGNED")
         self.assertEqual(node.latest_co, 18.5)
         self.assertEqual(node.status, NodeStatus.ONLINE)
 
@@ -178,6 +187,7 @@ class MiningApiTests(TestCase):
         self.assertEqual(res.status_code, status.HTTP_400_BAD_REQUEST)
 
     def test_alert_lifecycle(self):
+        Node.objects.create(node_id='MINER-107', role='WEARABLE', site=self.site, organisation=self.site.organisation, commissioned=True)
         # Ingest an alert
         alert_payload = {
             "ver": 1,
@@ -228,7 +238,7 @@ class MiningApiTests(TestCase):
 
     def test_resolution_requires_operator_authored_notes(self):
         node = Node.objects.create(node_id='RESOLUTION-TEST', site=self.site)
-        alert = SafetyAlert.objects.create(node=node, alert_code='TEST', created_at=1)
+        alert = SafetyAlert.objects.create(site=self.site, node=node, alert_code='TEST', created_at=1)
         before = AuditEntry.objects.count()
         for body in ({}, {'notes': None}, {'notes': 12}, {'notes': []}, {'notes': {}}, {'notes': ''}, {'notes': '  \n\t'}):
             with self.subTest(body=body):
@@ -249,6 +259,7 @@ class MiningApiTests(TestCase):
         self.assertEqual(AuditEntry.objects.filter(action='ALERT_RESOLVED', site=self.site).count(), 1)
 
     def test_heartbeat_and_watchdog(self):
+        Node.objects.create(node_id='ANCHOR-02', role='ANCHOR', site=self.site, organisation=self.site.organisation, commissioned=True)
         # Ingest heartbeat
         hb = {
             "ver": 1,
@@ -309,74 +320,28 @@ class MiningApiTests(TestCase):
         self.assertGreaterEqual(data['miners_in_gas_warning'], 1)
 
     def test_dynamic_provisioning_flow(self):
-        # 1. Gateway forwards PROV_REQ from uncommissioned chip
-        prov_pkt = {
-            "ver": 1,
-            "type": "PROV_REQ",
-            "seq": 1,
-            "sender": "PROV-8F4C2A",
-            "role": "UNASSIGNED",
-            "zone": "UNASSIGNED",
-            "uptime": 12000,
-            "payload": {
-                "chip_mac": "24:6F:28:8F:4C:2A",
-                "chip_id": "8F4C2A",
-                "mesh_id": 2408359146,
-                "fw_ver": "1.1.0",
-                "batt": 3.92,
-                "mq_ok": True,
-                "mpu_ok": True
-            }
-        }
-        res_req = self.client.post('/api/v1/provision/request', prov_pkt, format='json', **self.auth_headers)
-        self.assertEqual(res_req.status_code, status.HTTP_200_OK)
-        self.assertEqual(res_req.json()['chip_id'], '8F4C2A')
-
-        # 2. Query pending unassigned nodes for dashboard UI
-        res_pending = self.client.get('/api/v1/provision/pending')
-        self.assertEqual(res_pending.status_code, status.HTTP_200_OK)
-        pending_list = res_pending.json()['pending_nodes']
-        self.assertEqual(len(pending_list), 1)
-        self.assertEqual(pending_list[0]['chip_id'], '8F4C2A')
-        self.assertTrue(pending_list[0]['mq_healthy'])
-
-        # 3. Dispatcher commissions the node
-        assign_body = {
-            "chip_id": "8F4C2A",
-            "device_id": "MINER-106",
-            "role": "WEARABLE",
-            "zone_id": "LEVEL-3-ACTIVE-STOPE",
-            "officer_name": "Supervisor_Moses"
-        }
-        res_assign = self.client.post('/api/v1/provision/assign', assign_body, format='json')
-        self.assertEqual(res_assign.status_code, status.HTTP_200_OK)
-        assign_data = res_assign.json()
-        self.assertEqual(assign_data['assigned_id'], 'MINER-106')
-        self.assertIn('downlink_frame', assign_data)
-        downlink = assign_data['downlink_frame']
-        self.assertEqual(downlink['type'], 'PROV_ASSIGN')
-        self.assertEqual(downlink['payload']['target_chip'], '8F4C2A')
-        self.assertEqual(downlink['payload']['assigned_id'], 'MINER-106')
-
-        # Verify Node pre-created in Node table
-        node = Node.objects.get(node_id='MINER-106')
-        self.assertEqual(node.current_zone, 'LEVEL-3-ACTIVE-STOPE')
-
-        # 4. Gateway confirms node acknowledged commissioning
-        confirm_body = {
-            "ver": 1, "type": "PROV_CONFIRM", "seq": 2, "sender": "GW-SURFACE-01",
-            "role": "GATEWAY", "zone": "SURFACE-PORTAL", "uptime": 15000,
-            "payload": {"chip_id": "8F4C2A", "status": "CONFIRMED"},
-        }
-        res_confirm = self.client.post('/api/v1/provision/confirm', confirm_body, format='json', **self.auth_headers)
-        self.assertEqual(res_confirm.status_code, status.HTTP_200_OK)
-        self.assertEqual(res_confirm.json()['status'], 'confirmed')
-
-        # Verify pending list is now empty
-        res_pending_after = self.client.get('/api/v1/provision/pending')
-        self.assertEqual(len(res_pending_after.json()['pending_nodes']), 0)
+        import uuid
+        from .models import DeviceDiscovery
+        from .commands import command_result
+        packet = {'ver': 1, 'type': 'PROV_REQ', 'seq': 1, 'sender': 'NEW-CHIP', 'role': 'UNASSIGNED',
+                  'zone': 'UNASSIGNED', 'uptime': 1, 'payload': {'chip_id': '8F4C2A'}}
+        response = self.client.post('/api/v1/provision/request', packet, format='json', **self.auth_headers)
+        self.assertEqual(response.status_code, 200)
+        discovery = DeviceDiscovery.objects.get(hardware_id='8F4C2A')
+        response = self.client.post('/api/v1/commands', {'operation_id': str(uuid.uuid4()), 'gateway_id': self.gateway.pk,
+            'discovery_id': discovery.pk, 'kind': 'PROVISION', 'node_id': 'NEW-TRACKER', 'role': 'WEARABLE'}, format='json')
+        self.assertEqual(response.status_code, 201)
+        node = Node.objects.get(pk='NEW-TRACKER')
+        self.assertFalse(node.commissioned)
+        self.assertEqual(node.status, 'OFFLINE')
+        command_result(self.gateway, {'command_id': response.json()['command_id'], 'node_id': node.pk,
+            'hardware_id': '8F4C2A', 'state': 'DEVICE_CONFIRMED'})
+        node.refresh_from_db()
+        self.assertTrue(node.commissioned)
+        self.assertEqual(node.location_evidence, 'UNKNOWN')
 
     def test_industrial_operator_views_use_persisted_site_data(self):
+        Node.objects.create(node_id='MINER-PLATFORM', role='WEARABLE', site=self.site, organisation=self.site.organisation, commissioned=True)
         Zone.objects.create(site=self.site, code='LEVEL-1-STATION', name='Level 1 Station')
         payload = {
             "ver": 1, "type": "TELEMETRY", "seq": 901, "sender": "MINER-PLATFORM",
@@ -387,12 +352,12 @@ class MiningApiTests(TestCase):
         self.assertEqual(response.status_code, status.HTTP_200_OK)
         node = Node.objects.get(node_id='MINER-PLATFORM')
         self.assertEqual(node.site, self.site)
-        self.assertEqual(node.location_evidence, LocationEvidence.CONFIRMED)
+        self.assertEqual(node.location_evidence, LocationEvidence.UNKNOWN)
         self.assertEqual(MeasurementReading.objects.filter(node=node).count(), 3)
 
         environment = self.client.get(f'/api/v1/environment/overview?site={self.site.id}')
         self.assertEqual(environment.status_code, status.HTTP_200_OK)
-        self.assertEqual({channel['key'] for channel in environment.json()['channels']}, {'co_ppm', 'temperature_c', 'humidity_pct'})
+        self.assertEqual({channel['measurement_key'] for channel in environment.json()['channels']}, {'co_ppm', 'temperature_c', 'humidity_pct'})
 
         twin = self.client.get(f'/api/v1/digital-twin?site={self.site.id}')
         self.assertEqual(twin.status_code, status.HTTP_200_OK)
@@ -401,7 +366,7 @@ class MiningApiTests(TestCase):
 
     def test_alert_can_be_assigned_with_authenticated_actor_attribution(self):
         node = Node.objects.create(node_id='MINER-ASSIGN', organisation=self.site.organisation, site=self.site, last_seen_ts=int(time.time() * 1000))
-        alert = SafetyAlert.objects.create(node=node, alert_code='CHECK', created_at=int(time.time() * 1000))
+        alert = SafetyAlert.objects.create(site=self.site, node=node, alert_code='CHECK', created_at=int(time.time() * 1000))
         response = self.client.post(f'/api/v1/alerts/{alert.id}/assign', {'notes': 'Investigating ventilation.'}, format='json')
         self.assertEqual(response.status_code, status.HTTP_200_OK)
         alert.refresh_from_db()

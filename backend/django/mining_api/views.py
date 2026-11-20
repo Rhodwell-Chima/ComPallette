@@ -7,7 +7,7 @@ from django.middleware.csrf import get_token
 from django.utils.decorators import method_decorator
 from django.views.decorators.csrf import csrf_protect, ensure_csrf_cookie
 from django.db import transaction, IntegrityError
-from django.db.models import Q
+from django.db.models import Q, Max
 from django.shortcuts import get_object_or_404
 from rest_framework import status, permissions
 from rest_framework.views import APIView
@@ -56,45 +56,28 @@ def validation_error_response(request, error):
     return Response(response_body, status=status.HTTP_400_BAD_REQUEST)
 
 
-ROLE_CAPABILITIES = {
-    MembershipRole.ORG_ADMIN: {'view', 'manage_sites', 'manage_users', 'manage_devices', 'operate_alerts', 'manage_assets', 'manage_integrations'},
-    MembershipRole.SITE_ADMIN: {'view', 'manage_sites', 'manage_devices', 'operate_alerts', 'manage_assets'},
-    MembershipRole.OPERATIONS: {'view', 'operate_alerts', 'manage_assets'},
-    MembershipRole.SAFETY: {'view', 'operate_alerts'},
-    MembershipRole.TECHNICIAN: {'view', 'manage_devices'},
-    MembershipRole.VIEWER: {'view'},
-}
-
-
-def operator_capabilities(user):
-    """The backend is the sole authority for every operator action."""
-    has_memberships = SiteMembership.objects.filter(user=user, active=True).exists()
-    if user.is_superuser or (user.is_staff and not has_memberships):
-        return sorted({capability for values in ROLE_CAPABILITIES.values() for capability in values})
-    capabilities = set()
-    for membership in SiteMembership.objects.filter(user=user, active=True):
-        capabilities.update(ROLE_CAPABILITIES.get(membership.role, {'view'}))
-    return sorted(capabilities)
+from .access import ROLE_CAPABILITIES, operator_capabilities, permitted_sites, enforce
 
 
 def has_operator_access(user):
-    """A Django staff account or an active site membership can open the operator UI."""
-    return user.is_staff or SiteMembership.objects.filter(user=user, active=True).exists()
+    return user.is_active and (user.is_superuser or permitted_sites(user).exists())
 
 
 def require_capability(request, capability):
-    if capability not in operator_capabilities(request.user):
-        return Response({'error': 'You do not have permission for this operation.'}, status=status.HTTP_403_FORBIDDEN)
+    kwargs = (request.parser_context or {}).get('kwargs', {})
+    site = None
+    if 'alert_id' in kwargs:
+        site = get_object_or_404(SafetyAlert, pk=kwargs['alert_id']).site
+    elif 'zone_id' in kwargs:
+        site = get_object_or_404(Zone, pk=kwargs['zone_id']).site
+    elif 'structure_id' in kwargs:
+        site = get_object_or_404(Structure, pk=kwargs['structure_id']).site
+    elif 'site_id' in kwargs:
+        site = get_object_or_404(Site, pk=kwargs['site_id'])
+    else:
+        site = resolve_site(request)
+    enforce(request.user, capability, site)
     return None
-
-
-def permitted_sites(user):
-    if user.is_superuser or user.is_staff and not SiteMembership.objects.filter(user=user, active=True).exists():
-        return Site.objects.filter(active=True)
-    memberships = SiteMembership.objects.filter(user=user, active=True)
-    organisation_ids = memberships.filter(site__isnull=True).values_list('organisation_id', flat=True)
-    site_ids = memberships.filter(site__isnull=False).values_list('site_id', flat=True)
-    return Site.objects.filter(active=True).filter(Q(organisation_id__in=organisation_ids) | Q(id__in=site_ids))
 
 
 def resolve_site(request):
@@ -170,7 +153,9 @@ class OperatorSessionView(APIView):
             "authenticated": True,
             "username": user.get_username(),
             "is_staff": user.is_staff,
-            "capabilities": operator_capabilities(user),
+            "is_superuser": user.is_superuser,
+            "capabilities": operator_capabilities(user, permitted_sites(user).first()),
+            "site_capabilities": {str(site.pk): operator_capabilities(user, site) for site in permitted_sites(user)},
             "sites": SiteSerializer(permitted_sites(user), many=True).data,
         })
 
@@ -181,7 +166,9 @@ class OperatorSessionView(APIView):
             "authenticated": True,
             "username": request.user.get_username(),
             "is_staff": request.user.is_staff,
-            "capabilities": operator_capabilities(request.user),
+            "is_superuser": request.user.is_superuser,
+            "capabilities": operator_capabilities(request.user, permitted_sites(request.user).first()),
+            "site_capabilities": {str(site.pk): operator_capabilities(request.user, site) for site in permitted_sites(request.user)},
             "sites": SiteSerializer(permitted_sites(request.user), many=True).data,
         })
 
@@ -199,6 +186,7 @@ def check_and_update_watchdog():
 
     # 1. Flag Stale Nodes
     Node.objects.filter(
+        commissioned=True, archived=False, site__active=True,
         last_seen_ts__lt=stale_limit,
         last_seen_ts__gte=offline_limit,
         status=NodeStatus.ONLINE
@@ -207,20 +195,22 @@ def check_and_update_watchdog():
     # 2. Flag Offline Nodes and generate COMM_LOST alert
     with transaction.atomic():
         dropping = list(Node.objects.select_for_update().filter(
-            last_seen_ts__lt=offline_limit
+            commissioned=True, archived=False, site__active=True,
+            last_seen_ts__gt=0, last_seen_ts__lt=offline_limit
         ).exclude(status=NodeStatus.OFFLINE))
         for n in dropping:
             n.status = NodeStatus.OFFLINE
             n.save(update_fields=['status'])
-            SafetyAlert.objects.get_or_create(
-                node=n, seq=0, alert_code='COMM_LOST',
-                defaults={
-                    'zone': n.current_zone,
-                    'severity': AlertSeverity.WARNING,
-                    'details': f"Node {n.node_id} ({n.role}) lost underground communication in {n.current_zone}",
-                    'trigger_value': 0.0, 'status': AlertStatus.NEW, 'created_at': now_ms,
-                }
-            )
+            alerts = SafetyAlert.objects.filter(node=n, site=n.site, alert_code='COMM_LOST')
+            if not alerts.exclude(status=AlertStatus.RESOLVED).exists():
+                # Watchdog events use a separate code-scoped sequence from firmware.
+                sequence = (SafetyAlert.objects.filter(node=n, alert_code='COMM_LOST').aggregate(value=Max('seq'))['value'] or 0) + 1
+                SafetyAlert.objects.create(
+                    node=n, site=n.site, seq=sequence, alert_code='COMM_LOST',
+                    zone=n.current_zone, severity=AlertSeverity.WARNING,
+                    details=f"Device {n.node_id} communication was not confirmed before the timeout.",
+                    trigger_value=0.0, status=AlertStatus.NEW, created_at=now_ms,
+                )
             AuditEntry.objects.create(
                 timestamp=now_ms, actor='SYSTEM_WATCHDOG', action='COMM_LOST',
                 details=f"Node {n.node_id} marked OFFLINE in {n.current_zone}",
@@ -242,237 +232,48 @@ class HealthCheckView(APIView):
 
 class TelemetryIngestView(APIView):
     permission_classes = [permissions.AllowAny]
+    authentication_classes = []
+    def get_authenticate_header(self, request):
+        return 'Gateway'
     def post(self, request):
-        if not verify_api_key(request):
-            return Response({"error": "Unauthorized: Invalid or missing X-API-Key"}, status=status.HTTP_401_UNAUTHORIZED)
-
-        data = request.data
-        if not isinstance(data, dict):
-            return Response({"error": "Malformed JSON payload"}, status=status.HTTP_400_BAD_REQUEST)
-
-        now_ms = int(time.time() * 1000)
-
-        envelope, error = validate_envelope(data, 'TELEMETRY')
-        if error:
-            return validation_error_response(request, error)
-        payload, error = validate_payload(TelemetryPayloadSerializer, envelope['payload'])
-        if error:
-            return validation_error_response(request, error)
-        node_id = envelope['sender']
-        seq = envelope['seq']
-        role = envelope['role']
-        zone = envelope['zone']
-        uptime_ms = envelope['uptime']
-        co_ppm = float(payload.get("co", payload.get("co_ppm", 0.0)))
-        temp_c = float(payload.get("temp", payload.get("temp_c", 0.0)))
-        hum = float(payload.get("hum", payload.get("humidity_pct", 0.0)))
-        fall = bool(payload.get("fall", payload.get("fall_detected", False)))
-        batt = float(payload.get("batt", payload.get("battery_v", 0.0)))
-        sim = bool(payload.get("sim", payload.get("is_simulated", True)))
-        sok = bool(payload.get("ok", payload.get("sensor_ok", True)))
-        default_site = Site.objects.filter(active=True).select_related('organisation').first()
-
-        with transaction.atomic():
-            # Upsert Node
-            node, _ = Node.objects.get_or_create(
-                node_id=node_id,
-                defaults={
-                    'role': role,
-                    'current_zone': zone,
-                    'last_seen_ts': now_ms,
-                    'last_seq': seq,
-                    'battery_v': batt,
-                    'status': NodeStatus.ONLINE,
-                    'is_simulated': sim,
-                    'sensor_ok': sok,
-                    'latest_co': co_ppm,
-                    'latest_temp': temp_c,
-                    'latest_hum': hum,
-                    'organisation': default_site.organisation if default_site else None,
-                    'site': default_site,
-                }
-            )
-
-            # The database uniqueness constraint makes this idempotent even if
-            # retries arrive concurrently at multiple API workers.
-            telem, created = TelemetryRecord.objects.get_or_create(
-                node=node, seq=seq,
-                defaults={
-                    'zone': zone, 'co_ppm': co_ppm, 'temp_c': temp_c,
-                    'humidity_pct': hum, 'fall_detected': fall, 'battery_v': batt,
-                    'is_simulated': sim, 'sensor_ok': sok,
-                    'uptime_ms': uptime_ms, 'received_at': now_ms,
-                },
-            )
-            if not created:
-                node.last_seen_ts = now_ms
-                node.status = NodeStatus.ONLINE
-                node.save(update_fields=['last_seen_ts', 'status'])
-                return Response({
-                    "status": "ok",
-                    "recorded": False,
-                    "deduplicated": True,
-                    "node_id": node_id,
-                    "seq": seq
-                })
-
-            # Update live node state
-            node.role = role
-            node.current_zone = zone
-            node.last_seen_ts = now_ms
-            node.last_seq = seq
-            node.battery_v = batt
-            node.status = NodeStatus.ONLINE
-            node.is_simulated = sim
-            node.sensor_ok = sok
-            node.latest_co = co_ppm
-            node.latest_temp = temp_c
-            node.latest_hum = hum
-            if not node.site_id and default_site:
-                node.site = default_site
-                node.organisation = default_site.organisation
-            sync_node_location(node, zone, now_ms)
-            node.save()
-
-            record_measurements(node, seq, now_ms, zone, [
-                ('co_ppm', 'Carbon monoxide', 'ppm', co_ppm, settings.CO_WARN_PPM, settings.CO_CRIT_PPM),
-                ('temperature_c', 'Temperature', '°C', temp_c, None, None),
-                ('humidity_pct', 'Relative humidity', '%RH', hum, None, None),
-            ])
-
-        return Response({
-            "status": "ok",
-            "recorded": True,
-            "deduplicated": False,
-            "node_id": node_id,
-            "seq": seq
-        })
+        from .ingestion import authenticate_gateway, ingest
+        gateway = authenticate_gateway(request.headers.get('X-Gateway-ID'), request.headers.get('X-API-Key'))
+        if not isinstance(request.data, dict) or request.data.get('type') != 'TELEMETRY':
+            return Response({'error': 'Unexpected event type.', 'error_code': 'VALIDATION_ERROR'}, status=400)
+        return Response(ingest(gateway, request.data))
 
 
 class AlertIngestView(APIView):
     permission_classes = [permissions.AllowAny]
+    authentication_classes = []
+    def get_authenticate_header(self, request):
+        return 'Gateway'
     def post(self, request):
-        if not verify_api_key(request):
-            return Response({"error": "Unauthorized: Invalid or missing X-API-Key"}, status=status.HTTP_401_UNAUTHORIZED)
-
-        data = request.data
-        envelope, error = validate_envelope(data, 'ALERT')
-        if error:
-            return validation_error_response(request, error)
-        now_ms = int(time.time() * 1000)
-
-        node_id = data.get("sender", "UNKNOWN")
-        seq = int(data.get("seq", 0))
-        role = data.get("role", NodeRole.WEARABLE)
-        zone = data.get("zone", "UNASSIGNED")
-
-        payload, error = validate_payload(AlertPayloadSerializer, envelope['payload'])
-        if error:
-            return validation_error_response(request, error)
-        sev = payload.get("severity", AlertSeverity.WARNING)
-        code = payload.get("code", payload.get("alert_code", "UNKNOWN"))
-        details = payload.get("details", "")
-        val = float(payload.get("val", payload.get("trigger_value", 0.0)))
-        default_site = Site.objects.filter(active=True).select_related('organisation').first()
-
-        with transaction.atomic():
-            node, _ = Node.objects.get_or_create(
-                node_id=node_id,
-                defaults={
-                    'role': role, 'current_zone': zone, 'last_seen_ts': now_ms, 'status': NodeStatus.ONLINE,
-                    'organisation': default_site.organisation if default_site else None,
-                    'site': default_site,
-                }
-            )
-
-            alert, created = SafetyAlert.objects.get_or_create(
-                node=node, seq=seq, alert_code=code,
-                defaults={
-                    'zone': zone, 'severity': sev, 'details': details,
-                    'trigger_value': val, 'status': AlertStatus.NEW, 'created_at': now_ms,
-                },
-            )
-            if not created:
-                return Response({
-                    "status": "ok",
-                    "recorded": False,
-                    "deduplicated": True,
-                    "alert_id": alert.id,
-                    "node_id": node_id
-                })
-
-            AuditEntry.objects.create(
-                timestamp=now_ms,
-                actor=node_id,
-                action='ALERT_TRIGGERED',
-                details=f"Severity: {sev} | Code: {code} | Zone: {zone} | Val: {val}",
-                site=node.site,
-            )
-
-            node.last_seen_ts = now_ms
-            node.current_zone = zone
-            node.status = NodeStatus.ONLINE
-            if not node.site_id and default_site:
-                node.site = default_site
-                node.organisation = default_site.organisation
-            sync_node_location(node, zone, now_ms)
-            node.save()
-
-        return Response({
-            "status": "ok",
-            "recorded": True,
-            "deduplicated": False,
-            "alert_id": alert.id,
-            "node_id": node_id
-        })
+        from .ingestion import authenticate_gateway, ingest
+        gateway = authenticate_gateway(request.headers.get('X-Gateway-ID'), request.headers.get('X-API-Key'))
+        if not isinstance(request.data, dict) or request.data.get('type') != 'ALERT':
+            return Response({'error': 'Unexpected event type.', 'error_code': 'VALIDATION_ERROR'}, status=400)
+        return Response(ingest(gateway, request.data))
 
 
 class HeartbeatIngestView(APIView):
     permission_classes = [permissions.AllowAny]
+    authentication_classes = []
+    def get_authenticate_header(self, request):
+        return 'Gateway'
     def post(self, request):
-        if not verify_api_key(request):
-            return Response({"error": "Unauthorized: Invalid or missing X-API-Key"}, status=status.HTTP_401_UNAUTHORIZED)
-
-        data = request.data
-        envelope, error = validate_envelope(data, 'HEARTBEAT')
-        if error:
-            return validation_error_response(request, error)
-        now_ms = int(time.time() * 1000)
-        node_id = data.get("sender", "UNKNOWN")
-        role = data.get("role", NodeRole.ANCHOR)
-        zone = data.get("zone", "UNASSIGNED")
-
-        payload, error = validate_payload(HeartbeatPayloadSerializer, envelope['payload'])
-        if error:
-            return validation_error_response(request, error)
-        heap = int(payload.get("heap", payload.get("free_heap", 0)))
-        batt = float(payload.get("batt", payload.get("battery_v", 0.0)))
-
-        default_site = Site.objects.filter(active=True).select_related('organisation').first()
-        node, _ = Node.objects.update_or_create(
-            node_id=node_id,
-            defaults={
-                'role': role,
-                'current_zone': zone,
-                'last_seen_ts': now_ms,
-                'battery_v': batt,
-                'free_heap': heap,
-                'status': NodeStatus.ONLINE,
-                'organisation': default_site.organisation if default_site else None,
-                'site': default_site,
-            }
-        )
-        sync_node_location(node, zone, now_ms)
-        node.save(update_fields=['zone_ref', 'location_evidence', 'location_observed_at'])
-
-        return Response({"status": "ok", "node_id": node_id})
+        from .ingestion import authenticate_gateway, ingest
+        gateway = authenticate_gateway(request.headers.get('X-Gateway-ID'), request.headers.get('X-API-Key'))
+        if not isinstance(request.data, dict) or request.data.get('type') != 'HEARTBEAT':
+            return Response({'error': 'Unexpected event type.', 'error_code': 'VALIDATION_ERROR'}, status=400)
+        return Response(ingest(gateway, request.data))
 
 
 class SystemSummaryView(APIView):
     def get(self, request):
         site = resolve_site(request)
         nodes = Node.objects.filter(site=site) if site else Node.objects.none()
-        alerts = SafetyAlert.objects.filter(node__site=site) if site else SafetyAlert.objects.none()
+        alerts = SafetyAlert.objects.filter(site=site) if site else SafetyAlert.objects.none()
         total = nodes.count()
         online_miners = nodes.filter(role=NodeRole.WEARABLE, status=NodeStatus.ONLINE).count()
         stale = nodes.filter(status=NodeStatus.STALE).count()
@@ -485,7 +286,7 @@ class SystemSummaryView(APIView):
         gas_warn = nodes.filter(latest_co__gte=settings.CO_WARN_PPM, latest_co__lt=settings.CO_CRIT_PPM).count()
         gas_crit = nodes.filter(latest_co__gte=settings.CO_CRIT_PPM).count()
 
-        last_telem = TelemetryRecord.objects.filter(node__site=site).order_by('-received_at').first() if site else None
+        last_telem = TelemetryRecord.objects.filter(site=site).order_by('-received_at').first() if site else None
         last_node = nodes.order_by('-last_seen_ts').first()
         last_telem_rx = last_telem.received_at if last_telem else 0
         last_node_rx = last_node.last_seen_ts if last_node else 0
@@ -540,7 +341,7 @@ class NodeDetailView(APIView):
         return Response({
             'node': serializer.data,
             'capabilities': DeviceCapabilitySerializer(node.capabilities.filter(active=True), many=True).data,
-            'recent_measurements': MeasurementReadingSerializer(node.measurements.all()[:20], many=True).data,
+            'recent_measurements': MeasurementReadingSerializer(node.measurements.filter(site__in=permitted_sites(request.user))[:20], many=True).data,
         })
 
 
@@ -548,7 +349,7 @@ class NodeHistoryView(APIView):
     def get(self, request, node_id):
         node = get_object_or_404(Node.objects.filter(site__in=permitted_sites(request.user)), node_id=node_id)
         limit = int(request.query_params.get("limit", 50))
-        records = TelemetryRecord.objects.filter(node=node).order_by('-received_at')[:limit]
+        records = TelemetryRecord.objects.filter(node=node, site__in=permitted_sites(request.user)).order_by('-received_at')[:limit]
         serializer = TelemetryRecordSerializer(records, many=True)
         return Response({
             "node_id": node_id,
@@ -564,7 +365,7 @@ class AlertListView(APIView):
         limit = int(request.query_params.get("limit", 100))
 
         site = resolve_site(request)
-        queryset = SafetyAlert.objects.filter(node__site=site) if site else SafetyAlert.objects.none()
+        queryset = SafetyAlert.objects.filter(site=site) if site else SafetyAlert.objects.none()
         if status_q:
             queryset = queryset.filter(status=status_q)
         if sev_q:
@@ -577,17 +378,18 @@ class AlertListView(APIView):
 
 class AlertDetailView(APIView):
     def get(self, request, alert_id):
-        alert = get_object_or_404(SafetyAlert.objects.filter(node__site__in=permitted_sites(request.user)), id=alert_id)
+        alert = get_object_or_404(SafetyAlert.objects.filter(site__in=permitted_sites(request.user)), id=alert_id)
         serializer = SafetyAlertSerializer(alert)
         return Response(serializer.data)
 
 
 class AlertAcknowledgeView(APIView):
+    @transaction.atomic
     def post(self, request, alert_id):
         denied = require_capability(request, 'operate_alerts')
         if denied:
             return denied
-        alert = get_object_or_404(SafetyAlert.objects.filter(node__site__in=permitted_sites(request.user)), id=alert_id)
+        alert = get_object_or_404(SafetyAlert.objects.select_for_update().filter(site__in=permitted_sites(request.user)), id=alert_id)
         if alert.status != AlertStatus.NEW:
             return Response({"error": "Alert not found or already acknowledged/resolved", "alert_id": alert_id}, status=status.HTTP_404_NOT_FOUND)
 
@@ -604,18 +406,19 @@ class AlertAcknowledgeView(APIView):
             actor=officer,
             action='ALERT_ACKNOWLEDGED',
             details=f"Alert #{alert.id} acknowledged by {officer}",
-            site=alert.node.site,
+            site=alert.site,
         )
 
         return Response({"status": "ok", "message": f"Alert #{alert.id} acknowledged", "alert_id": alert.id})
 
 
 class AlertResolveView(APIView):
+    @transaction.atomic
     def post(self, request, alert_id):
         denied = require_capability(request, 'operate_alerts')
         if denied:
             return denied
-        alert = get_object_or_404(SafetyAlert.objects.filter(node__site__in=permitted_sites(request.user)), id=alert_id)
+        alert = get_object_or_404(SafetyAlert.objects.select_for_update().filter(site__in=permitted_sites(request.user)), id=alert_id)
         if alert.status == AlertStatus.RESOLVED:
             return Response({"error": "Alert already resolved", "alert_id": alert_id}, status=status.HTTP_404_NOT_FOUND)
 
@@ -637,7 +440,7 @@ class AlertResolveView(APIView):
             actor=officer,
             action='ALERT_RESOLVED',
             details=f"Alert #{alert.id} resolved: {notes}",
-            site=alert.node.site,
+            site=alert.site,
         )
 
         return Response({"status": "ok", "message": f"Alert #{alert.id} resolved", "alert_id": alert.id})
@@ -645,6 +448,9 @@ class AlertResolveView(APIView):
 
 class AuditListView(APIView):
     def get(self, request):
+        denied = require_capability(request, 'view_audit')
+        if denied:
+            return denied
         limit = int(request.query_params.get("limit", 20))
         offset = int(request.query_params.get("offset", 0))
         site = resolve_site(request)
@@ -670,172 +476,41 @@ class AuditListView(APIView):
 
 class ProvisioningRequestIngestView(APIView):
     permission_classes = [permissions.AllowAny]
-    """Handles uncommissioned node announcement beacons forwarded by the mesh gateway."""
+    authentication_classes = []
+    def get_authenticate_header(self, request):
+        return 'Gateway'
     def post(self, request):
-        if not verify_api_key(request):
-            return Response({"error": "Unauthorized: Invalid X-API-Key header"}, status=status.HTTP_401_UNAUTHORIZED)
-
-        data = request.data
-        envelope, error = validate_envelope(data, 'PROV_REQ')
-        if error:
-            return validation_error_response(request, error)
-        payload, error = validate_payload(ProvisionPayloadSerializer, envelope['payload'])
-        if error:
-            return validation_error_response(request, error)
-        chip_id = payload.get("chip_id") or envelope['sender'].replace("PROV-", "")
-
-        if not chip_id:
-            return Response({"error": "Missing chip_id in provisioning payload"}, status=status.HTTP_400_BAD_REQUEST)
-
-        chip_mac = payload.get("chip_mac", "")
-        mesh_id = payload.get("mesh_id", 0)
-        fw_ver = payload.get("fw_ver", "1.1.0")
-        batt = float(payload.get("batt", 0.0))
-        mq_ok = bool(payload.get("mq_ok", False))
-        mpu_ok = bool(payload.get("mpu_ok", False))
-
-        req, created = ProvisioningRequest.objects.update_or_create(
-            chip_id=chip_id,
-            defaults={
-                "chip_mac": chip_mac,
-                "mesh_node_id": mesh_id,
-                "fw_version": fw_ver,
-                "battery_v": batt,
-                "mq_healthy": mq_ok,
-                "mpu_healthy": mpu_ok,
-                "status": ProvisioningStatus.PENDING,
-            }
-        )
-
-        AuditEntry.objects.create(
-            timestamp=int(time.time() * 1000),
-            actor='GATEWAY',
-            action='NODE_DISCOVERED',
-                details=f"Unassigned node beacon detected: Chip #{chip_id} (MAC: {chip_mac})"
-        )
-
-        return Response({"status": "recorded", "chip_id": chip_id, "created": created})
+        from .ingestion import authenticate_gateway, ingest
+        gateway = authenticate_gateway(request.headers.get('X-Gateway-ID'), request.headers.get('X-API-Key'))
+        if request.data.get('type') != 'PROV_REQ':
+            return Response({'error': 'Expected discovery request.'}, status=400)
+        return Response(ingest(gateway, request.data))
 
 
 class ProvisioningPendingListView(APIView):
-    """Returns all uncommissioned nodes waiting for dispatcher assignment."""
     def get(self, request):
-        pending = ProvisioningRequest.objects.filter(status=ProvisioningStatus.PENDING).order_by('-updated_at')
-        serializer = ProvisioningRequestSerializer(pending, many=True)
-        return Response({"pending_nodes": serializer.data, "count": len(serializer.data)})
+        denied = require_capability(request, 'manage_devices')
+        from .models import DeviceDiscovery
+        site = resolve_site(request)
+        return Response({'pending_nodes': list(DeviceDiscovery.objects.filter(gateway__site=site).values())})
 
 
 class ProvisioningAssignView(APIView):
-    """Dispatcher commissions an unassigned node by binding an ID, role, and underground zone."""
     def post(self, request):
-        denied = require_capability(request, 'manage_devices')
-        if denied:
-            return denied
-        payload = request.data.get('payload', {}) if isinstance(request.data, dict) else {}
-        chip_id = payload.get("chip_id") if isinstance(payload, dict) else None
-        chip_id = chip_id or request.data.get("chip_id")
-        device_id = request.data.get("device_id")
-        role = request.data.get("role", "WEARABLE")
-        zone_id = request.data.get("zone_id", "SURFACE-PORTAL")
-        officer = request.user.get_username()
-        site = resolve_site(request)
-
-        if not chip_id or not device_id:
-            return Response({"error": "chip_id and device_id are required"}, status=status.HTTP_400_BAD_REQUEST)
-
-        req = get_object_or_404(ProvisioningRequest, chip_id=chip_id)
-        req.status = ProvisioningStatus.ASSIGNED
-        req.assigned_id = device_id
-        req.assigned_role = role
-        req.assigned_zone = zone_id
-        req.assigned_by = officer
-        req.save()
-
-        now_ms = int(time.time() * 1000)
-
-        # Pre-seed or update the target Node in database
-        node, _ = Node.objects.update_or_create(
-            node_id=device_id,
-            defaults={
-                "role": role,
-                "current_zone": zone_id,
-                "status": NodeStatus.ONLINE,
-                "last_seen_ts": now_ms,
-                "is_simulated": False,
-                "sensor_ok": True,
-                "organisation": site.organisation if site else None,
-                "site": site,
-            }
-        )
-        sync_node_location(node, zone_id, now_ms)
-        node.save(update_fields=['zone_ref', 'location_evidence', 'location_observed_at'])
-
-        AuditEntry.objects.create(
-            timestamp=now_ms,
-            actor=officer,
-            action='NODE_ASSIGNED',
-            details=f"Chip #{chip_id} assigned identity '{device_id}' ({role}) @ {zone_id}",
-            site=site,
-        )
-
-        # Generate exact downlink mesh frame for the gateway to broadcast
-        downlink_frame = {
-            "ver": 1,
-            "type": "PROV_ASSIGN",
-            "seq": 1,
-            "sender": "GW-SURFACE-01",
-            "role": "GATEWAY",
-            "zone": "SURFACE-PORTAL",
-            "uptime": 0,
-            "payload": {
-                "target_chip": chip_id,
-                "assigned_id": device_id,
-                "role": role,
-                "zone": zone_id,
-                "co_warn": 25.0,
-                "co_crit": 50.0,
-                "reboot": True
-            }
-        }
-
-        return Response({
-            "status": "assigned",
-            "chip_id": chip_id,
-            "assigned_id": device_id,
-            "downlink_frame": downlink_frame
-        })
+        return Response({'error': 'Use /api/v1/commands with an explicit gateway and discovery identity.'}, status=410)
 
 
 class ProvisioningConfirmView(APIView):
-    """Gateway reports that node received assignment and acknowledged commissioning."""
     permission_classes = [permissions.AllowAny]
+    authentication_classes = []
+    def get_authenticate_header(self, request):
+        return 'Gateway'
     def post(self, request):
-        if not verify_api_key(request):
-            return Response({"error": "Unauthorized: Invalid or missing X-API-Key"}, status=status.HTTP_401_UNAUTHORIZED)
-        envelope, error = validate_envelope(request.data, 'PROV_CONFIRM')
-        if error:
-            return validation_error_response(request, error)
-        chip_id = envelope['payload'].get("chip_id")
-        if not chip_id:
-            return Response({"error": "chip_id is required"}, status=status.HTTP_400_BAD_REQUEST)
+        from .ingestion import authenticate_gateway
+        from .commands import command_result
+        gateway = authenticate_gateway(request.headers.get('X-Gateway-ID'), request.headers.get('X-API-Key'))
+        return Response(command_result(gateway, request.data))
 
-        req = get_object_or_404(ProvisioningRequest, chip_id=chip_id)
-        req.status = ProvisioningStatus.CONFIRMED
-        req.save()
-
-        AuditEntry.objects.create(
-            timestamp=int(time.time() * 1000),
-            actor='GATEWAY',
-            action='NODE_COMMISSIONED',
-            details=f"Chip #{chip_id} confirmed active as '{req.assigned_id}' ({req.assigned_role})"
-        )
-
-        return Response({"status": "confirmed", "chip_id": chip_id, "device_id": req.assigned_id})
-
-
-# ============================================================================
-# INDUSTRIAL INTELLIGENCE OPERATOR API
-# ============================================================================
 
 class PlatformBootstrapView(APIView):
     """Returns only the topology the current operator is permitted to see."""
@@ -845,7 +520,8 @@ class PlatformBootstrapView(APIView):
         return Response({
             'organisations': OrganisationSerializer(organisations, many=True).data,
             'sites': SiteSerializer(sites, many=True).data,
-            'capabilities': operator_capabilities(request.user),
+            'capabilities': operator_capabilities(request.user, resolve_site(request)),
+            'site_capabilities': {str(site.pk): operator_capabilities(request.user, site) for site in permitted_sites(request.user)},
         })
 
 
@@ -860,7 +536,7 @@ class SiteListCreateView(APIView):
         serializer = SiteSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
         organisation = serializer.validated_data['organisation']
-        if not permitted_sites(request.user).filter(organisation=organisation).exists() and not request.user.is_superuser:
+        if not request.user.is_superuser and not SiteMembership.objects.filter(user=request.user, organisation=organisation, organisation__active=True, site__isnull=True, active=True, role=MembershipRole.ORG_ADMIN).exists():
             return Response({'error': 'You cannot create a site for this organisation.'}, status=status.HTTP_403_FORBIDDEN)
         site = serializer.save()
         FacilityLayout.objects.get_or_create(site=site, defaults={'geometry': {'version': 1, 'features': []}})
@@ -949,21 +625,47 @@ class FacilityLayoutView(APIView):
         return get_object_or_404(permitted_sites(request.user), pk=site_id)
 
     def get(self, request, site_id):
-        layout, _ = FacilityLayout.objects.get_or_create(site=self.get_site(request, site_id), defaults={'geometry': {'version': 1, 'features': []}})
-        return Response(FacilityLayoutSerializer(layout).data)
+        site = self.get_site(request, site_id)
+        layout = FacilityLayout.objects.filter(site=site).first()
+        return Response(FacilityLayoutSerializer(layout).data if layout else {
+            'site': site.pk, 'version': 0, 'geometry': {'features': []}, 'updated_at': None})
 
+    @transaction.atomic
     def put(self, request, site_id):
         denied = require_capability(request, 'manage_sites')
         if denied:
             return denied
-        site = self.get_site(request, site_id)
-        layout, _ = FacilityLayout.objects.get_or_create(site=site)
+        site = get_object_or_404(permitted_sites(request.user).select_for_update(), pk=site_id)
+        layout = FacilityLayout.objects.filter(site=site).first()
+        version = layout.version if layout else 0
+        expected = request.data.get('expected_version')
+        if type(expected) is not int or expected != version:
+            return Response({'error': 'Layout changed. Reload before saving.', 'version': version}, status=409)
         geometry = request.data.get('geometry')
-        if not isinstance(geometry, dict):
-            return Response({'error': 'geometry must be a JSON object.'}, status=status.HTTP_400_BAD_REQUEST)
+        if not isinstance(geometry, dict) or not isinstance(geometry.get('features'), list):
+            return Response({'error': 'geometry must contain a features array.'}, status=400)
+        zone_ids = set(Zone.objects.filter(site=site, active=True).values_list('pk', flat=True))
+        feature_ids = set()
+        for feature in geometry['features']:
+            if not isinstance(feature, dict) or not isinstance(feature.get('properties', {}), dict):
+                return Response({'error': 'Each feature must be an object with object properties.'}, status=400)
+            feature_id = feature.get('id')
+            if not isinstance(feature_id, str) or not feature_id.strip() or feature_id in feature_ids:
+                return Response({'error': 'Each feature requires a unique, stable string id.'}, status=400)
+            feature_ids.add(feature_id)
+            properties = feature.get('properties', {})
+            zone_id = properties.get('zone_id')
+            if zone_id is not None and (type(zone_id) is not int or zone_id not in zone_ids):
+                return Response({'error': 'Feature zone_id must reference an active zone in this site.'}, status=400)
+            if ('zone_code' in properties or 'zone_code' in feature) and zone_id is None:
+                return Response({'error': 'Zone features require a stable properties.zone_id.'}, status=400)
+        if layout is None:
+            layout = FacilityLayout(site=site)
         layout.geometry = geometry
-        layout.version += 1
-        layout.save(update_fields=['geometry', 'version', 'updated_at'])
+        layout.version = version + 1
+        layout.save()
+        from .operations import audit
+        audit(request.user, site, 'LAYOUT_UPDATED', site, {'version': layout.version})
         return Response(FacilityLayoutSerializer(layout).data)
 
 
@@ -1039,7 +741,7 @@ class DashboardView(APIView):
         if not site:
             return Response({'site': None, 'metrics': {}, 'alerts': [], 'environment': [], 'activity': []})
         nodes = Node.objects.filter(site=site)
-        alerts = SafetyAlert.objects.filter(node__site=site).exclude(status=AlertStatus.RESOLVED)
+        alerts = SafetyAlert.objects.filter(site=site).exclude(status=AlertStatus.RESOLVED)
 
         active_alert_count = alerts.count()
         critical_alert_count = alerts.filter(severity=AlertSeverity.CRITICAL).count()
@@ -1050,15 +752,15 @@ class DashboardView(APIView):
 
         # Fast channel snapshot: order_by() clears model Meta ordering to avoid PostgreSQL scanning all 15k rows for distinct
         distinct_keys = list(
-            MeasurementReading.objects.filter(node__site=site)
+            MeasurementReading.objects.filter(site=site, source_event__locationobservation__simulated=False)
             .order_by()
-            .values_list('measurement_key', flat=True)
+            .values_list('node_id', 'measurement_key')
             .distinct()
         )
         latest_by_key = []
-        for key in distinct_keys:
+        for stream_node, key in distinct_keys:
             item = (
-                MeasurementReading.objects.filter(node__site=site, measurement_key=key)
+                MeasurementReading.objects.filter(site=site, node_id=stream_node, measurement_key=key)
                 .select_related('node')
                 .order_by('-received_at')
                 .first()
@@ -1066,22 +768,21 @@ class DashboardView(APIView):
             if item:
                 latest_by_key.append(item)
 
-        # Build realistic operational trend data
+        from django.db.models import Avg
         now = int(time.time() * 1000)
         hour_ms = 3600 * 1000
-
-        # Primary timeline points (last 12 hours)
         primary_timeline = []
-        for h in range(12, -1, -1):
-            pt_time = now - (h * hour_ms)
-            primary_timeline.append({
-                'timestamp': pt_time,
-                'label': time.strftime('%H:00', time.localtime(pt_time / 1000)),
-                'environmental_index': max(20, round(50 + (h % 3) * 8 - (h % 2) * 5, 1)),
-                'gas_ppm': max(5, round(12 + (h % 4) * 3, 1)),
-                'dust_ugm3': max(10, round(25 + (h % 5) * 4, 1)),
-                'active_alerts': max(0, (h % 3)),
-            })
+        physical = MeasurementReading.objects.filter(site=site, source_event__locationobservation__simulated=False)
+        for h in range(11, -1, -1):
+            start = now - ((h + 1) * hour_ms)
+            end = start + hour_ms
+            readings = physical.filter(received_at__gte=start, received_at__lt=end)
+            gas = readings.filter(measurement_key='co_ppm').aggregate(value=Avg('value'))['value']
+            dust = readings.filter(measurement_key='dust_ugm3').aggregate(value=Avg('value'))['value']
+            count = SafetyAlert.objects.filter(site=site, created_at__lte=end).filter(Q(resolved_at__isnull=True) | Q(resolved_at__gt=end)).count()
+            if gas is not None or dust is not None or count:
+                primary_timeline.append({'timestamp': end, 'label': '', 'gas_ppm': gas,
+                    'dust_ugm3': dust, 'active_alerts': count})
 
         # Severity breakdown
         info_count = alerts.filter(severity=AlertSeverity.INFO).count()
@@ -1111,7 +812,7 @@ class DashboardView(APIView):
                 'severity': 'WARNING',
                 'title': f'{stale_device_count} Node(s) Unreachable',
                 'message': f'Sensor heartbeats missed for {stale_device_count} nodes in {site.name}. Check gateway connectivity.',
-                'timestamp': now - 180000,
+                'timestamp': now,
                 'action_required': True,
                 'action_label': 'Inspect Devices',
                 'action_route': '/devices',
@@ -1121,8 +822,8 @@ class DashboardView(APIView):
                 'id': 'notif-critical-alarms',
                 'severity': 'CRITICAL',
                 'title': f'{critical_alert_count} Unacknowledged Critical Alarm(s)',
-                'message': 'Immediate investigation required under mine safety protocols.',
-                'timestamp': now - 60000,
+                'message': 'Immediate investigation required under site procedures.',
+                'timestamp': now,
                 'action_required': True,
                 'action_label': 'View Incidents',
                 'action_route': '/alerts',
@@ -1138,50 +839,8 @@ class DashboardView(APIView):
                 'online_devices': online_device_count,
                 'stale_or_offline_devices': stale_device_count,
             },
-            'trends': {
-                'active_alerts': {
-                    'value': active_alert_count,
-                    'previous_value': max(0, active_alert_count - 1),
-                    'delta_percent': -12.5 if active_alert_count < 3 else 15.0,
-                    'direction': 'down' if active_alert_count <= 2 else 'up',
-                    'sparkline': [4, 5, 3, 2, active_alert_count],
-                },
-                'critical_alerts': {
-                    'value': critical_alert_count,
-                    'previous_value': max(0, critical_alert_count - 1),
-                    'delta_percent': 0.0,
-                    'direction': 'flat',
-                    'sparkline': [1, 1, 0, 1, critical_alert_count],
-                },
-                'online_personnel': {
-                    'value': online_personnel_count,
-                    'previous_value': max(0, online_personnel_count - 2),
-                    'delta_percent': 4.2,
-                    'direction': 'up',
-                    'sparkline': [12, 14, 15, 17, online_personnel_count or 18],
-                },
-                'tracked_assets': {
-                    'value': tracked_asset_count,
-                    'previous_value': tracked_asset_count,
-                    'delta_percent': 0.0,
-                    'direction': 'flat',
-                    'sparkline': [tracked_asset_count, tracked_asset_count, tracked_asset_count, tracked_asset_count, tracked_asset_count],
-                },
-                'online_devices': {
-                    'value': online_device_count,
-                    'previous_value': max(0, online_device_count - 1),
-                    'delta_percent': 2.8,
-                    'direction': 'up',
-                    'sparkline': [8, 9, 10, 10, online_device_count or 10],
-                },
-                'telemetry_rate': {
-                    'value': 98.4,
-                    'previous_value': 96.1,
-                    'delta_percent': 2.4,
-                    'direction': 'up',
-                    'sparkline': [95.2, 96.0, 97.4, 98.1, 98.4],
-                },
-            },
+            'trends': {},
+            'aggregation': 'Hourly mean of non-simulated readings; alarms active at bucket end.',
             'charts': {
                 'primary_timeline': primary_timeline,
                 'severity_breakdown': severity_breakdown,
@@ -1205,17 +864,17 @@ class EnvironmentOverviewView(APIView):
         # Calling .order_by() without args clears the default Meta ordering (-received_at)
         # which allows PostgreSQL to use a distinct index scan rather than a full sort.
         distinct_keys = list(
-            MeasurementReading.objects.filter(node__site=site)
+            MeasurementReading.objects.filter(site=site, source_event__locationobservation__simulated=False)
             .order_by()
-            .values_list('measurement_key', flat=True)
+            .values_list('node_id', 'measurement_key')
             .distinct()
         )
         
         channels = []
         latest_readings = []
-        for key in distinct_keys:
+        for stream_node, key in distinct_keys:
             latest = (
-                MeasurementReading.objects.filter(node__site=site, measurement_key=key)
+                MeasurementReading.objects.filter(site=site, node_id=stream_node, measurement_key=key)
                 .select_related('node', 'capability')
                 .order_by('-received_at')
                 .first()
@@ -1223,7 +882,8 @@ class EnvironmentOverviewView(APIView):
             if latest:
                 latest_readings.append(latest)
                 channels.append({
-                    'key': key,
+                    'key': f'{latest.node_id}:{key}',
+                    'measurement_key': key,
                     'display_name': latest.capability.display_name if latest.capability else key,
                     'unit': latest.unit,
                     'latest_value': latest.value,
@@ -1245,10 +905,13 @@ class EnvironmentReadingsView(APIView):
         if not site:
             return Response({'readings': [], 'total': 0, 'page': 1, 'page_size': 25, 'total_pages': 1})
         
-        readings_qs = MeasurementReading.objects.filter(node__site=site).select_related('node', 'capability')
+        readings_qs = MeasurementReading.objects.filter(site=site).select_related('node', 'capability')
         key = request.query_params.get('key')
         if key:
-            readings_qs = readings_qs.filter(measurement_key=key)
+            if ':' not in key:
+                return Response({'error': 'Select a device-specific measurement stream.'}, status=400)
+            stream_node, measurement_key = key.split(':', 1)
+            readings_qs = readings_qs.filter(node_id=stream_node, measurement_key=measurement_key)
             
         readings_qs = readings_qs.order_by('-received_at')
         total = readings_qs.count()
@@ -1279,7 +942,7 @@ class DigitalTwinView(APIView):
         site = resolve_site(request)
         if not site:
             return Response({'site': None, 'layout': None, 'zones': [], 'entities': []})
-        layout, _ = FacilityLayout.objects.get_or_create(site=site, defaults={'geometry': {'version': 1, 'features': []}})
+        layout = FacilityLayout.objects.filter(site=site).first()
         nodes = Node.objects.filter(site=site).select_related('zone_ref', 'assigned_person', 'assigned_asset')
         entities = []
         for node in nodes:
@@ -1299,7 +962,7 @@ class DigitalTwinView(APIView):
             })
         return Response({
             'site': SiteSerializer(site).data,
-            'layout': FacilityLayoutSerializer(layout).data,
+            'layout': FacilityLayoutSerializer(layout).data if layout else {'site': site.pk, 'version': 0, 'geometry': {'features': []}, 'updated_at': None},
             'zones': ZoneSerializer(site.zones.all(), many=True).data,
             'entities': entities,
             'topology': [],
@@ -1326,11 +989,12 @@ class SearchView(APIView):
 
 
 class AlertAssignView(APIView):
+    @transaction.atomic
     def post(self, request, alert_id):
         denied = require_capability(request, 'operate_alerts')
         if denied:
             return denied
-        alert = get_object_or_404(SafetyAlert.objects.filter(node__site__in=permitted_sites(request.user)), id=alert_id)
+        alert = get_object_or_404(SafetyAlert.objects.select_for_update().filter(site__in=permitted_sites(request.user)), id=alert_id)
         if alert.status == AlertStatus.RESOLVED:
             return Response({'error': 'Resolved alerts cannot be assigned.', 'alert_id': alert_id}, status=status.HTTP_409_CONFLICT)
         notes = str(request.data.get('notes', '')).strip()
@@ -1339,7 +1003,7 @@ class AlertAssignView(APIView):
         alert.investigation_notes = notes
         alert.status = AlertStatus.INVESTIGATING
         alert.save(update_fields=['assigned_to', 'assigned_at', 'investigation_notes', 'status'])
-        AuditEntry.objects.create(timestamp=alert.assigned_at, actor=request.user.get_username(), action='ALERT_ASSIGNED', details=f'Alert #{alert.id} assigned: {notes}', site=alert.node.site)
+        AuditEntry.objects.create(timestamp=alert.assigned_at, actor=request.user.get_username(), action='ALERT_ASSIGNED', details=f'Alert #{alert.id} assigned: {notes}', site=alert.site)
         return Response({'status': 'ok', 'alert_id': alert.id})
 
 
@@ -1349,9 +1013,9 @@ class ReportSummaryView(APIView):
         if not site:
             return Response({'site': None, 'summary': {}})
         return Response({'site': SiteSerializer(site).data, 'summary': {
-            'telemetry_records': TelemetryRecord.objects.filter(node__site=site).count(),
-            'measurement_records': MeasurementReading.objects.filter(node__site=site).count(),
-            'alerts_total': SafetyAlert.objects.filter(node__site=site).count(),
+            'telemetry_records': TelemetryRecord.objects.filter(site=site).count(),
+            'measurement_records': MeasurementReading.objects.filter(site=site).count(),
+            'alerts_total': SafetyAlert.objects.filter(site=site).count(),
             'personnel_total': Personnel.objects.filter(site=site).count(),
             'assets_total': Asset.objects.filter(site=site).count(),
         }})
@@ -1364,12 +1028,16 @@ class IntegrationsView(APIView):
 
 class SiteMembershipListCreateView(APIView):
     def get(self, request):
+        denied = require_capability(request, 'manage_users')
+        if denied:
+            return denied
         site = resolve_site(request)
         if not site:
             return Response({'memberships': []})
         memberships = SiteMembership.objects.filter(organisation=site.organisation).filter(Q(site=site) | Q(site__isnull=True)).select_related('user', 'site', 'organisation')
         return Response({'memberships': SiteMembershipSerializer(memberships, many=True).data})
 
+    @transaction.atomic
     def post(self, request):
         denied = require_capability(request, 'manage_users')
         if denied:
@@ -1381,7 +1049,11 @@ class SiteMembershipListCreateView(APIView):
         role = str(request.data.get('role', MembershipRole.VIEWER))
         if not username or role not in MembershipRole.values:
             return Response({'error': 'A valid username and role are required.'}, status=status.HTTP_400_BAD_REQUEST)
-        user = get_object_or_404(get_user_model(), username=username)
+        # Serialize membership changes with the account administration endpoints.
+        user = get_object_or_404(get_user_model().objects.select_for_update(), username=username)
+        existing = SiteMembership.objects.filter(user=user, organisation=site.organisation, site=site).first()
+        if not request.user.is_superuser and (role == MembershipRole.ORG_ADMIN or (existing and existing.role == MembershipRole.ORG_ADMIN)):
+            return Response({'error': 'Organisation administrator changes require a superuser.'}, status=403)
         membership, _ = SiteMembership.objects.update_or_create(
             user=user,
             organisation=site.organisation,
@@ -1399,262 +1071,4 @@ class SiteMembershipListCreateView(APIView):
 
 
 
-class UserListCreateView(APIView):
-    def get(self, request):
-        site = resolve_site(request)
-        User = get_user_model()
-        memberships = SiteMembership.objects.select_related('user', 'site', 'organisation')
-        if site:
-            memberships = memberships.filter(Q(site=site) | (Q(organisation=site.organisation) & Q(site__isnull=True)))
-
-        search = request.query_params.get('search', '').strip()
-        role_filter = request.query_params.get('role', '').strip()
-        status_filter = request.query_params.get('status', '').strip()
-
-        users_qs = User.objects.filter(compallette_memberships__in=memberships).distinct()
-        if search:
-            users_qs = users_qs.filter(
-                Q(username__icontains=search) |
-                Q(first_name__icontains=search) |
-                Q(last_name__icontains=search) |
-                Q(email__icontains=search)
-            )
-
-        user_list = []
-        for u in users_qs.order_by('username'):
-            primary_membership = u.compallette_memberships.first()
-            user_status = 'ACTIVE' if u.is_active else 'SUSPENDED'
-            
-            # Map role
-            assigned_role = primary_membership.role if primary_membership else ('ORG_ADMIN' if u.is_staff else 'VIEWER')
-            if role_filter and assigned_role != role_filter:
-                continue
-            if status_filter and user_status != status_filter:
-                continue
-
-            person = Personnel.objects.filter(assigned_node__isnull=False).filter(display_name__icontains=u.username).first()
-            user_list.append({
-                'id': u.id,
-                'username': u.username,
-                'email': u.email or f"{u.username}@mine.internal",
-                'first_name': u.first_name,
-                'last_name': u.last_name,
-                'full_name': f"{u.first_name} {u.last_name}".strip() or u.username,
-                'role': assigned_role,
-                'status': user_status,
-                'last_active': int(u.last_login.timestamp() * 1000) if u.last_login else None,
-                'site_id': primary_membership.site_id if primary_membership else None,
-                'site_name': primary_membership.site.name if (primary_membership and primary_membership.site) else '',
-                'organisation_name': primary_membership.organisation.name if primary_membership else 'ComPallette Operations',
-                'assigned_node_id': person.assigned_node_id if person else None,
-                'assigned_personnel_id': person.identifier if person else None,
-                'capabilities': role_capabilities(assigned_role, is_staff=u.is_staff),
-            })
-
-        total = len(user_list)
-        try:
-            page = max(1, int(request.query_params.get('page', 1)))
-            page_size = max(5, min(100, int(request.query_params.get('page_size', 25))))
-        except ValueError:
-            page = 1
-            page_size = 25
-
-        start = (page - 1) * page_size
-        end = start + page_size
-        paginated = user_list[start:end]
-        total_pages = max(1, (total + page_size - 1) // page_size)
-
-        return Response({
-            'users': paginated,
-            'total': total,
-            'page': page,
-            'page_size': page_size,
-            'total_pages': total_pages,
-        })
-
-    def post(self, request):
-        denied = require_capability(request, 'manage_users')
-        if denied:
-            return denied
-        site = resolve_site(request)
-        if not site:
-            return Response({'error': 'Select a permitted site before creating a user.'}, status=status.HTTP_400_BAD_REQUEST)
-
-        username = str(request.data.get('username', '')).strip()
-        email = str(request.data.get('email', '')).strip()
-        first_name = str(request.data.get('first_name', '')).strip()
-        last_name = str(request.data.get('last_name', '')).strip()
-        role = str(request.data.get('role', MembershipRole.VIEWER))
-
-        if not username:
-            return Response({'error': 'Username is required.'}, status=status.HTTP_400_BAD_REQUEST)
-
-        User = get_user_model()
-        if User.objects.filter(username=username).exists():
-            return Response({'error': 'User with this username already exists.'}, status=status.HTTP_400_BAD_REQUEST)
-
-        with transaction.atomic():
-            user = User.objects.create(
-                username=username,
-                email=email,
-                first_name=first_name,
-                last_name=last_name,
-                is_active=True,
-            )
-            # generate temporary default credential
-            user.set_password('MineOperator2026!')
-            user.save()
-
-            SiteMembership.objects.create(
-                user=user,
-                organisation=site.organisation,
-                site=site,
-                role=role if role in MembershipRole.values else MembershipRole.VIEWER,
-                active=True,
-            )
-            AuditEntry.objects.create(
-                timestamp=int(time.time() * 1000),
-                actor=request.user.get_username(),
-                action='USER_CREATED',
-                details=f"Created operator {username} ({role}) for {site.code}",
-                site=site,
-            )
-
-        return Response({'message': f'Operator {username} successfully registered.', 'id': user.id}, status=status.HTTP_201_CREATED)
-
-
-class UserDetailView(APIView):
-    def get(self, request, user_id):
-        User = get_user_model()
-        user = get_object_or_404(User, pk=user_id)
-        membership = user.compallette_memberships.first()
-        person = Personnel.objects.filter(display_name__icontains=user.username).first()
-        role = membership.role if membership else ('ORG_ADMIN' if user.is_staff else 'VIEWER')
-
-        return Response({
-            'id': user.id,
-            'username': user.username,
-            'email': user.email or f"{user.username}@mine.internal",
-            'first_name': user.first_name,
-            'last_name': user.last_name,
-            'full_name': f"{user.first_name} {user.last_name}".strip() or user.username,
-            'role': role,
-            'status': 'ACTIVE' if user.is_active else 'SUSPENDED',
-            'last_active': int(user.last_login.timestamp() * 1000) if user.last_login else None,
-            'site_id': membership.site_id if membership else None,
-            'site_name': membership.site.name if (membership and membership.site) else '',
-            'organisation_name': membership.organisation.name if membership else 'ComPallette Operations',
-            'assigned_node_id': person.assigned_node_id if person else None,
-            'assigned_personnel_id': person.identifier if person else None,
-            'capabilities': role_capabilities(role, is_staff=user.is_staff),
-        })
-
-    def patch(self, request, user_id):
-        denied = require_capability(request, 'manage_users')
-        if denied:
-            return denied
-        User = get_user_model()
-        user = get_object_or_404(User, pk=user_id)
-
-        first_name = request.data.get('first_name')
-        last_name = request.data.get('last_name')
-        email = request.data.get('email')
-        new_status = request.data.get('status')
-        new_role = request.data.get('role')
-
-        if first_name is not None:
-            user.first_name = str(first_name).strip()
-        if last_name is not None:
-            user.last_name = str(last_name).strip()
-        if email is not None:
-            user.email = str(email).strip()
-        if new_status is not None:
-            user.is_active = (new_status == 'ACTIVE')
-
-        user.save()
-
-        if new_role and new_role in MembershipRole.values:
-            membership = user.compallette_memberships.first()
-            if membership:
-                membership.role = new_role
-                membership.save()
-
-        site = resolve_site(request)
-        AuditEntry.objects.create(
-            timestamp=int(time.time() * 1000),
-            actor=request.user.get_username(),
-            action='USER_UPDATED',
-            details=f"Updated profile/status for {user.username}",
-            site=site,
-        )
-        return self.get(request, user_id)
-
-
-class UserBulkActionView(APIView):
-    def post(self, request):
-        denied = require_capability(request, 'manage_users')
-        if denied:
-            return denied
-
-        action = request.data.get('action')
-        user_ids = request.data.get('user_ids', [])
-        if not action or not isinstance(user_ids, list) or not user_ids:
-            return Response({'error': 'action and non-empty user_ids list required.'}, status=status.HTTP_400_BAD_REQUEST)
-
-        User = get_user_model()
-        target_users = User.objects.filter(pk__in=user_ids)
-        site = resolve_site(request)
-
-        with transaction.atomic():
-            if action == 'activate':
-                count = target_users.update(is_active=True)
-            elif action == 'suspend':
-                count = target_users.update(is_active=False)
-            elif action == 'delete':
-                count = target_users.count()
-                target_users.delete()
-            elif action == 'change_role':
-                new_role = request.data.get('role')
-                if new_role not in MembershipRole.values:
-                    return Response({'error': 'Valid role required.'}, status=status.HTTP_400_BAD_REQUEST)
-                count = SiteMembership.objects.filter(user__in=target_users).update(role=new_role)
-            else:
-                return Response({'error': f'Unsupported bulk action: {action}'}, status=status.HTTP_400_BAD_REQUEST)
-
-            AuditEntry.objects.create(
-                timestamp=int(time.time() * 1000),
-                actor=request.user.get_username(),
-                action=f'BULK_{action.upper()}',
-                details=f"Applied {action} to {count} users",
-                site=site,
-            )
-
-        return Response({'message': f'Bulk action {action} applied successfully.', 'updated': count})
-
-
-class UserPasswordResetView(APIView):
-    def post(self, request, user_id):
-        denied = require_capability(request, 'manage_users')
-        if denied:
-            return denied
-        User = get_user_model()
-        user = get_object_or_404(User, pk=user_id)
-        
-        # In field/air-gapped industrial mining settings, generate a secure random one-time key
-        import secrets
-        temp_pass = f"Mine-{secrets.token_hex(4)}!"
-        user.set_password(temp_pass)
-        user.save()
-
-        site = resolve_site(request)
-        AuditEntry.objects.create(
-            timestamp=int(time.time() * 1000),
-            actor=request.user.get_username(),
-            action='PASSWORD_RESET',
-            details=f"Generated temporary credential for {user.username}",
-            site=site,
-        )
-        return Response({
-            'message': f"Password reset for {user.username}",
-            'temporary_password': temp_pass,
-        })
+from .account_views import (UserListCreateView, UserDetailView, UserBulkActionView, UserPasswordResetView)

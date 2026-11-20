@@ -46,7 +46,16 @@ from .views import (
     csrf_token_view,
 )
 
+from .platform_views import EntityDetailView, EligibleDevicesView, PresetsView
+
+from .gateway_views import GatewaysView, CommandsView
+
 urlpatterns = [
+    re_path(r'^api/v1/gateways/?$', GatewaysView.as_view()),
+    re_path(r'^api/v1/commands/?$', CommandsView.as_view()),
+    re_path(r'^api/v1/entities/(?P<kind>personnel|assets|devices)/(?P<entity_id>[^/]+)/?$', EntityDetailView.as_view()),
+    re_path(r'^api/v1/devices/eligible/?$', EligibleDevicesView.as_view()),
+    re_path(r'^api/v1/platform/presets/?$', PresetsView.as_view()),
     re_path(r'^api/v1/auth/csrf/?$', csrf_token_view, name='auth-csrf'),
     re_path(r'^api/v1/auth/session/?$', OperatorSessionView.as_view(), name='auth-session'),
     re_path(r'^api/v1/users/?$', UserListCreateView.as_view(), name='user-list-create'),

@@ -64,6 +64,11 @@ class OrganisationSerializer(serializers.ModelSerializer):
 class SiteSerializer(serializers.ModelSerializer):
     organisation_name = serializers.CharField(source='organisation.name', read_only=True)
 
+    def validate(self, attrs):
+        if self.instance and attrs.get('organisation', self.instance.organisation) != self.instance.organisation:
+            raise serializers.ValidationError('Site organisation cannot be changed.')
+        return attrs
+
     class Meta:
         model = Site
         fields = ['id', 'organisation', 'organisation_name', 'name', 'code', 'industry', 'timezone', 'active']
@@ -83,6 +88,15 @@ class LevelSerializer(serializers.ModelSerializer):
 
 class ZoneSerializer(serializers.ModelSerializer):
     level_name = serializers.CharField(source='level.name', read_only=True)
+
+    def validate(self, attrs):
+        site = attrs.get('site', getattr(self.instance, 'site', None))
+        level = attrs.get('level', getattr(self.instance, 'level', None))
+        if self.instance and site != self.instance.site:
+            raise serializers.ValidationError('Zone site cannot be changed.')
+        if level and level.structure.site_id != site.pk:
+            raise serializers.ValidationError('Level and zone must belong to the same site.')
+        return attrs
 
     class Meta:
         model = Zone
@@ -104,6 +118,7 @@ class PersonnelSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = Personnel
+        read_only_fields = ['assigned_node']
         fields = ['id', 'organisation', 'site', 'identifier', 'display_name', 'team', 'employment_status', 'assigned_node', 'node_id', 'current_zone', 'location_evidence', 'location_observed_at', 'node_status']
 
 
@@ -116,6 +131,7 @@ class AssetSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = Asset
+        read_only_fields = ['assigned_node']
         fields = ['id', 'organisation', 'site', 'identifier', 'name', 'asset_type', 'operational_status', 'assigned_node', 'node_id', 'current_zone', 'location_evidence', 'location_observed_at', 'node_status']
 
 
