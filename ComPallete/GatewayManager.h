@@ -13,6 +13,7 @@
 
 #include "Protocol.h"
 #include "OfflineBuffer.h"
+#include "MqttUplink.h"
 
 // ============================================================================
 // COMPALLETTE - GATEWAY BRIDGE & UPLINK MANAGER
@@ -86,6 +87,8 @@ private:
 
   GatewayState m_state;
   OfflineBuffer m_buffer;
+  MqttUplink m_mqtt;
+  bool m_useMqtt = false;
 
   uint32_t m_lastStateCheckMs;
   uint32_t m_lastTransmitMs;

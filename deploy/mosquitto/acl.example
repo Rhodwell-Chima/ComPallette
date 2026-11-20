@@ -1,0 +1,12 @@
+# Each gateway username MUST equal its registered node ID.
+# Provision password entries using mosquitto_passwd; never allow anonymous access.
+pattern write compallette/v1/gateways/%u/events
+pattern write compallette/v1/gateways/%u/results
+pattern read compallette/v1/gateways/%u/receipts
+pattern read compallette/v1/gateways/%u/commands
+
+user compallette-ingestion
+topic read compallette/v1/gateways/+/events
+topic read compallette/v1/gateways/+/results
+topic write compallette/v1/gateways/+/receipts
+topic write compallette/v1/gateways/+/commands

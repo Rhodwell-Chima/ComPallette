@@ -22,7 +22,8 @@ enum MessageType {
   MSG_ACK,
   MSG_PROV_REQ,
   MSG_PROV_ASSIGN,
-  MSG_PROV_CONFIRM
+  MSG_PROV_CONFIRM,
+  MSG_COMMAND_RESULT
 };
 
 enum AlertSeverity {

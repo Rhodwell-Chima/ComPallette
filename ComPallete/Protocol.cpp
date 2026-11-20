@@ -14,12 +14,14 @@ const char* messageTypeToString(MessageType type) {
     case MSG_PROV_REQ:     return "PROV_REQ";
     case MSG_PROV_ASSIGN:  return "PROV_ASSIGN";
     case MSG_PROV_CONFIRM: return "PROV_CONFIRM";
+    case MSG_COMMAND_RESULT: return "COMMAND_RESULT";
     default:               return "UNKNOWN";
   }
 }
 
 MessageType stringToMessageType(const char* str) {
   if (!str) return MSG_UNKNOWN;
+  if (strcmp(str, "COMMAND_RESULT") == 0) return MSG_COMMAND_RESULT;
   if (strcmp(str, "TELEMETRY") == 0)    return MSG_TELEMETRY;
   if (strcmp(str, "ALERT") == 0)        return MSG_ALERT;
   if (strcmp(str, "HEARTBEAT") == 0)    return MSG_HEARTBEAT;
@@ -314,6 +316,7 @@ bool deserializePacket(
       outHb.battery_v        = payload["batt"] | 0.0f;
       return true;
 
+    case MSG_COMMAND_RESULT:
     case MSG_PROV_REQ:
     case MSG_PROV_ASSIGN:
     case MSG_PROV_CONFIRM:

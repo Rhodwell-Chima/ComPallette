@@ -61,6 +61,8 @@ bool GatewayManager::begin(
 
   // Initialize offline buffer (mounts LittleFS or falls back to RAM)
   m_buffer.begin(BUFFER_MAX_RAM_ITEMS, BUFFER_MAX_FLASH_ITEMS);
+  m_useMqtt = m_backendUrl.startsWith("mqtts://");
+  if (m_useMqtt && !m_mqtt.begin(m_backendUrl, m_deviceId, m_apiKey)) return false;
 
 #if ENABLE_WEBSOCKET_UPLINK
   // Register WebSocket event handler
@@ -224,6 +226,10 @@ void GatewayManager::update() {
     }
   }
 
+  if (m_useMqtt) {
+    m_mqtt.update(m_buffer, m_downlinkCb);
+    return;
+  }
   // 3. Process & Flush Queued Packets
   if (m_state == GW_STATE_CONNECTED && !m_buffer.isEmpty()) {
 #if ENABLE_WEBSOCKET_UPLINK
@@ -425,7 +431,14 @@ bool GatewayManager::forwardPacket(const BufferedItem& item) {
   http.addHeader("X-Gateway-ID", m_deviceId);
   http.addHeader("X-Packet-Priority", item.isPriority ? "HIGH" : "NORMAL");
 
-  int httpCode = http.POST(item.rawJson);
+  String body = item.rawJson;
+  if (item.type == MSG_COMMAND_RESULT) {
+    StaticJsonDocument<2048> packet;
+    if (deserializeJson(packet, body)) { http.end(); return false; }
+    body = "";
+    serializeJson(packet["payload"], body);
+  }
+  int httpCode = http.POST(body);
 
   if (httpCode >= 200 && httpCode < 300) {
     Serial.printf("[GW FORWARD SUCCESS] Flushed %s packet to %s (HTTP %d | Remaining: %u)\n",

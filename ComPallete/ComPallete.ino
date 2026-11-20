@@ -1,3 +1,4 @@
+#include "CommandHandler.h"
 #include "painlessMesh.h"
 #include <ArduinoJson.h>
 #include <esp_system.h>
@@ -172,6 +173,7 @@ int calculateHopDistance(uint32_t targetNodeId) {
 }
 
 void receivedCallback(uint32_t from, String &msg) {
+  if (handlePlatformCommand(msg, [](const String& response) { mesh.sendBroadcast(response); })) return;
   MessageEnvelope env;
   TelemetryData telem;
   AlertData alert;
@@ -203,50 +205,7 @@ void receivedCallback(uint32_t from, String &msg) {
 
   // Handle Option 1: Downlink Provisioning Assignment from Gateway
   if (env.msg_type == MSG_PROV_ASSIGN) {
-    ProvisioningAssignData assign;
-    if (deserializeProvAssign(msg, assign)) {
-      if (strcmp(assign.target_chip, nodeConfigManager.getChipId()) == 0) {
-        Serial.println("\n==============================================================");
-        Serial.printf("[PROV] OTA Mesh Assignment Received for Chip #%s!\n", assign.target_chip);
-        Serial.printf("  |-- Assigned ID  : %s\n", assign.assigned_id);
-        Serial.printf("  |-- Target Role  : %s\n", assign.role);
-        Serial.printf("  |-- Target Zone  : %s\n", assign.zone_id);
-        Serial.println("==============================================================");
-
-        NodeRole r = stringToNodeRole(assign.role);
-
-        nodeConfigManager.setAssignment(assign.assigned_id, r, assign.zone_id, assign.co_warn, assign.co_crit);
-
-        // Stop captive portal since node is now successfully provisioned
-        captivePortal.stop();
-
-        // Transmit confirmation back across mesh
-        MessageEnvelope confEnv;
-        confEnv.version = PROTOCOL_VERSION;
-        confEnv.msg_type = MSG_PROV_CONFIRM;
-        confEnv.seq = nodeConfigManager.nextSequence();
-        if (confEnv.seq == 0) return;
-        strncpy(confEnv.sender_id, assign.assigned_id, sizeof(confEnv.sender_id) - 1);
-        strncpy(confEnv.role, assign.role, sizeof(confEnv.role) - 1);
-        strncpy(confEnv.zone_id, assign.zone_id, sizeof(confEnv.zone_id) - 1);
-        confEnv.uptime_ms = millis();
-
-        ProvisioningConfirmData conf;
-        strncpy(conf.chip_id, assign.target_chip, sizeof(conf.chip_id) - 1);
-        strncpy(conf.status, "SUCCESS_COMMISSIONED", sizeof(conf.status) - 1);
-
-        String confPkt;
-        if (serializeProvConfirm(confEnv, conf, confPkt)) {
-          mesh.sendBroadcast(confPkt);
-        }
-
-        if (assign.reboot_now) {
-          Serial.println("[PROV] Rebooting node in 1 second to enter production mode...");
-          delay(1000);
-          ESP.restart();
-        }
-      }
-    }
+    Serial.println("[PROV] Legacy uncorrelated assignment rejected; use platform commands.");
     return;
   }
 
@@ -873,6 +832,11 @@ void setup() {
                          nodeConfigManager.getUplinkPassword());
 
       gatewayManager.setDownlinkCallback([](const String& downlinkMsg) {
+        StaticJsonDocument<2048> command;
+        if (!deserializeJson(command, downlinkMsg) && String(command["hardware_id"] | "") == nodeConfigManager.getChipId()) {
+          handlePlatformCommand(downlinkMsg, [](const String& response) { gatewayManager.handleIncomingMeshPacket(0, response); });
+          return;
+        }
         Serial.println("\n**************************************************************");
         Serial.println("[DOWNLINK BROADCAST] Re-broadcasting surface command to mesh!");
         Serial.printf("   |-- Payload: %s\n", downlinkMsg.c_str());

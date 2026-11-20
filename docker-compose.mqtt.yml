@@ -1,0 +1,39 @@
+# Explicit opt-in deployment overlay; local secrets/certificates must exist first.
+services:
+  mqtt:
+    image: eclipse-mosquitto:2
+    restart: unless-stopped
+    ports:
+      - "8883:8883"
+    volumes:
+      - ./deploy/mosquitto/mosquitto.conf:/mosquitto/config/mosquitto.conf:ro
+      - ${MQTT_SECRETS_DIR:?Configure MQTT_SECRETS_DIR}/passwords:/mosquitto/config/passwords:ro
+      - ${MQTT_SECRETS_DIR}/acl:/mosquitto/config/acl:ro
+      - ${MQTT_SECRETS_DIR}/certs:/mosquitto/certs:ro
+      - mqtt_data:/mosquitto/data
+  mqtt-worker:
+    build: ./backend/django
+    restart: unless-stopped
+    command: ["python", "manage.py", "run_mqtt"]
+    environment:
+      SECRET_KEY: ${SECRET_KEY}
+      COMPALLETTE_API_KEY: ${COMPALLETTE_API_KEY}
+      DB_HOST: db
+      DB_NAME: ${POSTGRES_DB}
+      DB_USER: ${POSTGRES_USER}
+      DB_PASSWORD: ${POSTGRES_PASSWORD}
+      MQTT_HOST: mqtt
+      MQTT_PORT: "8883"
+      MQTT_USERNAME: compallette-ingestion
+      MQTT_PASSWORD_FILE: /run/secrets/mqtt-worker-password
+      MQTT_CA_FILE: /run/secrets/ca.crt
+    volumes:
+      - ${MQTT_SECRETS_DIR}/worker-password:/run/secrets/mqtt-worker-password:ro
+      - ${MQTT_SECRETS_DIR}/certs/ca.crt:/run/secrets/ca.crt:ro
+    depends_on:
+      db:
+        condition: service_healthy
+      mqtt:
+        condition: service_started
+volumes:
+  mqtt_data:

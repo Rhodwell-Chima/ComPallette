@@ -273,7 +273,7 @@ void OfflineBuffer::loadFromFlash() {
     AlertData alert{};
     HeartbeatData heartbeat{};
     bool legacy = false;
-    if (typeInt <= MSG_UNKNOWN || typeInt > MSG_PROV_CONFIRM ||
+    if (typeInt <= MSG_UNKNOWN || typeInt > MSG_COMMAND_RESULT ||
         !deserializePacket(rawJson, env, telem, alert, heartbeat, legacy) ||
         env.msg_type != (MessageType)typeInt) {
       ++m_totalDropped;
