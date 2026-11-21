@@ -1,6 +1,22 @@
-# COMPALLETTE | Underground Mining Safety Platform
+# ComPallette | Zone Tracking and Environmental Monitoring
 
-IoT-based subterranean safety monitoring system designed for underground mines (with primary calibration for Zambian copperbelt mining conditions). Integrates ESP32 wireless mesh networks (`MineMesh_Zambia`), multi-hazard detection (CO, falls, microclimate), automated emergency alarming, subterranean spatial digital twins, and modular backends for high-throughput edge telemetry ingestion.
+ComPallette is an on-site platform for zone-level tracking and environmental monitoring where GPS is unavailable. Mining is the first deployment context; the platform uses organisations, sites, zones, personnel, assets, devices and gateways. Local sensing, alarms and operation are designed to continue without internet access.
+
+The supported stack is ESP32 mesh firmware, a local Mosquitto MQTT/TLS broker, a dedicated Django ingestion/command worker, PostgreSQL, and a React operator interface. Automatic radio-based zone detection remains disabled pending its separate trial. Configured installation zones, manual overrides and simulated observations are not confirmed mobile presence.
+
+## Current status and release gates
+
+The coordinated API integration repair is implemented: operator bootstrap uses contract version 2, firmware envelopes retain `ver: 1` with an installation UUID, gateways use individual credentials, and target-device commands require signed confirmations. Provisioning and diagnostics are the supported remote commands. See [API integration, local provisioning and verification](docs/api-integration-repair.md) for the installation sequence and compatibility changes.
+
+Recorded isolated verification on 21 November 2026:
+
+- 55 Django tests, 35 frontend tests and five credential-tool tests passed; the frontend production build passed.
+- ESP32 and ESP32-S3 firmware compiled with Espressif core 3.3.12 and `huge_app` partitions.
+- A 30-minute MQTT heartbeat load persisted 180,000 events from 100 simulated devices with zero missing receipts; replay, restart recovery, ACL, revocation and simulated signed-command checks passed. Full sensor-telemetry throughput remains unmeasured.
+- Rendered UI checks remain **unverified**: the isolated fixture responds with HTTP 200, but browser tooling is blocked by its URL policy. Responsive layouts, themes, keyboard navigation and zoom/reflow have not passed rendered verification.
+- Physical gateway/mesh verification, backup restoration and fresh-install cutover remain **unverified**. No spare hardware is available; physical checks require the agreed maintenance window.
+
+These results do not establish deployment readiness. Retain the existing database for rollback, verify restoration, and use a separate clean database only after release gates pass. Do not remove the shared PostgreSQL volume or experimental backend data. The optional mining preset must be explicitly selected and must not seed operational records or enable inference.
 
 ---
 
@@ -13,13 +29,13 @@ IoT-based subterranean safety monitoring system designed for underground mines (
    - [SoftAP Captive Portal Commissioning](#softap-captive-portal-commissioning)
    - [Interactive Serial Monitor CLI](#interactive-serial-monitor-cli)
 3. [Backend Setup](#backend-setup)
-   - [Full Stack via Docker Compose](#1-full-stack-via-docker-compose)
-   - [High-Performance Rust (Rocket) Backend via Docker](#2-high-performance-rust-rocket-backend)
+   - [Local Stack via Docker Compose](#1-production-shaped-local-stack-via-docker-compose)
+   - [Experimental Rust Backend](#2-experimental-rust-backend)
    - [Local Native Django Setup](#3-local-native-django-setup)
    - [Local Native Rust Rocket Setup](#4-local-native-rust-rocket-setup)
 4. [Frontend Setup (React Industrial Cockpit)](#frontend-setup-react-industrial-cockpit)
 5. [Testing, Simulation & Benchmarking](#testing-simulation--benchmarking)
-6. [Wire-Protocol API Contract (v1)](#wire-protocol-api-contract-v1)
+6. [API and Firmware Integration Contract](#api-and-firmware-integration-contract)
 7. [RSSI Feasibility Trial](#rssi-feasibility-trial)
 
 ---
@@ -28,22 +44,24 @@ IoT-based subterranean safety monitoring system designed for underground mines (
 
 ```
 ComPallete/
-├── ComPallete/                 # ESP32 Firmware Sketch (Arduino IDE / PlatformIO)
+├── ComPallete/                 # ESP32 Firmware Sketch (Arduino IDE / Arduino CLI)
 │   ├── ComPallete.ino         # Main entrypoint with dual-mode dispatch & Serial CLI
 │   ├── Config.h               # Network parameters, thresholds, roles, pinouts
 │   ├── Protocol.h / .cpp      # Wire-protocol v1 envelopes, seq numbers, legacy codec
 │   ├── NodeConfigManager.h/.cpp # NVS persistent storage & runtime dynamic commissioning
 │   ├── CaptivePortalManager.h/.cpp # Isolated SoftAP & mobile setup web server
 │   ├── GatewayManager.h / .cpp# Wi-Fi STA uplink, exponential backoff, HTTP dispatch
+│   ├── MqttUplink.h / .cpp    # MQTT/TLS transport and persistence receipts
+│   ├── DeviceTrust.h / .cpp   # Local enrollment, signed time and command validation
 │   ├── SensorHAL.h / .cpp     # Resilient Hardware Abstraction (MQ-7, MPU6050, ADC)
-│   └── OfflineBuffer.h / .cpp # Priority queue preemption (alerts first), LittleFS flash buffer
+│   └── OfflineBuffer.h / .cpp # LittleFS queue retained until database persistence receipt
 │
-├── backend/                    # Multi-Backend Implementations (Benchmarking & Parity)
+├── backend/                    # Supported Django API and experimental comparison backend
 │   ├── django/                # Production API: Django REST Framework / PostgreSQL
 │   └── rocket/                # Experimental comparison implementation (not deployed by Compose)
 │
 ├── frontend/                   # Multi-Frontend Implementations
-│   └── react/                 # React 18 / TypeScript / Vite / Canvas 2.5D Mine Twin
+│   └── react/                 # React 18 / TypeScript / Vite operator interface
 │
 ├── server/                     # Legacy standalone prototype (not a production fallback)
 ├── tests/                      # Automated unit tests & wire-contract verification
@@ -98,7 +116,7 @@ For **Freenove ESP32-WROOM / WROVER**:
 - **Upload Speed**: `921600` (or `115200` if connection is noisy)
 - **Flash Frequency**: `80MHz`
 - **Flash Size**: `4MB (32Mb)`
-- **Partition Scheme**: `Huge APP (3MB No OTA/1MB SPIFFS)` or `Default 4MB with spiffs`
+- **Partition Scheme**: `Huge APP (3MB No OTA/1MB SPIFFS)` (verified compile target; confirm physical filesystem layout before flashing)
 - **Core Debug Level**: `None` (or `Info` for verbose diagnostics)
 
 For **Freenove ESP32-S3**:
@@ -117,7 +135,7 @@ For **Freenove ESP32-S3**:
 
 ### SoftAP Captive Portal Commissioning
 
-When a node is uncommissioned (fresh flash or factory reset), it automatically isolates the Wi-Fi radio into a **Dedicated SoftAP Captive Portal** (painlessMesh is paused to guarantee 100% reliable AP association).
+When a node lacks saved mesh configuration (fresh installation or factory reset), it automatically isolates the Wi-Fi radio into a **Dedicated SoftAP Captive Portal** (painlessMesh is paused during local setup).
 
 ```
 +--------------------------------------------------------------+
@@ -162,7 +180,7 @@ For MQTT, use the operator diagnostic command and require a target-device confir
 
 ### Interactive Serial Monitor CLI
 
-The firmware includes a full-featured, non-blocking serial command-line interface running at **115200 baud**. You can control and inspect the node without physical access to the device:
+The firmware includes a full-featured, non-blocking serial command-line interface running at **115200 baud**. You can control and inspect the node through a local serial connection:
 
 | Command | Action |
 |---|---|
@@ -170,12 +188,13 @@ The firmware includes a full-featured, non-blocking serial command-line interfac
 | `status` | Prints live telemetry (CO ppm, IMU acceleration vector, battery voltage/percentage, zone evidence status, heap, uptime, mesh peers) |
 | `setup` | Forces node into SoftAP Captive Portal commissioning mode and restarts |
 | `portal` or `credentials` | Prints the active SoftAP SSID and temporary setup password to the physical serial console only |
-| `mesh` | Exits setup mode, marks node as commissioned, and boots into Production Mesh |
+| `mesh` | Saves mesh configuration and restarts; does not bypass authenticated commissioning |
 | `scan` | Scans the I2C bus (detecting MPU6050 address `0x68`). Wi-Fi spectrum scans are intentionally disabled because they disrupt the live mesh radio. |
 | `role <0\|1\|2>` | Changes operational role (`0`: Wearable, `1`: Anchor, `2`: Gateway) and persists to NVS |
 | `id <name>` | Updates node device ID (e.g., `id MINER-109`) and commits to NVS |
 | `zone [name\|auto]` | Displays current zone; for Wearables: `zone <name>` sets test override, `zone auto` clears the override; radio inference remains disabled. For Anchors/Gateways: sets fixed zone in NVS |
-| `reset` | Performs factory reset (wipes NVS credentials) and restarts into setup portal |
+| `reset` | Resets NVS configuration and restarts into setup; protected LittleFS enrollment files require separate maintenance |
+| `buffer-archive <installation UUID>` | Archives the old queue at an approved cutover; export it afterward and follow the provisioning runbook |
 | `reboot` | Performs a clean software restart of the ESP32 |
 
 ---
@@ -184,7 +203,7 @@ The firmware includes a full-featured, non-blocking serial command-line interfac
 
 The Gateway uses painlessMesh `1.5.7` as the sole owner of the ESP32 station interface. It initializes the mesh with the explicit TCP port and commissioned channel, then uses `stationManual()` for the surface router. Do not add a separate `WiFi.begin()` loop to the Gateway transport manager.
 
-The Gateway's 2.4 GHz router and every commissioned mesh node must use the same channel. The default is channel `6`; configure the `Innov_Hub` 2.4 GHz radio to a fixed channel `6`, or commission every node with the router's fixed channel before deployment. `Innov_Hub` may continue to offer its 5 GHz radio, including on a different channel, under the same SSID and password: ESP32-WROOM and ESP32-S3 join the separate 2.4 GHz BSSID only. The Gateway logs its configured mesh channel and the router's actual channel after association. A mismatch is an operational configuration fault that can cause peer disconnects.
+The Gateway's 2.4 GHz router and every configured mesh node must use the same fixed channel. The firmware default is channel `11` (`ComPallete/Config.h`); align the router and node configuration before deployment. ESP32-WROOM and ESP32-S3 use the router's 2.4 GHz network. The Gateway logs its configured mesh channel and the router's actual channel after association. A mismatch can cause peer disconnects.
 
 Each boot logs an ESP reset-reason code, and production-mesh startup logs the node ID, TCP port, and radio channel. The Gateway also logs router association, DHCP completion, and disconnect reason. These lines distinguish a real MCU reboot from mesh peer changes or a Wi-Fi association retry.
 
@@ -198,6 +217,13 @@ Starts PostgreSQL, the Django API, a separate watchdog worker, and the React das
 cp .env.example .env
 docker compose up --build
 ```
+The base file starts the web stack only. For MQTT ingestion, first provision the protected key directory, broker accounts, ACLs and TLS certificates using the [local provisioning runbook](docs/api-integration-repair.md), then include the explicit overlay:
+
+```bash
+docker compose -f docker-compose.yml -f docker-compose.mqtt.yml up -d --build
+```
+Run one dedicated MQTT worker, separate from web-server processes. Gateways retain buffered events until Django acknowledges database persistence.
+
 - **Cockpit Dashboard**: `http://localhost:3000`
 - **Django REST API**: `http://localhost:8000`
 - **PostgreSQL Database**: `localhost:5432`
@@ -212,12 +238,12 @@ A container restart does **not** rebuild the React static bundle. Every frontend
 
 ```powershell
 $env:COMPALLETTE_BUILD_REVISION = (git rev-parse --short HEAD)
-docker compose up -d --build --force-recreate backend frontend watchdog
+docker compose -f docker-compose.yml -f docker-compose.mqtt.yml up -d --build --force-recreate backend frontend watchdog mqtt-worker
 docker compose exec backend python manage.py check_deployment_readiness
 curl.exe http://localhost:3000/health/
 ```
 
-`check_deployment_readiness` fails until the database is migrated, at least one active staff operator exists, and a non-development build revision is supplied when `DEBUG=0`. The dashboard header shows `UI <revision> · API <revision>`; the revisions must match. `http://localhost:3000` is the browser entry point and proxies dashboard API calls to Django. Port `8000` remains the Gateway/device ingestion and backend diagnostic endpoint, not the dashboard origin.
+`check_deployment_readiness` fails until the database is migrated, an installation UUID and mounted enrollment directory are configured, an explicit active administrator exists, and a non-development build revision is supplied when `DEBUG=0`. The dashboard header shows `UI <revision> · API <revision>`; the revisions must match. `http://localhost:3000` is the browser entry point and proxies dashboard API calls to Django. Port `8000` remains the explicitly selected HTTP recovery and backend diagnostic endpoint, not the dashboard origin.
 
 ### 2. Experimental Rust Backend
 The Rocket implementation is retained for comparison only. It is not part of the supported production Compose topology and has not been shown to match the Django security, validation, and delivery contract.
@@ -252,10 +278,10 @@ pip install -r requirements.txt
 # 4. Apply database migrations
 python manage.py migrate
 
-# 4. (Optional) Create an administrative superuser
+# 5. (Optional) Create an administrative superuser
 python manage.py createsuperuser
 
-# 5. Start the development server
+# 6. Start the development server
 python manage.py runserver 0.0.0.0:8000
 ```
 Run node status monitoring separately during local development with `python manage.py run_watchdog`.
@@ -287,7 +313,7 @@ cargo run --release
 
 ## Frontend Setup (React Industrial Cockpit)
 
-The dashboard is built with React 18, TypeScript, Vite, and an interactive HTML5 Canvas 2.5D Mine Digital Twin.
+The dashboard uses React 18, TypeScript and Vite. It provides zone maps and device, personnel, asset, incident and environmental workflows.
 
 ```bash
 cd frontend/react
@@ -295,32 +321,35 @@ cd frontend/react
 # 1. Install dependencies
 npm install
 
-# 2. Configure environment (optional, defaults to http://localhost:8000)
-# Create .env.local:
-# VITE_API_BASE_URL=http://localhost:8000
+# 2. Start Django on 127.0.0.1:8000.
+# Vite proxies /api and /health to Django from the same browser origin.
 
 # 3. Start development server
 npm run dev
 ```
-Open `http://localhost:5173` (or `http://localhost:3000` in Docker) to view real-time miner tags, alert incidents, and environmental gauges.
+Open `http://localhost:3000` for either Vite or Docker (run one on that port at a time). Sign in with an operator account that has access to the intended site. Maps represent zone membership, not precise coordinates.
 
 ---
 
 ## Testing, Simulation & Benchmarking
 
 ### 1. Subterranean Mesh Traffic Simulator
-Simulate 10+ underground wearable miner nodes and stationary anchors streaming packets to the backend:
+The legacy simulator can generate offline example packets. Its shared-key forwarding path is not compatible with the supported Django ingestion contract; do not use it to verify the current integration:
 ```bash
-python tools/simulate_mesh.py --forward-to http://127.0.0.1:8000
+python tools/simulate_mesh.py
 ```
 
 ### 2. Automated Wire API Contract Verification
-Verify that your backend (Django or Rocket) strictly complies with the v1 API wire specification:
+The opt-in HTTP recovery checks require an isolated Django installation, an activated gateway and a commissioned test device. Set `COMPALLETTE_CONTRACT_TEST=isolated`, `COMPALLETTE_GATEWAY_ID`, `COMPALLETTE_INSTALLATION_ID`, `COMPALLETTE_TEST_NODE` and `COMPALLETTE_GATEWAY_KEY_FILE` before running; otherwise the suite skips:
 ```bash
 python tests/test_api_contract.py --url http://127.0.0.1:8000
 ```
 
-### 3. Isolated integration and load verification
+### 3. Frontend checks
+
+From `frontend/react`, run `npm test` and `npm run build`. For isolated rendered checks, run `npm run verify:ui` and open `http://127.0.0.1:3100/tests/browser-fixture.html`. The fixture uses synthetic data; do not exercise operational mutations in the live operator session.
+
+### 4. Isolated integration and load verification
 
 The supported Django stack uses registered gateways, commissioned test devices and an installation UUID. The old shared-key benchmark setup is retired. Use `python tools/benchmark_load.py --help` for the explicitly selected HTTP recovery transport, or the MQTT verification harness described in [API integration and local provisioning](docs/api-integration-repair.md). Never run synthetic ingestion against an operational installation. Rocket remains experimental and has a different contract.
 
