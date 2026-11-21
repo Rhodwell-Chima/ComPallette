@@ -3,6 +3,8 @@ import { useQuery } from '@tanstack/react-query';
 import { useOperatorSession } from '../components/AuthGate';
 import { platformApi } from '../services/api';
 import { Site } from '../types';
+import { ErrorState, LoadingState } from './ui';
+import { API_CONTRACT_VERSION } from '../services/api';
 
 interface PlatformContextValue {
   sites: Site[];
@@ -54,6 +56,9 @@ export function PlatformProvider({ children }: { children: ReactNode }) {
     isLoading: bootstrap.isLoading,
   }), [bootstrap.data, bootstrap.isLoading, selectedSiteId, session.capabilities, sites, theme]);
 
+  if (bootstrap.isLoading) return <LoadingState label="Checking platform compatibility…" />;
+  if (bootstrap.isError) return <ErrorState message="Platform configuration could not be loaded." retry={() => void bootstrap.refetch()} />;
+  if (bootstrap.data?.contract_version !== API_CONTRACT_VERSION) return <ErrorState message={`Incompatible backend contract. This frontend requires contract ${API_CONTRACT_VERSION}; deploy matching frontend and backend releases.`} retry={() => void bootstrap.refetch()} />;
   return <PlatformContext.Provider value={value}>{children}</PlatformContext.Provider>;
 }
 

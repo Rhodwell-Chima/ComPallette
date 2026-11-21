@@ -1,8 +1,8 @@
+import { GatewaysResponse, GatewayMutationResult, CommandMutationResult } from './platformContracts';
 import {
   AlertItem,
   AuditItem,
   NodeItem,
-  ProvisioningRequest,
   SystemSummary,
   TelemetryItem,
   AssetItem,
@@ -24,14 +24,17 @@ import {
 } from '../types';
 
 const API_BASE = '';
+export const API_CONTRACT_VERSION = 2;
 
-export type ApiErrorKind = 'authentication' | 'validation' | 'unavailable' | 'server';
+export type ApiErrorKind = 'authentication' | 'forbidden' | 'conflict' | 'retired' | 'validation' | 'unavailable' | 'server';
 
 export class ApiError extends Error {
   constructor(
     message: string,
     public readonly status: number,
     public readonly kind: ApiErrorKind,
+    public readonly code?: string,
+    public readonly details?: unknown,
   ) {
     super(message);
     this.name = 'ApiError';
@@ -74,7 +77,10 @@ function csrfToken(): string {
 }
 
 function errorKind(status: number): ApiErrorKind {
-  if (status === 401 || status === 403) return 'authentication';
+  if (status === 401) return 'authentication';
+  if (status === 403) return 'forbidden';
+  if (status === 409) return 'conflict';
+  if (status === 410) return 'retired';
   if (status >= 400 && status < 500) return 'validation';
   return 'server';
 }
@@ -114,7 +120,8 @@ export async function request(path: string, init: RequestInit = {}, options: Req
   if (kind === 'authentication' && options.notifyAuthenticationFailure !== false) {
     authenticationFailureHandler?.();
   }
-  throw new ApiError(await responseMessage(response), response.status, kind);
+  const payload = await response.clone().json().catch(() => ({}));
+  throw new ApiError(await responseMessage(response), response.status, kind, payload.error_code, payload.details ?? payload);
 }
 
 function jsonRequest(method: string, body?: unknown): RequestInit {
@@ -189,10 +196,10 @@ export const platformApi = {
   entityAction: (kind: string, id: string, input: Record<string, unknown>) => json<Record<string, unknown>>(`/api/v1/entities/${kind}/${encodeURIComponent(id)}`, jsonRequest('POST', input)),
   transferPreview: (kind: string, id: string, destination: number) => json<{ assignment_ids: number[]; custody_ids: number[] }>(`/api/v1/entities/${kind}/${encodeURIComponent(id)}?preview_destination=${destination}`),
   eligibleDevices: (site: number, q = '') => json<{ nodes: NodeItem[] }>(`/api/v1/devices/eligible${siteQuery(site, { q })}`),
-  gateways: (site: number) => json<{ gateways: any[]; discoveries: any[]; commands: any[] }>(`/api/v1/gateways${siteQuery(site)}`),
-  gatewayAction: (input: Record<string, unknown>) => json<Record<string, any>>('/api/v1/gateways', jsonRequest('POST', input)),
-  command: (input: Record<string, unknown>) => json<{ command_id: string; state: string }>('/api/v1/commands', jsonRequest('POST', input)),
-  bootstrap: () => json<{ organisations: Organisation[]; sites: Site[]; capabilities: string[]; site_capabilities?: Record<string, string[]> }>('/api/v1/platform/bootstrap'),
+  gateways: (site: number) => json<GatewaysResponse>(`/api/v1/gateways${siteQuery(site)}`),
+  gatewayAction: (input: Record<string, unknown>) => json<GatewayMutationResult>('/api/v1/gateways', jsonRequest('POST', input)),
+  command: (input: Record<string, unknown>) => json<CommandMutationResult>('/api/v1/commands', jsonRequest('POST', input)),
+  bootstrap: () => json<{ contract_version: number; build_revision: string; organisations: Organisation[]; sites: Site[]; capabilities: string[]; site_capabilities?: Record<string, string[]> }>('/api/v1/platform/bootstrap'),
   dashboard: (siteId?: number, params: { start_date?: string; end_date?: string; range?: string } = {}) =>
     json<EnhancedDashboardData>(`/api/v1/dashboard${siteQuery(siteId, params)}`),
   sites: () => json<{ sites: Site[] }>('/api/v1/sites'),
@@ -295,25 +302,4 @@ export async function resolveAlert(alertId: number, officerName: string, notes: 
     officer_name: officerName,
     notes,
   }));
-}
-
-export async function fetchPendingProvisioning(): Promise<ProvisioningRequest[]> {
-  const data = await (await request('/api/v1/provision/pending')).json();
-  return data.pending_nodes || [];
-}
-
-export async function assignNodeProvisioning(
-  chipId: string,
-  deviceId: string,
-  role: string,
-  zoneId: string,
-  officerName: string = 'Safety_Officer',
-): Promise<unknown> {
-  return (await request('/api/v1/provision/assign', jsonRequest('POST', {
-    chip_id: chipId,
-    device_id: deviceId,
-    role,
-    zone_id: zoneId,
-    officer_name: officerName,
-  }))).json();
 }

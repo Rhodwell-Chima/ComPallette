@@ -363,7 +363,7 @@ function AccessContent() {
 
   // Bulk actions mutation
   const bulkMutation = useMutation({
-    mutationFn: (action: 'activate' | 'suspend' | 'delete') =>
+    mutationFn: (action: 'activate' | 'suspend') =>
       platformApi.bulkUserAction(action, selectedIds, selectedSiteId),
     onSuccess: () => {
       setSelectedIds([]);
@@ -677,18 +677,7 @@ function AccessContent() {
               >
                 <UserMinus size={13} /> Suspend
               </button>
-              <button
-                type="button"
-                className="button ghost danger"
-                style={{ padding: '4px 8px', fontSize: '0.72rem', color: 'var(--danger)' }}
-                onClick={() => {
-                  if (window.confirm(`Are you sure you want to delete ${selectedIds.length} operator(s)? This cannot be undone.`)) {
-                    bulkMutation.mutate('delete');
-                  }
-                }}
-              >
-                <Trash2 size={13} /> Delete
-              </button>
+
             </div>
           )}
         </div>

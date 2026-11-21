@@ -21,7 +21,7 @@ window.fetch = async (input, init) => {
   if (scenario === 'offline' && !path.includes('/auth/') && !path.includes('/bootstrap')) throw new TypeError('Simulated disconnected backend');
   if (path === '/api/v1/auth/csrf') return response({});
   if (path === '/api/v1/auth/session') { if (init?.method === 'DELETE') signedIn = false; if (init?.method === 'POST') signedIn = true; return response({ authenticated: signedIn, username: 'TEST-OPERATOR', is_staff: true, capabilities, sites }); }
-  if (path === '/api/v1/platform/bootstrap') return response({ sites, organisations: [], capabilities, site_capabilities: { 1: capabilities, 2: capabilities } });
+  if (path === '/api/v1/platform/bootstrap') return response({ contract_version: 2, build_revision: 'ISOLATED FIXTURE', sites, organisations: [], capabilities, site_capabilities: { 1: capabilities, 2: capabilities } });
   if (path === '/health/') return response({ status: 'healthy', build_revision: 'ISOLATED FIXTURE' });
   if (path === '/api/v1/alerts') { const status = url.searchParams.get('status'); return response({ alerts: alerts.filter(a => !status || a.status === status), count: alerts.length }); }
   const mutation = path.match(/^\/api\/v1\/alerts\/(\d+)\/(ack|assign|resolve)$/);
@@ -46,7 +46,7 @@ window.fetch = async (input, init) => {
   const entityMatch = path.match(/^\/api\/v1\/entities\/(personnel|assets|devices)\/([^/]+)$/);
   if (entityMatch) return response({ id: entityMatch[2], site: 1, organisation: 1, identifier: 'TEST-001', display_name: 'Isolated test person', version: 1, archived: false, location_evidence: 'UNKNOWN', current_assignments: [], current_custody: [], assignment_history: [], custody_history: [], location_observations: [], device_alerts: [], measurements: [], audit: [] });
   if (path === '/api/v1/devices/eligible') return response({ nodes: [{ node_id: 'TEST-DEVICE-1' }] });
-  if (path === '/api/v1/gateways') return response({ gateways: [], discoveries: [], commands: [] });
+  if (path === '/api/v1/gateways') return response({ gateways: [], discoveries: [], commands: [], devices: [] });
   if (path === '/api/v1/personnel') return response({ personnel: [], count: 0 });
   if (path === '/api/v1/assets') return response({ assets: [], count: 0 });
   if (path === '/api/v1/users') return response({ users: [], total: 0, total_pages: 1, page: 1, page_size: 25 });
