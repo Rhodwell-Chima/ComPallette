@@ -85,3 +85,9 @@ Machine-readable reports are in `docs/verification/`. The load result measures h
 The opt-in `verify_mqtt_integration` management command and `tools/mqtt_recovery_probe.py` / `tools/mqtt_command_probe.py` refuse databases other than `compallette_mqtt_verification`. Their fixed credentials are isolated fixture values, never deployment credentials. The HTTP contract test now requires explicit isolated-installation environment variables; it was not exercised against a live HTTP server in this continuation.
 
 **Not verified:** responsive/browser journeys and screenshots. Computer Use stopped because browser URL-policy enforcement is unsupported for the available Windows browser; no further UI input was attempted. Physical gateway/mesh TLS, clock synchronization, flash durability, buffer capacity, provisioning, alarm continuity and filesystem cutover remain unverified. There is no spare hardware; these require the agreed maintenance window. Backup restoration and fresh-install cutover have not been performed. Deployment remains gated on those checks.
+
+### Browser retry, 21 November 2026
+
+After publishing the integration changes, the isolated Vite fixture at `http://127.0.0.1:3100/tests/browser-fixture.html` returned HTTP 200 from a local HTTP check. The in-app browser still held the earlier connection-timeout error page. Reconnecting to that tab was rejected by the Browser Use URL policy because the browser-generated error page uses a `data:` URL. No policy bypass or operational Firefox interaction was attempted.
+
+This establishes fixture-server availability only. No rendered application flow, screenshot, viewport, theme, keyboard or zoom/reflow check passed in this retry. Resume those checks when the supported browser can access the isolated fixture; retain the hardware and cutover gates above.
