@@ -1,11 +1,7 @@
-"""
-Shared Wire-Protocol API Contract Test Suite
-============================================
-This test suite can be run against ANY backend (Django, Rust Rocket, Go, Node)
-to verify 100% adherence to the Compallette v1 Ingestion Contract.
-
-Usage:
-    python tests/test_api_contract.py --url http://127.0.0.1:8000
+"""Opt-in HTTP recovery contract checks against an isolated Django installation.
+Requires COMPALLETTE_CONTRACT_TEST=isolated, COMPALLETTE_GATEWAY_ID,
+COMPALLETTE_INSTALLATION_ID, COMPALLETTE_TEST_NODE and COMPALLETTE_GATEWAY_KEY_FILE.
+The test node must already be commissioned in the gateway's site.
 """
 
 import argparse
@@ -17,7 +13,11 @@ import urllib.error
 
 import os
 
-API_KEY = os.environ.get("COMPALLETTE_API_KEY", "")
+from pathlib import Path
+API_KEY = ""
+GATEWAY_ID = os.environ.get("COMPALLETTE_GATEWAY_ID", "")
+INSTALLATION_ID = os.environ.get("COMPALLETTE_INSTALLATION_ID", "")
+TEST_NODE = os.environ.get("COMPALLETTE_TEST_NODE", "")
 
 
 class BackendContractTestSuite(unittest.TestCase):
@@ -25,8 +25,11 @@ class BackendContractTestSuite(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls):
-        if not API_KEY:
-            raise unittest.SkipTest("Set COMPALLETTE_API_KEY to the configured gateway key")
+        global API_KEY
+        key_file = os.environ.get("COMPALLETTE_GATEWAY_KEY_FILE")
+        if os.environ.get("COMPALLETTE_CONTRACT_TEST") != "isolated" or not all([GATEWAY_ID, INSTALLATION_ID, TEST_NODE, key_file]):
+            raise unittest.SkipTest("Explicit isolated installation and commissioned gateway/node fixtures are required")
+        API_KEY = Path(key_file).read_text(encoding="utf-8").strip()
         try:
             req = urllib.request.Request(f"{cls.base_url}/health")
             with urllib.request.urlopen(req, timeout=0.8):
@@ -64,10 +67,11 @@ class BackendContractTestSuite(unittest.TestCase):
 
     def test_03_telemetry_ingest_contract(self):
         envelope = {
+            "installation_id": INSTALLATION_ID,
             "ver": 1,
             "type": "TELEMETRY",
             "seq": 901,
-            "sender": "MINER-CONTRACT-01",
+            "sender": TEST_NODE,
             "role": "WEARABLE",
             "zone": "LEVEL-250-SOUTH",
             "uptime": 12000,
@@ -81,14 +85,16 @@ class BackendContractTestSuite(unittest.TestCase):
                 "ok": True
             }
         }
-        status, data = self._request("POST", "/api/v1/telemetry", body=envelope, headers={"X-API-Key": API_KEY})
+        status, data = self._request("POST", "/api/v1/telemetry", body=envelope, headers={"X-API-Key": API_KEY, "X-Gateway-ID": GATEWAY_ID})
         self.assertEqual(status, 200)
         self.assertEqual(data.get("status"), "ok")
-        self.assertEqual(data.get("node_id"), "MINER-CONTRACT-01")
+        self.assertEqual(data.get("node_id"), TEST_NODE)
+        self.assertFalse(data.get("quarantined", False))
+        self.assertEqual(data.get("installation_id"), INSTALLATION_ID)
 
     def test_04_operator_dashboard_requires_session(self):
         status, data = self._request("GET", "/api/v1/system/summary")
-        self.assertEqual(status, 403)
+        self.assertEqual(status, 401)
         self.assertIn("detail", data)
 
 

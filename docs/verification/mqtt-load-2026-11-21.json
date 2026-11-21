@@ -1,0 +1,12 @@
+{
+  "duration_seconds": 1800,
+  "elapsed_seconds": 1806.82,
+  "devices": 100,
+  "events_sent": 180000,
+  "events_persisted": 180000,
+  "missing_receipts": 0,
+  "replay_receipts": 100,
+  "forbidden_publish_persisted": false,
+  "foreign_receipt_received": false,
+  "passed": true
+}

@@ -1,0 +1,10 @@
+{
+  "signed_time": true,
+  "signed_provisioning": true,
+  "gateway_receipt_did_not_commission": true,
+  "device_confirmation_commissioned": true,
+  "duplicate_confirmation_audit_count": 1,
+  "late_diagnostic_state": "EXPIRED",
+  "passed": true,
+  "physical_hardware_verified": false
+}

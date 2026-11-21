@@ -144,19 +144,19 @@ When a node is uncommissioned (fresh flash or factory reset), it automatically i
    - **Operational Role**:
      - `Wearable Miner Tag`: Emits periodic telemetry, battery, and fall detection.
      - `Stationary Anchor`: Serves as tunnel location reference and mesh router.
-     - `Gateway Bridge`: Connects to surface Wi-Fi and bridges mesh packets to the REST API backend. Configure the same 32–63 character API key as `COMPALLETTE_API_KEY` in the backend environment.
+     - `Gateway Bridge`: Connects the mesh to the on-site MQTT/TLS broker. Install its individual credential through protected local files as described in the provisioning runbook.
    - **Assigned Badge ID**: e.g., `MINER-106`, `ANCHOR-LVL2-Z01`, `GW-SURFACE-01`.
    - **Subterranean Zone**:
      - For **Stationary Anchors & Gateways**: Physical tunnel drift/stope where the node is bolted/mounted (e.g., `LEVEL-2-NORTH-DRIFT`, `LEVEL-3-ACTIVE-STOPE`).
-     - For **Wearable Miner Tags**: Handled automatically via **Option 1 Dynamic Proximity Tracking**. Mobile miner tags continuously listen for nearby stationary anchor beacons and dynamically adopt the zone of the nearest anchor as miners roam through underground tunnels.
-   - **Mesh SSID & Channel**: Default `MineMesh_Zambia` on Channel `6`. The Gateway's surface router must use the same 2.4 GHz channel. ESP32 mesh AP and Wi-Fi station mode share one radio channel.
-5. **Save & Commission**:
-   - Click **Save & Commission Node**.
-   - Configuration is committed to NVS flash, and the node automatically reboots into **Production Mesh Mode**.
+     - For **Wearable Miner Tags**: Reported as unknown until supported evidence exists. Automatic radio-based zone inference is disabled pending the separate trial.
+   - **Mesh SSID & Channel**: Default `MineMesh_Zambia` on Channel `11`. The Gateway's surface router must use the same 2.4 GHz channel. ESP32 mesh AP and Wi-Fi station mode share one radio channel.
+5. **Save network settings**:
+   - Configuration is committed atomically to NVS and the device reboots into the mesh.
+   - Tracking devices remain in enrollment until an authenticated operator commissioning command succeeds. Gateway activation requires protected local credentials.
 
 #### Gateway ingestion check
 
-After commissioning a Gateway, run `testpost` at 115200 baud. A successful result is an HTTP `2xx` response followed by `GW DIRECT TEST SUCCESS`. HTTP `401` or `403` means that the device reached Django but its saved Gateway API key is absent or differs from `COMPALLETTE_API_KEY` in the backend deployment. Re-enter the exact protected deployment key in the captive portal's **Gateway API Key** field, save, allow the Gateway to restart, and run `testpost` again. Do not add the key to source code or paste it into serial logs.
+For MQTT, use the operator diagnostic command and require a target-device confirmation. `testpost` is available only when HTTP recovery is explicitly selected; success requires a matching database persistence receipt. A 401/403 response requires checking gateway registration, activation and its protected local credential bundle. Gateway secrets are not accepted through the captive portal.
 
 ---
 
@@ -167,14 +167,14 @@ The firmware includes a full-featured, non-blocking serial command-line interfac
 | Command | Action |
 |---|---|
 | `help` or `?` | Displays all available CLI commands and usage instructions |
-| `status` | Prints live telemetry (CO ppm, IMU acceleration vector, battery voltage/percentage, dynamic subterranean zone, nearest anchor, heap, uptime, mesh peers) |
+| `status` | Prints live telemetry (CO ppm, IMU acceleration vector, battery voltage/percentage, zone evidence status, heap, uptime, mesh peers) |
 | `setup` | Forces node into SoftAP Captive Portal commissioning mode and restarts |
 | `portal` or `credentials` | Prints the active SoftAP SSID and temporary setup password to the physical serial console only |
 | `mesh` | Exits setup mode, marks node as commissioned, and boots into Production Mesh |
 | `scan` | Scans the I2C bus (detecting MPU6050 address `0x68`). Wi-Fi spectrum scans are intentionally disabled because they disrupt the live mesh radio. |
 | `role <0\|1\|2>` | Changes operational role (`0`: Wearable, `1`: Anchor, `2`: Gateway) and persists to NVS |
 | `id <name>` | Updates node device ID (e.g., `id MINER-109`) and commits to NVS |
-| `zone [name\|auto]` | Displays current zone; for Wearables: `zone <name>` sets test override, `zone auto` resumes dynamic anchor tracking. For Anchors/Gateways: sets fixed zone in NVS |
+| `zone [name\|auto]` | Displays current zone; for Wearables: `zone <name>` sets test override, `zone auto` clears the override; radio inference remains disabled. For Anchors/Gateways: sets fixed zone in NVS |
 | `reset` | Performs factory reset (wipes NVS credentials) and restarts into setup portal |
 | `reboot` | Performs a clean software restart of the ESP32 |
 
@@ -204,7 +204,7 @@ docker compose up --build
 
 ---
 
-The React dashboard requires a Django staff account. Create one with `docker compose exec backend python manage.py createsuperuser`, then sign in through the dashboard. This is an interactive, one-time bootstrap action; ComPallette never creates a default operator account or stores an operator password in source control. Device ingestion uses the shared `COMPALLETTE_API_KEY` from `.env`; configure that same value in each Gateway's protected setup portal. Credentials are currently shared across Gateways and the embedded HTTP client does not yet establish TLS. Use this Compose setup only on a trusted development network; production deployment still needs HTTPS termination and a per-device credential/rotation policy.
+The React dashboard requires an authenticated operator with explicit site membership. Create the initial administrator interactively with `python manage.py createsuperuser` in the intended fresh database; no default credentials are seeded. Django staff status alone grants no site access. Gateways use per-gateway credentials and MQTT/TLS; follow [the local provisioning runbook](docs/api-integration-repair.md).
 
 ### Deploying dashboard changes and verifying readiness
 
@@ -242,11 +242,13 @@ source venv/bin/activate
 pip install -r requirements.txt
 
 # 3. Configure required settings in the shell before running.
-# SECRET_KEY and COMPALLETTE_API_KEY must each be unique values of at least 32 characters.
+# SECRET_KEY must be a unique value of at least 32 characters.
+# Configure an installation UUID and protected local device-key directory before ingestion.
 # DB_HOST absent selects SQLite for development.
 # PowerShell example (use generated values, not these placeholders):
 # $env:SECRET_KEY = '<generated-secret>'
-# $env:COMPALLETTE_API_KEY = '<generated-device-key>'
+# $env:COMPALLETTE_INSTALLATION_ID = '<installation-uuid>'
+# $env:COMPALLETTE_DEVICE_KEY_DIR = '<protected-key-directory>'
 # 4. Apply database migrations
 python manage.py migrate
 
@@ -318,35 +320,36 @@ Verify that your backend (Django or Rocket) strictly complies with the v1 API wi
 python tests/test_api_contract.py --url http://127.0.0.1:8000
 ```
 
-### 3. High-Load Benchmarking (Django vs. Rocket)
-Stress-test ingestion throughput and measure p50/p95/p99 latency under simulated emergency storms:
-```bash
-# Benchmark Django API
-python tools/benchmark_load.py --url http://127.0.0.1:8000 --requests 1000 --concurrency 20
+### 3. Isolated integration and load verification
 
-# Benchmark Rocket API
-python tools/benchmark_load.py --url http://127.0.0.1:8001 --requests 1000 --concurrency 20
-```
+The supported Django stack uses registered gateways, commissioned test devices and an installation UUID. The old shared-key benchmark setup is retired. Use `python tools/benchmark_load.py --help` for the explicitly selected HTTP recovery transport, or the MQTT verification harness described in [API integration and local provisioning](docs/api-integration-repair.md). Never run synthetic ingestion against an operational installation. Rocket remains experimental and has a different contract.
 
 ---
 
-## Wire-Protocol API Contract (v1)
+## API and firmware integration contract
 
-| Method | Endpoint | Description | Auth Required |
+Operator bootstrap advertises **contract version 2**. Firmware event envelopes retain `ver: 1` and now require the current `installation_id`. This is a coordinated frontend/backend/firmware release.
+
+| Method | Endpoint | Description | Authentication |
 |---|---|---|---|
-| `GET` | `/health` | Service health, engine identification, and deployed build revision | No |
-| `POST` | `/api/v1/telemetry` | Time-series miner telemetry ingestion | `X-API-Key` |
-| `POST` | `/api/v1/alert` | High-priority safety hazard ingestion | `X-API-Key` |
-| `POST` | `/api/v1/heartbeat` | Background mesh node keep-alive | `X-API-Key` |
-| `GET` | `/api/v1/system/summary` | Real-time KPI counters | Operator Session |
-| `GET` | `/api/v1/provision/pending` | Pending device assignments | Staff Operator Session |
-| `POST` | `/api/v1/provision/assign` | Assign device identity and zone | Staff Operator Session + CSRF |
-| `POST` | `/api/v1/alerts/{id}/ack` | Safety officer incident acknowledgement | Staff Operator Session + CSRF |
-| `POST` | `/api/v1/alerts/{id}/resolve` | Incident resolution & root-cause logging | Staff Operator Session + CSRF |
-| `POST` | `/api/v1/provision/request` | Gateway forwards uncommissioned node request | `X-API-Key` |
-| `POST` | `/api/v1/provision/confirm` | Gateway confirms commissioning | `X-API-Key` |
+| `GET` | `/health/` | Backend connectivity, contract and build revision | None |
+| `GET` | `/api/v1/platform/bootstrap` | Permitted sites and capabilities | Operator session |
+| `POST` | `/api/v1/telemetry` | Device measurements | Registered `X-Gateway-ID` and per-gateway `X-API-Key` |
+| `POST` | `/api/v1/alert` | Incident ingestion | Registered gateway headers |
+| `POST` | `/api/v1/heartbeat` | Device keep-alive | Registered gateway headers |
+| `GET` | `/api/v1/system/summary` | Operational aggregates | Operator session and site permission |
+| `GET` | `/api/v1/gateways?site={id}` | Gateways, discoveries and command progress | Site `manage_devices` capability |
+| `POST` | `/api/v1/gateways` | Register, rotate or revoke application access | Site capability, CSRF, operation UUID; credential version for changes |
+| `POST` | `/api/v1/commands` | Queue provisioning or diagnostics | Site capability, CSRF, operation UUID and expected version |
+| `POST` | `/api/v1/provision/assign` | Retired immediate provisioning route | Returns HTTP 410 |
+| `POST` | `/api/v1/provision/request` | Forward discovery and signed time challenge | Registered gateway headers |
+| `POST` | `/api/v1/provision/confirm` | Gateway receipt or signed target-device result | Registered gateway headers; target results require device HMAC |
+| `POST` | `/api/v1/alerts/{id}/ack` | Acknowledge an incident | Operator session, target-site permission and CSRF |
+| `POST` | `/api/v1/alerts/{id}/resolve` | Resolve with operator-authored notes | Operator session, target-site permission and CSRF |
 
-Operator sessions are established at `POST /api/v1/auth/session`; first request `GET /api/v1/auth/csrf` to obtain the CSRF cookie. Dashboard reads and operator workflows require a signed-in session. Provision assignment and alert lifecycle actions record the authenticated username rather than trusting an officer name in the request body. Node ingestion and provisioning gateway routes require the configured device API key.
+Obtain a CSRF cookie at `GET /api/v1/auth/csrf` before signing in through `POST /api/v1/auth/session`. Missing authentication returns 401; insufficient permission returns 403 and does not log the operator out. Django staff status alone grants no site permission. The supported ingestion paths do not accept a global shared-key fallback.
+
+MQTT/TLS is the primary gateway transport. HTTP is explicitly selected recovery transport; legacy WebSocket ingestion is disabled. See the [local installation sequence and verification evidence](docs/api-integration-repair.md) before upgrading or resetting an installation.
 
 ## RSSI Feasibility Trial
 

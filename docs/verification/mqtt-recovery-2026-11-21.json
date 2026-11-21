@@ -1,0 +1,7 @@
+{
+  "phase": "verify",
+  "persisted": 10,
+  "receipts": 10,
+  "duplicate_receipts": 10,
+  "passed": true
+}

@@ -69,3 +69,8 @@ Remaining work before release:
 - Reconcile remaining prototype workstation/site settings with implemented behavior; finish full responsive/keyboard/zoom verification and all entity journeys.
 - Broader custody/transfer concurrency and restart/fault-injection coverage, remaining supported-board firmware builds, and real hardware gates.
 - Verified backup restoration, separate clean database bootstrap and cutover only after release gates pass. No reset or cutover has occurred.
+
+
+## Continuation checkpoint — 21 November 2026
+
+The API integration repair, coordinated installation contract and current verification evidence are recorded in [API integration and local provisioning](api-integration-repair.md). That report supersedes the earlier verification status above. Real broker load/recovery/command tests now pass; rendered browser and physical-hardware checks remain unavailable. No deployment, reset, flashing or cutover was performed.

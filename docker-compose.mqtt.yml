@@ -17,7 +17,9 @@ services:
     command: ["python", "manage.py", "run_mqtt"]
     environment:
       SECRET_KEY: ${SECRET_KEY}
-      COMPALLETTE_API_KEY: ${COMPALLETTE_API_KEY}
+      COMPALLETTE_INSTALLATION_ID: ${COMPALLETTE_INSTALLATION_ID:?Set a unique installation UUID}
+      COMPALLETTE_DEVICE_KEY_DIR: /run/device-keys
+      COMPALLETTE_BUILD_REVISION: ${COMPALLETTE_BUILD_REVISION:-development}
       DB_HOST: db
       DB_NAME: ${POSTGRES_DB}
       DB_USER: ${POSTGRES_USER}
@@ -28,6 +30,7 @@ services:
       MQTT_PASSWORD_FILE: /run/secrets/mqtt-worker-password
       MQTT_CA_FILE: /run/secrets/ca.crt
     volumes:
+      - ${COMPALLETTE_DEVICE_KEY_DIR:?Set protected device key directory}:/run/device-keys:ro
       - ${MQTT_SECRETS_DIR}/worker-password:/run/secrets/mqtt-worker-password:ro
       - ${MQTT_SECRETS_DIR}/certs/ca.crt:/run/secrets/ca.crt:ro
     depends_on:

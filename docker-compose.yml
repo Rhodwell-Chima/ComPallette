@@ -42,9 +42,12 @@ services:
       - DB_PASSWORD=${POSTGRES_PASSWORD}
       - DB_HOST=db
       - DB_PORT=5432
-      - COMPALLETTE_API_KEY=${COMPALLETTE_API_KEY:?Set COMPALLETTE_API_KEY in .env}
+      - COMPALLETTE_INSTALLATION_ID=${COMPALLETTE_INSTALLATION_ID:?Set a unique installation UUID}
+      - COMPALLETTE_DEVICE_KEY_DIR=/run/device-keys
       - COMPALLETTE_BUILD_REVISION=${COMPALLETTE_BUILD_REVISION:-development}
       - CORS_ALLOW_ALL=0
+    volumes:
+      - ${COMPALLETTE_DEVICE_KEY_DIR:?Set protected device key directory}:/run/device-keys:ro
     depends_on:
       db:
         condition: service_healthy
@@ -92,9 +95,12 @@ services:
       - DB_PASSWORD=${POSTGRES_PASSWORD}
       - DB_HOST=db
       - DB_PORT=5432
-      - COMPALLETTE_API_KEY=${COMPALLETTE_API_KEY:?Set COMPALLETTE_API_KEY in .env}
+      - COMPALLETTE_INSTALLATION_ID=${COMPALLETTE_INSTALLATION_ID:?Set a unique installation UUID}
+      - COMPALLETTE_DEVICE_KEY_DIR=/run/device-keys
       - COMPALLETTE_BUILD_REVISION=${COMPALLETTE_BUILD_REVISION:-development}
       - COMPALLETTE_WATCHDOG_INTERVAL=5
+    volumes:
+      - ${COMPALLETTE_DEVICE_KEY_DIR:?Set protected device key directory}:/run/device-keys:ro
     depends_on:
       backend:
         condition: service_healthy
