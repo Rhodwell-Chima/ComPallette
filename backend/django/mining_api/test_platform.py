@@ -1,5 +1,6 @@
 import uuid
-from django.test import TestCase
+from django.test import TestCase, override_settings
+from django.conf import settings
 from django.contrib.auth import get_user_model
 from django.contrib.auth.hashers import make_password
 from django.db import IntegrityError, transaction
@@ -10,6 +11,7 @@ from .operations import mutate, Conflict
 from .ingestion import ingest
 
 
+@override_settings(COMPALLETTE_INSTALLATION_ID='00000000-0000-4000-8000-000000000001')
 class PlatformIntegrityTests(TestCase):
     def setUp(self):
         self.org = Organisation.objects.create(name='Isolated test', slug='isolated-test')
@@ -23,14 +25,14 @@ class PlatformIntegrityTests(TestCase):
         self.person = Personnel.objects.create(organisation=self.org, site=self.a, identifier='P1', display_name='Person')
         self.asset = Asset.objects.create(organisation=self.org, site=self.a, identifier='A1', name='Equipment')
         gateway_node = Node.objects.create(node_id='GW-01', role='GATEWAY', organisation=self.org, site=self.a, commissioned=True)
-        self.gateway = GatewayRegistration.objects.create(node=gateway_node, site=self.a, credential_hash=make_password('test-key'))
+        self.gateway = GatewayRegistration.objects.create(credentials_installed=True, node=gateway_node, site=self.a, credential_hash=make_password('test-key'))
         self.client = APIClient(); self.client.force_authenticate(self.operator)
 
     def operation(self, action, **kwargs):
         return {'operation_id': str(uuid.uuid4()), 'action': action, 'expected_version': 1, **kwargs}
 
     def event(self, seq=1):
-        return {'ver': 1, 'type': 'HEARTBEAT', 'seq': seq, 'sender': self.node.pk,
+        return {'installation_id': settings.COMPALLETTE_INSTALLATION_ID, 'ver': 1, 'type': 'HEARTBEAT', 'seq': seq, 'sender': self.node.pk,
                 'role': 'WEARABLE', 'zone': 'UNASSIGNED', 'uptime': 10, 'payload': {'heap': 1024, 'batt': 3.7}}
 
     def test_capabilities_cannot_leak_between_sites(self):
@@ -134,7 +136,7 @@ class PlatformIntegrityTests(TestCase):
 
     def test_gateway_id_cannot_contain_topic_wildcards(self):
         self.client.force_authenticate(self.admin)
-        response = self.client.post('/api/v1/gateways', {'site': self.a.pk, 'node_id': 'bad/+#', 'hardware_id': 'HW1'}, format='json')
+        response = self.client.post('/api/v1/gateways', {'operation_id': str(uuid.uuid4()), 'site': self.a.pk, 'node_id': 'bad/+#', 'hardware_id': 'HW1'}, format='json')
         self.assertEqual(response.status_code, 400)
         self.assertFalse(Node.objects.filter(pk='bad/+#').exists())
 

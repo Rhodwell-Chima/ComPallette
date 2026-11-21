@@ -6,14 +6,14 @@ from django.shortcuts import get_object_or_404
 from rest_framework.exceptions import AuthenticationFailed, PermissionDenied, ValidationError
 from .models import (GatewayRegistration, DeviceDiscovery, Node, IngestedEvent,
     DeviceAssignment, LocationObservation, TelemetryRecord, MeasurementReading,
-    DeviceCapability, SafetyAlert, AuditEntry, Zone)
+    DeviceCapability, SafetyAlert, AuditEntry, Zone, QuarantinedEvent)
 from .wire_validation import (validate_envelope, validate_payload, TelemetryPayloadSerializer,
                              HeartbeatPayloadSerializer, AlertPayloadSerializer, ProvisionPayloadSerializer)
 
 
 def authenticate_gateway(gateway_id, key):
     gateway = GatewayRegistration.objects.select_related('site__organisation', 'node').filter(
-        node_id=gateway_id, active=True, site__active=True, site__organisation__active=True,
+        node_id=gateway_id, active=True, credentials_installed=True, site__active=True, site__organisation__active=True,
         node__archived=False).first()
     if not gateway or not check_password(key or '', gateway.credential_hash):
         raise AuthenticationFailed('Invalid gateway credentials.')
@@ -22,7 +22,11 @@ def authenticate_gateway(gateway_id, key):
 
 @transaction.atomic
 def ingest(gateway, data):
-    kind = data.get('type') if isinstance(data, dict) else None
+    from .installation import verify_installation
+    if not isinstance(data, dict):
+        raise ValidationError('Event must be an object.')
+    deployment = verify_installation(data)
+    kind = data.get('type')
     serializers = {'TELEMETRY': TelemetryPayloadSerializer, 'HEARTBEAT': HeartbeatPayloadSerializer,
                    'ALERT': AlertPayloadSerializer, 'PROV_REQ': ProvisionPayloadSerializer}
     if kind not in serializers:
@@ -34,24 +38,32 @@ def ingest(gateway, data):
     if error:
         raise ValidationError({**error, 'error_code': 'VALIDATION_ERROR'})
     # Recheck revocation under lock, including long-lived MQTT sessions.
-    gateway = GatewayRegistration.objects.select_for_update().select_related('site').get(pk=gateway.pk)
-    if not gateway.active or not gateway.site.active or not gateway.site.organisation.active:
+    gateway = GatewayRegistration.objects.select_for_update(of=('self',)).select_related('site__organisation').get(pk=gateway.pk)
+    if not gateway.active or not gateway.credentials_installed or not gateway.site.active or not gateway.site.organisation.active:
         raise PermissionDenied('Gateway has been revoked.')
     sender, seq = envelope['sender'], envelope['seq']
-    receipt = {'status': 'ok', 'node_id': sender, 'seq': seq, 'event_type': kind, 'deduplicated': False}
+    receipt = {'status': 'ok', 'node_id': sender, 'seq': seq, 'event_type': kind, 'deduplicated': False, 'installation_id': deployment}
     node = Node.objects.select_for_update().filter(pk=sender).first()
     if kind == 'PROV_REQ' or node is None:
         hardware = payload.get('chip_id') or payload.get('chip_mac') or sender
-        DeviceDiscovery.objects.update_or_create(gateway=gateway, hardware_id=hardware,
-            defaults={'sender_id': sender, 'payload': data})
-        return {**receipt, 'recorded': False, 'discovered': True}
+        from .device_trust import clock_reply
+        control = clock_reply(gateway, hardware, payload['clock_request']) if payload.get('clock_request') else None
+        discovery, created = DeviceDiscovery.objects.get_or_create(gateway=gateway, hardware_id=hardware, defaults={'sender_id': sender, 'payload': data})
+        if not created and (control or not discovery.payload.get('payload', {}).get('clock_request')):
+            discovery.sender_id = sender
+            discovery.payload = data
+            discovery.save(update_fields=['sender_id', 'payload', 'last_seen'])
+        if control:
+            receipt['control'] = control
+        quarantined, created = QuarantinedEvent.objects.get_or_create(gateway=gateway, installation_id=deployment, sender_id=sender, event_type=kind, sequence=seq, defaults={'site': gateway.site, 'payload': data})
+        return {**receipt, 'recorded': False, 'discovered': True, 'quarantined': True, 'quarantine_id': quarantined.pk, 'deduplicated': not created}
     if node.site_id != gateway.site_id or node.organisation_id != gateway.site.organisation_id:
         raise PermissionDenied('Sender is not registered in this gateway site.')
     if node.archived or not node.commissioned:
         raise PermissionDenied('Sender is not commissioned and active.')
     if envelope['role'] != node.role:
         raise ValidationError('Reported role differs from registered role.')
-    existing = IngestedEvent.objects.filter(node=node, event_type=kind, sequence=seq).first()
+    existing = IngestedEvent.objects.filter(node=node, event_type=kind, sequence=seq).only('pk').first()
     if existing:
         if kind == 'ALERT':
             receipt['alert_id'] = SafetyAlert.objects.get(source_event=existing).pk
@@ -61,7 +73,7 @@ def ingest(gateway, data):
         event_type=kind, sequence=seq, payload=data, assignment_at_receipt=assignment)
     now = int(time.time() * 1000)
     zone_code = envelope['zone']
-    zone = Zone.objects.filter(site=gateway.site, code=zone_code, active=True).first()
+    zone = Zone.objects.filter(site=gateway.site, code=zone_code, active=True).first() if zone_code != 'UNASSIGNED' else None
     simulated = bool(payload.get('sim', payload.get('is_simulated', node.is_simulated)))
     LocationObservation.objects.create(node=node, site=gateway.site, event=event,
         zone=zone, reported_zone=zone_code, simulated=simulated,
@@ -109,5 +121,11 @@ def ingest(gateway, data):
         node.zone_ref = None
         node.location_evidence = 'UNKNOWN'
         node.location_observed_at = 0
-        node.save()
+        changed = ['last_seq', 'last_seen_ts', 'status', 'current_zone', 'zone_ref',
+                   'location_evidence', 'location_observed_at']
+        if kind == 'TELEMETRY':
+            changed += ['latest_co', 'latest_temp', 'latest_hum', 'battery_v', 'sensor_ok', 'is_simulated']
+        elif kind == 'HEARTBEAT':
+            changed += ['battery_v', 'free_heap']
+        node.save(update_fields=changed)
     return {**receipt, 'recorded': True, 'event_id': event.pk}

@@ -112,8 +112,9 @@ DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
 
 # Django REST Framework Configuration
 REST_FRAMEWORK = {
+    'EXCEPTION_HANDLER': 'mining_api.api_contract.api_exception_handler',
     'DEFAULT_AUTHENTICATION_CLASSES': [
-        'rest_framework.authentication.SessionAuthentication',
+        'mining_api.api_contract.OperatorSessionAuthentication',
     ],
     'DEFAULT_PERMISSION_CLASSES': [
         'rest_framework.permissions.IsAuthenticated',
@@ -148,11 +149,9 @@ CORS_ALLOW_HEADERS = [
 ]
 
 # Compallette Mining Safety Thresholds & API Security
+# Deprecated legacy setting; no supported ingestion route authenticates with it.
 COMPALLETTE_API_KEY = os.getenv('COMPALLETTE_API_KEY', '')
-if not COMPALLETTE_API_KEY:
-    raise RuntimeError('COMPALLETTE_API_KEY must be set')
-if len(COMPALLETTE_API_KEY) < 32 or len(COMPALLETTE_API_KEY) > 63 or 'replace-with' in COMPALLETTE_API_KEY:
-    raise RuntimeError('COMPALLETTE_API_KEY must be a unique value from 32 to 63 characters')
+
 CO_WARN_PPM = float(os.getenv('CO_WARN_PPM', 25.0))
 CO_CRIT_PPM = float(os.getenv('CO_CRIT_PPM', 50.0))
 STALE_THRESHOLD_SEC = int(os.getenv('COMPALLETTE_STALE_SEC', 20))
@@ -171,3 +170,7 @@ SESSION_COOKIE_SECURE = os.getenv('USE_HTTPS', '0') == '1'
 CSRF_COOKIE_SECURE = os.getenv('USE_HTTPS', '0') == '1'
 SECURE_CONTENT_TYPE_NOSNIFF = True
 X_FRAME_OPTIONS = 'DENY'
+
+# Set once per fresh installation; an unset identity blocks device ingestion.
+COMPALLETTE_INSTALLATION_ID = os.getenv('COMPALLETTE_INSTALLATION_ID', '')
+COMPALLETTE_DEVICE_KEY_DIR = os.getenv('COMPALLETTE_DEVICE_KEY_DIR', '')

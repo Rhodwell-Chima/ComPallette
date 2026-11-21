@@ -1,5 +1,6 @@
 import json
 import time
+import tempfile
 from io import StringIO
 from django.test import TestCase, override_settings
 from django.conf import settings
@@ -15,10 +16,11 @@ from .models import (
 from .views import check_and_update_watchdog
 
 
+@override_settings(COMPALLETTE_INSTALLATION_ID='00000000-0000-4000-8000-000000000001')
 class MiningApiTests(TestCase):
     def setUp(self):
         self.client = APIClient()
-        self.api_key = settings.COMPALLETTE_API_KEY
+        self.api_key = 'isolated-test-gateway-key-at-least-32-characters'
         self.auth_headers = {'HTTP_X_API_KEY': self.api_key}
         self.operator = get_user_model().objects.create_user(username='test-operator', password='test-password', is_staff=True)
         self.client.force_authenticate(user=self.operator)
@@ -28,15 +30,15 @@ class MiningApiTests(TestCase):
         from .models import GatewayRegistration
         from django.contrib.auth.hashers import make_password
         gateway_node = Node.objects.create(node_id='GW-SURFACE-01', role='GATEWAY', site=self.site, organisation=self.site.organisation, commissioned=True)
-        self.gateway = GatewayRegistration.objects.create(node=gateway_node, site=self.site, credential_hash=make_password(self.api_key))
+        self.gateway = GatewayRegistration.objects.create(credentials_installed=True, node=gateway_node, site=self.site, credential_hash=make_password(self.api_key))
         self.auth_headers['HTTP_X_GATEWAY_ID'] = gateway_node.pk
 
 
     def test_operator_reads_and_actions_require_authentication(self):
         anonymous = APIClient()
-        self.assertEqual(anonymous.get('/api/v1/nodes').status_code, status.HTTP_403_FORBIDDEN)
-        self.assertEqual(anonymous.get('/api/v1/provision/pending').status_code, status.HTTP_403_FORBIDDEN)
-        self.assertEqual(anonymous.post('/api/v1/provision/assign', {}, format='json').status_code, status.HTTP_403_FORBIDDEN)
+        self.assertEqual(anonymous.get('/api/v1/nodes').status_code, status.HTTP_401_UNAUTHORIZED)
+        self.assertEqual(anonymous.get('/api/v1/provision/pending').status_code, status.HTTP_401_UNAUTHORIZED)
+        self.assertEqual(anonymous.post('/api/v1/provision/assign', {}, format='json').status_code, status.HTTP_401_UNAUTHORIZED)
 
     def test_operator_session_login_requires_csrf_and_sets_session(self):
         client = APIClient(enforce_csrf_checks=True)
@@ -54,7 +56,7 @@ class MiningApiTests(TestCase):
         self.assertEqual(client.get('/api/v1/provision/pending').status_code, status.HTTP_200_OK)
 
         client.logout()
-        self.assertEqual(client.get('/api/v1/nodes').status_code, status.HTTP_403_FORBIDDEN)
+        self.assertEqual(client.get('/api/v1/nodes').status_code, status.HTTP_401_UNAUTHORIZED)
 
     def test_site_member_can_log_in_without_django_staff_flag(self):
         member = get_user_model().objects.create_user(username='site-viewer', password='viewer-password')
@@ -76,7 +78,7 @@ class MiningApiTests(TestCase):
 
     def test_wire_envelope_rejects_wrong_type_and_invalid_values(self):
         invalid = {
-            "ver": 1, "type": "HEARTBEAT", "seq": 0, "sender": "MINER-INVALID",
+            "installation_id": settings.COMPALLETTE_INSTALLATION_ID, "ver": 1, "type": "HEARTBEAT", "seq": 0, "sender": "MINER-INVALID",
             "role": "UNKNOWN", "zone": "LEVEL-1", "uptime": 1, "payload": {},
         }
         response = self.client.post('/api/v1/telemetry', invalid, format='json', **self.auth_headers)
@@ -85,7 +87,7 @@ class MiningApiTests(TestCase):
 
     def test_gateway_heartbeat_wire_format_is_accepted(self):
         payload = {
-            "ver": 1,
+            "installation_id": settings.COMPALLETTE_INSTALLATION_ID, "ver": 1,
             "type": "HEARTBEAT",
             "seq": 2,
             "sender": "GW-SURFACE-01",
@@ -119,7 +121,8 @@ class MiningApiTests(TestCase):
     @override_settings(COMPALLETTE_BUILD_REVISION='test-build')
     def test_deployment_readiness_accepts_migrated_database_with_staff_operator(self):
         output = StringIO()
-        call_command('check_deployment_readiness', stdout=output)
+        with tempfile.TemporaryDirectory() as directory, override_settings(COMPALLETTE_DEVICE_KEY_DIR=directory):
+            call_command('check_deployment_readiness', stdout=output)
         report = json.loads(output.getvalue())
         self.assertTrue(report['ready'])
         self.assertGreaterEqual(report['active_staff_operators'], 1)
@@ -136,7 +139,7 @@ class MiningApiTests(TestCase):
     def test_telemetry_ingest_and_deduplication(self):
         Node.objects.create(node_id='MINER-106', role='WEARABLE', site=self.site, organisation=self.site.organisation, commissioned=True)
         payload = {
-            "ver": 1,
+            "installation_id": settings.COMPALLETTE_INSTALLATION_ID, "ver": 1,
             "type": "TELEMETRY",
             "seq": 101,
             "sender": "MINER-106",
@@ -190,7 +193,7 @@ class MiningApiTests(TestCase):
         Node.objects.create(node_id='MINER-107', role='WEARABLE', site=self.site, organisation=self.site.organisation, commissioned=True)
         # Ingest an alert
         alert_payload = {
-            "ver": 1,
+            "installation_id": settings.COMPALLETTE_INSTALLATION_ID, "ver": 1,
             "type": "ALERT",
             "seq": 201,
             "sender": "MINER-107",
@@ -262,7 +265,7 @@ class MiningApiTests(TestCase):
         Node.objects.create(node_id='ANCHOR-02', role='ANCHOR', site=self.site, organisation=self.site.organisation, commissioned=True)
         # Ingest heartbeat
         hb = {
-            "ver": 1,
+            "installation_id": settings.COMPALLETTE_INSTALLATION_ID, "ver": 1,
             "type": "HEARTBEAT",
             "seq": 5,
             "sender": "ANCHOR-02",
@@ -323,13 +326,13 @@ class MiningApiTests(TestCase):
         import uuid
         from .models import DeviceDiscovery
         from .commands import command_result
-        packet = {'ver': 1, 'type': 'PROV_REQ', 'seq': 1, 'sender': 'NEW-CHIP', 'role': 'UNASSIGNED',
+        packet = {'installation_id': settings.COMPALLETTE_INSTALLATION_ID, 'ver': 1, 'type': 'PROV_REQ', 'seq': 1, 'sender': 'NEW-CHIP', 'role': 'UNASSIGNED',
                   'zone': 'UNASSIGNED', 'uptime': 1, 'payload': {'chip_id': '8F4C2A'}}
         response = self.client.post('/api/v1/provision/request', packet, format='json', **self.auth_headers)
         self.assertEqual(response.status_code, 200)
         discovery = DeviceDiscovery.objects.get(hardware_id='8F4C2A')
         response = self.client.post('/api/v1/commands', {'operation_id': str(uuid.uuid4()), 'gateway_id': self.gateway.pk,
-            'discovery_id': discovery.pk, 'kind': 'PROVISION', 'node_id': 'NEW-TRACKER', 'role': 'WEARABLE'}, format='json')
+            'discovery_id': discovery.pk, 'expected_version': discovery.version, 'kind': 'PROVISION', 'node_id': 'NEW-TRACKER', 'role': 'WEARABLE'}, format='json')
         self.assertEqual(response.status_code, 201)
         node = Node.objects.get(pk='NEW-TRACKER')
         self.assertFalse(node.commissioned)
@@ -344,7 +347,7 @@ class MiningApiTests(TestCase):
         Node.objects.create(node_id='MINER-PLATFORM', role='WEARABLE', site=self.site, organisation=self.site.organisation, commissioned=True)
         Zone.objects.create(site=self.site, code='LEVEL-1-STATION', name='Level 1 Station')
         payload = {
-            "ver": 1, "type": "TELEMETRY", "seq": 901, "sender": "MINER-PLATFORM",
+            "installation_id": settings.COMPALLETTE_INSTALLATION_ID, "ver": 1, "type": "TELEMETRY", "seq": 901, "sender": "MINER-PLATFORM",
             "role": "WEARABLE", "zone": "LEVEL-1-STATION", "uptime": 1000,
             "payload": {"co": 12.5, "temp": 25.4, "hum": 62.0, "fall": False, "batt": 3.9, "sim": False, "ok": True},
         }

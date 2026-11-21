@@ -355,4 +355,4 @@ class ProvisioningRequest(models.Model):
 
 from .domain_models import (DeviceAssignment, AssetCustody, PlatformOperation, SiteTransfer,
                             GatewayRegistration, DeviceDiscovery, IngestedEvent,
-                            LocationObservation, DeviceCommand)
+                            LocationObservation, DeviceCommand, QuarantinedEvent)

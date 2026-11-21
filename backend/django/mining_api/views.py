@@ -37,13 +37,6 @@ from .wire_validation import (
 logger = logging.getLogger(__name__)
 
 
-def verify_api_key(request):
-    """Verifies gateway X-API-Key header matches configured secret."""
-    key = request.headers.get('X-API-Key')
-    expected = settings.COMPALLETTE_API_KEY
-    return bool(expected) and key == expected
-
-
 def validation_error_response(request, error):
     """Return a safe, machine-readable rejection for a permanently invalid event."""
     response_body = {**error, "error_code": "VALIDATION_ERROR"}
@@ -223,6 +216,7 @@ class HealthCheckView(APIView):
     def get(self, request):
         return Response({
             "status": "healthy",
+            "contract_version": 2,
             "service": "Compallette Mining Safety Django Backend",
             "version": "2.0.0",
             "build_revision": settings.COMPALLETTE_BUILD_REVISION,
@@ -490,6 +484,8 @@ class ProvisioningRequestIngestView(APIView):
 class ProvisioningPendingListView(APIView):
     def get(self, request):
         denied = require_capability(request, 'manage_devices')
+        if denied:
+            return denied
         from .models import DeviceDiscovery
         site = resolve_site(request)
         return Response({'pending_nodes': list(DeviceDiscovery.objects.filter(gateway__site=site).values())})
@@ -497,7 +493,7 @@ class ProvisioningPendingListView(APIView):
 
 class ProvisioningAssignView(APIView):
     def post(self, request):
-        return Response({'error': 'Use /api/v1/commands with an explicit gateway and discovery identity.'}, status=410)
+        return Response({'error': 'Use /api/v1/commands with an explicit gateway and discovery identity.', 'error_code': 'RETIRED_OPERATION'}, status=410)
 
 
 class ProvisioningConfirmView(APIView):
@@ -507,9 +503,9 @@ class ProvisioningConfirmView(APIView):
         return 'Gateway'
     def post(self, request):
         from .ingestion import authenticate_gateway
-        from .commands import command_result
+        from .device_trust import accept_result
         gateway = authenticate_gateway(request.headers.get('X-Gateway-ID'), request.headers.get('X-API-Key'))
-        return Response(command_result(gateway, request.data))
+        return Response(accept_result(gateway, request.data))
 
 
 class PlatformBootstrapView(APIView):
@@ -518,6 +514,8 @@ class PlatformBootstrapView(APIView):
         sites = permitted_sites(request.user).select_related('organisation')
         organisations = Organisation.objects.filter(id__in=sites.values('organisation_id').distinct())
         return Response({
+            'contract_version': 2,
+            'build_revision': settings.COMPALLETTE_BUILD_REVISION,
             'organisations': OrganisationSerializer(organisations, many=True).data,
             'sites': SiteSerializer(sites, many=True).data,
             'capabilities': operator_capabilities(request.user, resolve_site(request)),
@@ -760,7 +758,7 @@ class DashboardView(APIView):
         latest_by_key = []
         for stream_node, key in distinct_keys:
             item = (
-                MeasurementReading.objects.filter(site=site, node_id=stream_node, measurement_key=key)
+                MeasurementReading.objects.filter(site=site, node_id=stream_node, measurement_key=key, source_event__locationobservation__simulated=False)
                 .select_related('node')
                 .order_by('-received_at')
                 .first()
@@ -874,7 +872,7 @@ class EnvironmentOverviewView(APIView):
         latest_readings = []
         for stream_node, key in distinct_keys:
             latest = (
-                MeasurementReading.objects.filter(site=site, node_id=stream_node, measurement_key=key)
+                MeasurementReading.objects.filter(site=site, node_id=stream_node, measurement_key=key, source_event__locationobservation__simulated=False)
                 .select_related('node', 'capability')
                 .order_by('-received_at')
                 .first()
@@ -905,7 +903,7 @@ class EnvironmentReadingsView(APIView):
         if not site:
             return Response({'readings': [], 'total': 0, 'page': 1, 'page_size': 25, 'total_pages': 1})
         
-        readings_qs = MeasurementReading.objects.filter(site=site).select_related('node', 'capability')
+        readings_qs = MeasurementReading.objects.filter(site=site, source_event__locationobservation__simulated=False).select_related('node', 'capability')
         key = request.query_params.get('key')
         if key:
             if ':' not in key:

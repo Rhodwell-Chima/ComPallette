@@ -75,6 +75,7 @@ class HeartbeatPayloadSerializer(serializers.Serializer):
 
 
 class ProvisionPayloadSerializer(serializers.Serializer):
+    clock_request = serializers.JSONField(required=False)
     chip_id = serializers.CharField(max_length=16, allow_blank=False, required=False)
     chip_mac = serializers.CharField(max_length=24, allow_blank=False, required=False)
     mesh_id = serializers.IntegerField(min_value=0, required=False)

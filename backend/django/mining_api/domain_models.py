@@ -70,6 +70,7 @@ class GatewayRegistration(models.Model):
     active = models.BooleanField(default=True)
     credential_hash = models.CharField(max_length=256)
     credential_version = models.PositiveIntegerField(default=1)
+    credentials_installed = models.BooleanField(default=False)
     created_at = models.DateTimeField(auto_now_add=True)
 
 
@@ -78,6 +79,7 @@ class DeviceDiscovery(models.Model):
     hardware_id = models.CharField(max_length=32)
     sender_id = models.CharField(max_length=32)
     payload = models.JSONField(default=dict)
+    version = models.PositiveIntegerField(default=1)
     first_seen = models.DateTimeField(auto_now_add=True)
     last_seen = models.DateTimeField(auto_now=True)
     class Meta:
@@ -120,8 +122,24 @@ class DeviceCommand(models.Model):
     kind = models.CharField(max_length=16, choices=[('PROVISION', 'Provision'), ('DIAGNOSTIC', 'Diagnostic')])
     state = models.CharField(max_length=24, default='QUEUED')
     payload = models.JSONField(default=dict)
+    request_digest = models.CharField(max_length=64, default='')
     result = models.JSONField(default=dict)
     expires_at = models.DateTimeField()
     created_at = models.DateTimeField(auto_now_add=True)
     sent_at = models.DateTimeField(null=True)
     attempts = models.PositiveIntegerField(default=0)
+
+
+class QuarantinedEvent(models.Model):
+    """Durable unknown-device traffic, never included in operational summaries."""
+    gateway = models.ForeignKey(GatewayRegistration, on_delete=models.PROTECT)
+    site = models.ForeignKey('Site', on_delete=models.PROTECT)
+    installation_id = models.UUIDField()
+    sender_id = models.CharField(max_length=32)
+    event_type = models.CharField(max_length=24)
+    sequence = models.PositiveIntegerField()
+    payload = models.JSONField()
+    received_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        constraints = [models.UniqueConstraint(fields=['gateway', 'installation_id', 'sender_id', 'event_type', 'sequence'], name='unique_quarantined_delivery')]

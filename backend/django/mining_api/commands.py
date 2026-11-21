@@ -26,7 +26,7 @@ def command_result(gateway, message):
         raise ValidationError('Invalid confirmation state.')
     if message.get('node_id') != command.node_id:
         raise PermissionDenied('Confirmation target mismatch.')
-    if state == 'DEVICE_CONFIRMED' and message.get('hardware_id') != command.node.hardware_id:
+    if state in {'DEVICE_CONFIRMED', 'REJECTED'} and message.get('hardware_id') != command.node.hardware_id:
         raise ValidationError('Confirmed hardware does not match the target.')
     if command.state in TERMINAL:
         record_result(command, message)
@@ -57,7 +57,5 @@ def record_result(command, message):
 
 
 def command_frame(command):
-    return {'version': 1, 'command_id': str(command.pk), 'kind': command.kind,
-            'node_id': command.node_id, 'hardware_id': command.node.hardware_id,
-            'issued_at_ms': int(command.created_at.timestamp() * 1000),
-            'expires_at': int(command.expires_at.timestamp()), 'payload': command.payload}
+    from .device_trust import signed_command
+    return signed_command(command)
