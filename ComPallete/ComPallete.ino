@@ -1,3 +1,4 @@
+#include "DeviceTrust.h"
 #include "CommandHandler.h"
 #include "painlessMesh.h"
 #include <ArduinoJson.h>
@@ -52,6 +53,7 @@ Task taskSendProvRequest(8000, TASK_FOREVER, &sendProvRequestTask);
 // IMMEDIATE ALERT DISPATCHER (Event-Driven)
 // ----------------------------------------------------------------------------
 void sendAlertEvent(AlertSeverity severity, const char* code, const char* details, float triggerVal) {
+  if (captivePortal.isActive() || !nodeConfigManager.isProvisioned() || !DeviceTrust::ready()) return;
   MessageEnvelope env;
   env.version = PROTOCOL_VERSION;
   env.msg_type = MSG_ALERT;
@@ -245,17 +247,6 @@ void sendTelemetryTask() {
     return;
   }
 
-  MessageEnvelope env;
-  env.version = PROTOCOL_VERSION;
-  env.msg_type = MSG_TELEMETRY;
-  env.seq = nodeConfigManager.nextSequence();
-  if (env.seq == 0) return;
-  strncpy(env.sender_id, nodeConfigManager.getDeviceId(), sizeof(env.sender_id) - 1);
-  strncpy(env.role, nodeRoleToString(nodeConfigManager.getRole()), sizeof(env.role) - 1);
-  const char* activeTelemZone = (nodeConfigManager.getRole() == ROLE_WEARABLE) ? zoneTracker.getCurrentZone() : nodeConfigManager.getZoneId();
-  strncpy(env.zone_id, activeTelemZone, sizeof(env.zone_id) - 1);
-  env.uptime_ms = millis();
-
   SensorReadings readings = sensorHAL.read();
 
   TelemetryData data;
@@ -287,6 +278,18 @@ void sendTelemetryTask() {
   } else if (!data.fall_detected && !readings.panic_pressed) {
     sensorHAL.setAlarmIndication(false);
   }
+
+  if (captivePortal.isActive() || !nodeConfigManager.isProvisioned() || !DeviceTrust::ready()) return;
+  MessageEnvelope env;
+  env.version = PROTOCOL_VERSION;
+  env.msg_type = MSG_TELEMETRY;
+  env.seq = nodeConfigManager.nextSequence();
+  if (env.seq == 0) return;
+  strncpy(env.sender_id, nodeConfigManager.getDeviceId(), sizeof(env.sender_id) - 1);
+  strncpy(env.role, nodeRoleToString(nodeConfigManager.getRole()), sizeof(env.role) - 1);
+  const char* activeTelemZone = (nodeConfigManager.getRole() == ROLE_WEARABLE) ? zoneTracker.getCurrentZone() : nodeConfigManager.getZoneId();
+  strncpy(env.zone_id, activeTelemZone, sizeof(env.zone_id) - 1);
+  env.uptime_ms = millis();
 
   String packet;
   if (serializeTelemetry(env, data, packet)) {
@@ -333,10 +336,7 @@ void sendHeartbeatTask() {
 
 // Provisioning Request Announcement Task (Option 1: runs on unprovisioned nodes)
 void sendProvRequestTask() {
-  if (nodeConfigManager.isProvisioned()) {
-    taskSendProvRequest.disable();
-    return;
-  }
+  if (!DeviceTrust::ready()) return;
 
   MessageEnvelope env;
   env.version = PROTOCOL_VERSION;
@@ -361,7 +361,8 @@ void sendProvRequestTask() {
 
   String packet;
   if (serializeProvRequest(env, req, packet)) {
-    mesh.sendBroadcast(packet);
+    if (nodeConfigManager.getRole() == ROLE_GATEWAY) gatewayManager.handleIncomingMeshPacket(mesh.getNodeId(), packet);
+    else mesh.sendBroadcast(packet);
     Serial.printf("\n[PROV TX BEACON] Emitted enrollment announcement for Chip #%s over mesh\n", req.chip_id);
   }
 }
@@ -428,7 +429,8 @@ void printHelpMenu() {
   Serial.println("  zone [name|auto]- Change or view subterranean zone (Wearables support 'zone auto')");
   Serial.println("  wifi            - Display Wi-Fi station status, IP, and RSSI");
   Serial.println("  mdns <host>     - Query Multicast DNS to resolve a .local hostname");
-  Serial.println("  testpost        - Send an immediate test heartbeat packet to backend");
+  Serial.println("  testpost        - Verify a heartbeat using explicitly selected HTTP recovery");
+  Serial.println("  buffer-archive <installation UUID> - Preserve old queue for cutover (export archive afterward)");
   Serial.println("  api [url]       - View or set the backend REST API URL in NVS");
   Serial.println("  uplink [ssid] [pass] - View or set uplink Wi-Fi credentials in NVS");
   Serial.println("  reset           - Factory reset all persistent NVS settings");
@@ -559,7 +561,8 @@ void handleSerialCLI() {
       } else if (strcmp(cmd, "mesh") == 0) {
         Serial.println("\n[CLI] Transitioning node to Production Mesh Mode...");
         NodeConfig cfg = nodeConfigManager.get();
-        cfg.is_provisioned = true;
+        cfg.mesh_configured = true;
+        cfg.is_provisioned = cfg.role == ROLE_GATEWAY;
         nodeConfigManager.save(cfg);
         delay(200);
         ESP.restart();
@@ -571,7 +574,7 @@ void handleSerialCLI() {
         if (r >= 0 && r <= 2) {
           NodeConfig cfg = nodeConfigManager.get();
           cfg.role = (NodeRole)r;
-          nodeConfigManager.save(cfg);
+          if (!nodeConfigManager.save(cfg)) return;
           Serial.printf("[CLI] Node role updated to: %s\n", nodeRoleToString(cfg.role));
         } else {
           Serial.println("[CLI ERROR] Invalid role. Use: 0 (Wearable), 1 (Anchor), 2 (Gateway)");
@@ -582,7 +585,7 @@ void handleSerialCLI() {
         if (strlen(newId) > 0) {
           NodeConfig cfg = nodeConfigManager.get();
           strncpy(cfg.device_id, newId, sizeof(cfg.device_id) - 1);
-          nodeConfigManager.save(cfg);
+          if (!nodeConfigManager.save(cfg)) return;
           Serial.printf("[CLI] Device ID updated to: %s\n", cfg.device_id);
         }
       } else if (strncmp(cmd, "zone", 4) == 0) {
@@ -617,7 +620,7 @@ void handleSerialCLI() {
           } else {
             NodeConfig cfg = nodeConfigManager.get();
             strncpy(cfg.zone_id, newZone, sizeof(cfg.zone_id) - 1);
-            nodeConfigManager.save(cfg);
+            if (!nodeConfigManager.save(cfg)) return;
             Serial.printf("[CLI] Stationary node zone updated to: %s\n", cfg.zone_id);
           }
         }
@@ -673,7 +676,7 @@ void handleSerialCLI() {
           if (ok) {
             Serial.println("[CLI] Test heartbeat successfully pushed to backend! Check dashboard.");
           } else {
-            Serial.println("[CLI ERROR] Test heartbeat was not accepted. Inspect the response above; HTTP 401 means the configured Gateway API key is missing or does not match the backend.");
+            Serial.println("[CLI ERROR] Test heartbeat was not accepted. Inspect the response above; Verify the protected local credential bundle and gateway activation.");
           }
         }
       } else if (strncmp(cmd, "api", 3) == 0) {
@@ -682,7 +685,7 @@ void handleSerialCLI() {
         if (strlen(newApi) > 0) {
           NodeConfig cfg = nodeConfigManager.get();
           strncpy(cfg.backend_url, newApi, sizeof(cfg.backend_url) - 1);
-          nodeConfigManager.save(cfg);
+          if (!nodeConfigManager.save(cfg)) return;
           Serial.printf("[CLI] Backend REST URL updated to: %s\n", cfg.backend_url);
         } else {
           Serial.printf("[CLI] Current Backend URL: %s\n", nodeConfigManager.getBackendUrl());
@@ -707,11 +710,16 @@ void handleSerialCLI() {
           NodeConfig cfg = nodeConfigManager.get();
           strncpy(cfg.uplink_ssid, ssidBuf, sizeof(cfg.uplink_ssid) - 1);
           strncpy(cfg.uplink_password, passBuf, sizeof(cfg.uplink_password) - 1);
-          nodeConfigManager.save(cfg);
+          if (!nodeConfigManager.save(cfg)) return;
           Serial.printf("[CLI] Uplink Wi-Fi credentials updated: SSID='%s'\n", cfg.uplink_ssid);
         } else {
           Serial.printf("[CLI] Uplink Wi-Fi: SSID='%s'\n", nodeConfigManager.getUplinkSsid());
           Serial.println("  Usage: uplink <ssid> [password]");
+        }
+      } else if (strncmp(cmd, "buffer-archive ", 15) == 0) {
+        if (nodeConfigManager.getRole() != ROLE_GATEWAY
+            || !gatewayManager.getBuffer().archiveForCutover(String(cmd + 15))) {
+          Serial.println("[CLI] Archive refused. Use the current installation UUID, valid local trust, and an empty archive destination.");
         }
       } else if (strcmp(cmd, "reset") == 0) {
         Serial.println("\n[CLI] Performing factory reset (wiping NVS)...");
@@ -765,9 +773,10 @@ void setup() {
 
   // 2. Initialize Hardware Abstraction Layer (MQ-7, MPU6050, Battery ADC)
   sensorHAL.begin();
+  if (!DeviceTrust::begin()) Serial.println("[TRUST] Local enrollment trust missing; remote commands and operational traffic disabled.");
 
   // 3. Operational Mode Dispatch
-  if (!nodeConfigManager.isProvisioned()) {
+  if (!nodeConfigManager.meshConfigured()) {
     // MODE: SOFTAP CAPTIVE PORTAL COMMISSIONING
     // Radio is dedicated solely to SoftAP. Mesh is halted to prevent Wi-Fi channel/AP collision!
     Serial.println("\n[MODE] ======================================================================");
@@ -810,14 +819,16 @@ void setup() {
     mesh.onChangedConnections(&changedConnectionCallback);
 
     // Register scheduled tasks
+    userScheduler.addTask(taskSendProvRequest);
+    taskSendProvRequest.enable();
     userScheduler.addTask(taskSendHeartbeat);
     if (nodeConfigManager.getRole() == ROLE_STATIONARY_ANCHOR) {
       taskSendHeartbeat.setInterval(ANCHOR_BEACON_INTERVAL_MS);
     }
-    taskSendHeartbeat.enable();
+    if (nodeConfigManager.isProvisioned()) taskSendHeartbeat.enable();
 
     // Enable telemetry for WEARABLE tags, or GATEWAY nodes (Desk Testing Mode)
-    if (nodeConfigManager.getRole() == ROLE_WEARABLE || nodeConfigManager.getRole() == ROLE_GATEWAY) {
+    if (nodeConfigManager.isProvisioned() && (nodeConfigManager.getRole() == ROLE_WEARABLE || nodeConfigManager.getRole() == ROLE_GATEWAY)) {
       userScheduler.addTask(taskSendTelemetry);
       taskSendTelemetry.enable();
     }
@@ -863,6 +874,11 @@ void setup() {
 // MAIN LOOP
 // ----------------------------------------------------------------------------
 void loop() {
+  static uint32_t lastLocalSample = 0;
+  if ((captivePortal.isActive() || !nodeConfigManager.isProvisioned()) && millis() - lastLocalSample >= TELEMETRY_INTERVAL_MS) {
+    lastLocalSample = millis();
+    sendTelemetryTask(); // Local sensing and alarm decisions precede transport guards.
+  }
   // Drives dynamic subterranean zone tracking (Option 1: Anchor Proximity)
   zoneTracker.update();
 

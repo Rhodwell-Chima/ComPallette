@@ -1,3 +1,4 @@
+#include "DeviceTrust.h"
 #include "Protocol.h"
 #include <string.h>
 
@@ -71,8 +72,9 @@ bool validateEnvelope(const MessageEnvelope& env) {
 // ----------------------------------------------------------------------------
 
 bool serializeTelemetry(const MessageEnvelope& env, const TelemetryData& data, String& outJson) {
-  StaticJsonDocument<512> doc;
+  StaticJsonDocument<1024> doc;
 
+  doc["installation_id"] = DeviceTrust::installation();
   doc["ver"]    = env.version;
   doc["type"]   = messageTypeToString(env.msg_type);
   doc["seq"]    = env.seq;
@@ -91,12 +93,13 @@ bool serializeTelemetry(const MessageEnvelope& env, const TelemetryData& data, S
   payload["ok"]   = data.sensor_ok;
 
   outJson = "";
-  return (serializeJson(doc, outJson) > 0);
+  return !doc.overflowed() && (serializeJson(doc, outJson) > 0);
 }
 
 bool serializeAlert(const MessageEnvelope& env, const AlertData& alert, String& outJson) {
-  StaticJsonDocument<512> doc;
+  StaticJsonDocument<1024> doc;
 
+  doc["installation_id"] = DeviceTrust::installation();
   doc["ver"]    = env.version;
   doc["type"]   = messageTypeToString(env.msg_type);
   doc["seq"]    = env.seq;
@@ -112,12 +115,13 @@ bool serializeAlert(const MessageEnvelope& env, const AlertData& alert, String& 
   payload["val"]      = serialized(String(alert.trigger_value, 2));
 
   outJson = "";
-  return (serializeJson(doc, outJson) > 0);
+  return !doc.overflowed() && (serializeJson(doc, outJson) > 0);
 }
 
 bool serializeHeartbeat(const MessageEnvelope& env, const HeartbeatData& hb, String& outJson) {
-  StaticJsonDocument<384> doc;
+  StaticJsonDocument<768> doc;
 
+  doc["installation_id"] = DeviceTrust::installation();
   doc["ver"]    = env.version;
   doc["type"]   = messageTypeToString(env.msg_type);
   doc["seq"]    = env.seq;
@@ -132,11 +136,12 @@ bool serializeHeartbeat(const MessageEnvelope& env, const HeartbeatData& hb, Str
   payload["batt"]  = serialized(String(hb.battery_v, 2));
 
   outJson = "";
-  return (serializeJson(doc, outJson) > 0);
+  return !doc.overflowed() && (serializeJson(doc, outJson) > 0);
 }
 
 bool serializeProvRequest(const MessageEnvelope& env, const ProvisioningRequestData& req, String& outJson) {
-  StaticJsonDocument<512> doc;
+  StaticJsonDocument<1536> doc;
+  doc["installation_id"] = DeviceTrust::installation();
   doc["ver"]    = env.version;
   doc["type"]   = messageTypeToString(env.msg_type);
   doc["seq"]    = env.seq;
@@ -154,12 +159,14 @@ bool serializeProvRequest(const MessageEnvelope& env, const ProvisioningRequestD
   payload["mq_ok"]    = req.mq_healthy;
   payload["mpu_ok"]   = req.mpu_healthy;
 
+  DeviceTrust::clockRequest(payload);
   outJson = "";
-  return (serializeJson(doc, outJson) > 0);
+  return !doc.overflowed() && (serializeJson(doc, outJson) > 0);
 }
 
 bool serializeProvAssign(const MessageEnvelope& env, const ProvisioningAssignData& assign, String& outJson) {
-  StaticJsonDocument<512> doc;
+  StaticJsonDocument<1024> doc;
+  doc["installation_id"] = DeviceTrust::installation();
   doc["ver"]    = env.version;
   doc["type"]   = messageTypeToString(env.msg_type);
   doc["seq"]    = env.seq;
@@ -178,11 +185,12 @@ bool serializeProvAssign(const MessageEnvelope& env, const ProvisioningAssignDat
   payload["reboot"]      = assign.reboot_now;
 
   outJson = "";
-  return (serializeJson(doc, outJson) > 0);
+  return !doc.overflowed() && (serializeJson(doc, outJson) > 0);
 }
 
 bool serializeProvConfirm(const MessageEnvelope& env, const ProvisioningConfirmData& conf, String& outJson) {
-  StaticJsonDocument<384> doc;
+  StaticJsonDocument<768> doc;
+  doc["installation_id"] = DeviceTrust::installation();
   doc["ver"]    = env.version;
   doc["type"]   = messageTypeToString(env.msg_type);
   doc["seq"]    = env.seq;
@@ -196,7 +204,7 @@ bool serializeProvConfirm(const MessageEnvelope& env, const ProvisioningConfirmD
   payload["status"]  = conf.status;
 
   outJson = "";
-  return (serializeJson(doc, outJson) > 0);
+  return !doc.overflowed() && (serializeJson(doc, outJson) > 0);
 }
 
 // ----------------------------------------------------------------------------
@@ -223,7 +231,7 @@ bool deserializePacket(
     return false;
   }
 
-  StaticJsonDocument<768> doc;
+  StaticJsonDocument<2048> doc;
   DeserializationError error = deserializeJson(doc, jsonStr);
   if (error) {
     return false;
@@ -330,7 +338,7 @@ bool deserializePacket(
 
 bool deserializeProvAssign(const String& jsonStr, ProvisioningAssignData& outAssign) {
   memset(&outAssign, 0, sizeof(outAssign));
-  StaticJsonDocument<512> doc;
+  StaticJsonDocument<1024> doc;
   if (deserializeJson(doc, jsonStr)) return false;
 
   JsonObject payload = doc["payload"].as<JsonObject>();
@@ -354,7 +362,7 @@ bool deserializeProvAssign(const String& jsonStr, ProvisioningAssignData& outAss
 
 bool deserializeProvRequest(const String& jsonStr, ProvisioningRequestData& outReq) {
   memset(&outReq, 0, sizeof(outReq));
-  StaticJsonDocument<512> doc;
+  StaticJsonDocument<1024> doc;
   if (deserializeJson(doc, jsonStr)) return false;
 
   JsonObject payload = doc["payload"].as<JsonObject>();
@@ -377,7 +385,7 @@ bool deserializeProvRequest(const String& jsonStr, ProvisioningRequestData& outR
 
 bool deserializeProvConfirm(const String& jsonStr, ProvisioningConfirmData& outConfirm) {
   memset(&outConfirm, 0, sizeof(outConfirm));
-  StaticJsonDocument<384> doc;
+  StaticJsonDocument<768> doc;
   if (deserializeJson(doc, jsonStr)) return false;
 
   JsonObject payload = doc["payload"].as<JsonObject>();

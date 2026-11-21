@@ -15,8 +15,8 @@
 // Key features:
 // - Two-tier priority queue (Critical alerts preempt routine telemetry)
 // - Flash-backed persistence via LittleFS to survive reboots/power cycles
-// - Head-of-line eviction of oldest routine telemetry when capacity is reached
-// - Graceful RAM-only fallback if flash storage is unavailable
+// - Retains unacknowledged records; rejects new packets when capacity is reached
+// - Fails closed for retention if flash storage is unavailable
 
 struct BufferedItem {
   String        rawJson;
@@ -53,6 +53,8 @@ public:
   size_t getTotalFlushed() const { return m_totalFlushed; }
   size_t getTotalDropped() const { return m_totalDropped; }
   bool isFlashAvailable() const { return m_flashAvailable; }
+  bool cutoverBlocked() const { return m_cutoverBlocked; }
+  bool archiveForCutover(const String& installation);
 
   // Clears in-memory and persistent storage
   void clear();
@@ -64,6 +66,7 @@ private:
   size_t m_maxRamItems;
   size_t m_maxFlashItems;
   bool   m_flashAvailable;
+  bool   m_cutoverBlocked;
 
   std::vector<BufferedItem> m_priorityQueue;
   std::vector<BufferedItem> m_standardQueue;

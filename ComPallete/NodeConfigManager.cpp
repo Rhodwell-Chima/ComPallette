@@ -1,6 +1,7 @@
 #include "NodeConfigManager.h"
 #include <esp_system.h>
 #include <esp_mac.h>
+#include <ArduinoJson.h>
 
 // Global configuration manager instance
 NodeConfigManager nodeConfigManager;
@@ -36,9 +37,10 @@ bool NodeConfigManager::begin() {
     return false;
   }
 
-  load();
+  const bool loaded = load();
+  if (!loaded) { _config.is_provisioned = false; _config.mesh_configured = false; }
   printConfig();
-  return true;
+  return loaded;
 }
 
 uint32_t NodeConfigManager::nextSequence() {
@@ -66,6 +68,7 @@ uint32_t NodeConfigManager::nextSequence() {
 bool NodeConfigManager::load() {
   // Check if node has ever been provisioned
   _config.is_provisioned = _prefs.getBool("prov", false);
+  _config.mesh_configured = _prefs.getBool("mesh_ready", _config.is_provisioned);
 
   if (_config.is_provisioned) {
     String devId = _prefs.getString("dev_id", "");
@@ -138,26 +141,65 @@ bool NodeConfigManager::load() {
     _config.co_critical_ppm = _prefs.getFloat("co_crit", CO_THRESHOLD_CRITICAL_PPM);
   }
 
+  const String snapshot = _prefs.getString("config_v2", "");
+  if (snapshot.length()) {
+    StaticJsonDocument<2048> record;
+    if (deserializeJson(record, snapshot) || record["schema"] != 2) return false;
+    _config.mesh_configured = record["mesh_ready"] | false;
+    _config.is_provisioned = record["prov"] | false;
+    strlcpy(_config.device_id, record["dev_id"] | "", sizeof(_config.device_id));
+    _config.role = static_cast<NodeRole>(record["role"].as<uint8_t>());
+    strlcpy(_config.zone_id, record["zone"] | "UNASSIGNED", sizeof(_config.zone_id));
+    strlcpy(_config.mesh_prefix, record["m_ssid"] | MESH_PREFIX, sizeof(_config.mesh_prefix));
+    strlcpy(_config.mesh_password, record["m_pass"] | MESH_PASSWORD, sizeof(_config.mesh_password));
+    _config.mesh_channel = record["m_chan"] | MESH_CHANNEL;
+    strlcpy(_config.uplink_ssid, record["gw_ssid"] | "", sizeof(_config.uplink_ssid));
+    strlcpy(_config.uplink_password, record["gw_pass"] | "", sizeof(_config.uplink_password));
+    strlcpy(_config.backend_url, record["api_url"] | BACKEND_BASE_URL, sizeof(_config.backend_url));
+    _config.co_warning_ppm = record["co_warn"] | CO_THRESHOLD_WARNING_PPM;
+    _config.co_critical_ppm = record["co_crit"] | CO_THRESHOLD_CRITICAL_PPM;
+    _config.backend_api_key[0] = 0; // Supplied only by the protected local bundle.
+  }
+
+  // One NVS value makes the commissioned identity atomic across power loss.
+  const String assignment = _prefs.getString("assignment", "");
+  if (assignment.length()) {
+    StaticJsonDocument<384> record;
+    if (deserializeJson(record, assignment) || !record["id"].is<const char*>()
+        || !record["zone"].is<const char*>()) return false;
+    strlcpy(_config.device_id, record["id"], sizeof(_config.device_id));
+    strlcpy(_config.zone_id, record["zone"], sizeof(_config.zone_id));
+    _config.role = static_cast<NodeRole>(record["role"].as<uint8_t>());
+    _config.co_warning_ppm = record["co_warn"];
+    _config.co_critical_ppm = record["co_crit"];
+    _config.is_provisioned = true;
+  }
   return true;
 }
 
 bool NodeConfigManager::save(const NodeConfig& cfg) {
+  StaticJsonDocument<2048> record;
+  record["schema"] = 2;
+  record["mesh_ready"] = cfg.mesh_configured;
+  record["prov"] = cfg.is_provisioned;
+  record["dev_id"] = cfg.device_id;
+  record["role"] = static_cast<uint8_t>(cfg.role);
+  record["zone"] = cfg.zone_id;
+  record["m_ssid"] = cfg.mesh_prefix;
+  record["m_pass"] = cfg.mesh_password;
+  record["m_chan"] = cfg.mesh_channel;
+  record["gw_ssid"] = cfg.uplink_ssid;
+  record["gw_pass"] = cfg.uplink_password;
+  record["api_url"] = cfg.backend_url;
+  record["co_warn"] = cfg.co_warning_ppm;
+  record["co_crit"] = cfg.co_critical_ppm;
+  String encoded;
+  if (record.overflowed() || !serializeJson(record, encoded)
+      || _prefs.putString("config_v2", encoded) != encoded.length()) {
+    Serial.println("[NVS] Configuration write failed; previous settings retained.");
+    return false;
+  }
   _config = cfg;
-  _config.is_provisioned = true;
-
-  _prefs.putBool("prov", true);
-  _prefs.putString("dev_id", _config.device_id);
-  _prefs.putUChar("role", (uint8_t)_config.role);
-  _prefs.putString("zone", _config.zone_id);
-  _prefs.putString("m_ssid", _config.mesh_prefix);
-  _prefs.putString("m_pass", _config.mesh_password);
-  _prefs.putUChar("m_chan", _config.mesh_channel);
-  _prefs.putString("gw_ssid", _config.uplink_ssid);
-  _prefs.putString("gw_pass", _config.uplink_password);
-  _prefs.putString("api_url", _config.backend_url);
-  _prefs.putString("api_key", _config.backend_api_key);
-  _prefs.putFloat("co_warn", _config.co_warning_ppm);
-  _prefs.putFloat("co_crit", _config.co_critical_ppm);
 
   Serial.println("\n[NVS] New node configuration committed to persistent flash.");
   printConfig();
@@ -165,33 +207,36 @@ bool NodeConfigManager::save(const NodeConfig& cfg) {
 }
 
 bool NodeConfigManager::setAssignment(const char* deviceId, NodeRole role, const char* zoneId, float coWarn, float coCrit) {
+  if (!deviceId || !zoneId || !*deviceId || strlen(deviceId) >= sizeof(_config.device_id)
+      || strlen(zoneId) >= sizeof(_config.zone_id)
+      || (role != ROLE_WEARABLE && role != ROLE_STATIONARY_ANCHOR)) return false;
+  StaticJsonDocument<384> record;
+  record["id"] = deviceId;
+  record["role"] = static_cast<uint8_t>(role);
+  record["zone"] = role == ROLE_WEARABLE ? "UNASSIGNED" : zoneId;
+  record["co_warn"] = coWarn;
+  record["co_crit"] = coCrit;
+  String encoded;
+  if (record.overflowed() || !serializeJson(record, encoded)
+      || _prefs.putString("assignment", encoded) != encoded.length()) return false;
   _config.is_provisioned = true;
-  strncpy(_config.device_id, deviceId, sizeof(_config.device_id) - 1);
+  strlcpy(_config.device_id, deviceId, sizeof(_config.device_id));
+  strlcpy(_config.zone_id, role == ROLE_WEARABLE ? "UNASSIGNED" : zoneId, sizeof(_config.zone_id));
   _config.role = role;
-  if (role == ROLE_WEARABLE) {
-    strncpy(_config.zone_id, "UNASSIGNED", sizeof(_config.zone_id) - 1);
-  } else {
-    strncpy(_config.zone_id, zoneId, sizeof(_config.zone_id) - 1);
-  }
   _config.co_warning_ppm = coWarn;
   _config.co_critical_ppm = coCrit;
 
-  _prefs.putBool("prov", true);
-  _prefs.putString("dev_id", _config.device_id);
-  _prefs.putUChar("role", (uint8_t)_config.role);
-  _prefs.putString("zone", _config.zone_id);
-  _prefs.putFloat("co_warn", _config.co_warning_ppm);
-  _prefs.putFloat("co_crit", _config.co_critical_ppm);
-
   Serial.printf("\n[NVS] Node commissioned successfully: ID=%s, Role=%s, Zone=%s\n",
                 _config.device_id, nodeRoleToString(_config.role),
-                (_config.role == ROLE_WEARABLE) ? "DYNAMIC_AUTO_TRACK" : _config.zone_id);
+                (_config.role == ROLE_WEARABLE) ? "UNKNOWN" : _config.zone_id);
   return true;
 }
 
 void NodeConfigManager::clear() {
-  _prefs.clear();
+  if (!_prefs.clear()) { Serial.println("[NVS] Reset failed; stored configuration retained."); return; }
   _config.is_provisioned = false;
+  _config.mesh_configured = false;
+  _prefs.putBool("mesh_ready", false);
   snprintf(_config.device_id, sizeof(_config.device_id), "PROV-%s", _config.chip_id);
   _config.role = ROLE_WEARABLE;
   strncpy(_config.zone_id, "UNASSIGNED", sizeof(_config.zone_id) - 1);
@@ -199,9 +244,24 @@ void NodeConfigManager::clear() {
 }
 
 void NodeConfigManager::enterSetupMode() {
+  NodeConfig setup = _config;
+  setup.mesh_configured = false; setup.is_provisioned = false;
+  if (!save(setup)) return;
+  if (_prefs.isKey("assignment") && !_prefs.remove("assignment")) {
+    Serial.println("[NVS] Cannot clear commissioning; setup mode refused.");
+    return;
+  }
   _config.is_provisioned = false;
+  _config.mesh_configured = false;
+  _prefs.putBool("mesh_ready", false);
   _prefs.putBool("prov", false);
   Serial.println("\n[NVS] SETUP MODE: Node uncommissioned. Preserved current configuration for SoftAP.");
+}
+
+bool NodeConfigManager::loadGatewayCredential(const char* credential) {
+  if (!credential || strlen(credential) < 32 || strlen(credential) >= sizeof(_config.backend_api_key)) return false;
+  strlcpy(_config.backend_api_key, credential, sizeof(_config.backend_api_key));
+  return true;
 }
 
 void NodeConfigManager::printConfig() {
@@ -213,9 +273,9 @@ void NodeConfigManager::printConfig() {
   Serial.printf("  Active Device ID   : %s\n", _config.device_id);
   Serial.printf("  Assigned Role      : %s\n", nodeRoleToString(_config.role));
   if (_config.role == ROLE_WEARABLE) {
-    Serial.println("  Tunnel Zone        : [DYNAMIC AUTO-DETECTION via Nearest Anchor]");
+    Serial.println("  Observed Zone      : UNKNOWN (radio inference disabled)");
   } else {
-    Serial.printf("  Tunnel Zone        : %s (Fixed Reference)\n", _config.zone_id);
+    Serial.printf("  Installation Zone  : %s (Configured)\n", _config.zone_id);
   }
   Serial.printf("  Mesh Network       : %s (CH %d)\n", _config.mesh_prefix, _config.mesh_channel);
   if (_config.role == ROLE_GATEWAY) {

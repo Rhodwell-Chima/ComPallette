@@ -173,21 +173,15 @@ void CaptivePortalManager::handleSave() {
   if (_server.hasArg("api_url")) {
     strncpy(cfg.backend_url, _server.arg("api_url").c_str(), sizeof(cfg.backend_url) - 1);
   }
-  if (_server.hasArg("gw_api_key") && _server.arg("gw_api_key").length() > 0) {
-    if (_server.arg("gw_api_key").length() < 32 || _server.arg("gw_api_key").length() >= sizeof(cfg.backend_api_key)) {
-      _server.send(400, "text/plain", "Gateway API key must be 32 to 63 characters");
-      return;
-    }
-    strncpy(cfg.backend_api_key, _server.arg("gw_api_key").c_str(), sizeof(cfg.backend_api_key) - 1);
-    cfg.backend_api_key[sizeof(cfg.backend_api_key) - 1] = '\0';
-  }
-  if (cfg.role == ROLE_GATEWAY && strlen(cfg.backend_api_key) < 32) {
-    _server.send(400, "text/plain", "Configure a gateway API key of at least 32 characters");
-    return;
-  }
+  // Gateway credentials are installed through protected local files, never the portal.
 
   // Save to persistent flash NVS
-  nodeConfigManager.save(cfg);
+  cfg.mesh_configured = true;
+  cfg.is_provisioned = cfg.role == ROLE_GATEWAY;
+  if (!nodeConfigManager.save(cfg)) {
+    _server.send(503, "text/plain", "Configuration could not be stored. Existing settings were retained.");
+    return;
+  }
 
   String response = "<!DOCTYPE html><html><head><meta name='viewport' content='width=device-width,initial-scale=1'>"
                     "<style>body{font-family:-apple-system,sans-serif;background:#0c0c0f;color:#e4e4e7;padding:24px;text-align:center;}"
@@ -198,10 +192,10 @@ void CaptivePortalManager::handleSave() {
                     ".reboot{color:#3b82f6;font-size:12px;font-weight:600;margin-top:16px;}</style></head><body>"
                     "<div class='card'>"
                     "<h2>✓ Configuration Committed</h2>"
-                    "<p>Node has been successfully provisioned:</p>"
+                    "<p>Network settings saved. Operator commissioning and local trust are required before operational use.</p>"
                     "<div class='badge'>" + String(cfg.device_id) + " (" + String(nodeRoleToString(cfg.role)) + ")</div>"
                     "<p>Assigned Zone: <strong>" + String(cfg.zone_id) + "</strong></p>"
-                    "<p class='reboot'>Rebooting into production mesh network in 2 seconds...</p>"
+                    "<p class='reboot'>Rebooting to join the enrollment mesh in 2 seconds...</p>"
                     "</div></body></html>";
 
   _server.send(200, "text/html", response);
@@ -276,7 +270,7 @@ String CaptivePortalManager::buildPortalHtml() {
                 "</div>"
 
                 "<form method='POST' action='/save' class='card'>"
-                "<div class='card-title'>Node Commissioning Profile</div>"
+                "<div class='card-title'>Node network setup</div>"
 
                 "<label for='role'>Operational Role</label>"
                 "<select name='role' id='role' onchange='handleRoleChange()'>"
@@ -314,11 +308,10 @@ String CaptivePortalManager::buildPortalHtml() {
                 "<input type='password' name='gw_pass' id='gw_pass' autocomplete='new-password' placeholder='Leave blank to keep current password'>"
                 "<label for='api_url'>Backend URL / mDNS Host</label>"
                 "<input type='text' name='api_url' id='api_url' value='" + String(cfg.backend_url) + "' placeholder='http://innovation-hub03.local:8000'>"
-                "<label for='gw_api_key'>Gateway API Key</label>"
-                "<input type='password' name='gw_api_key' id='gw_api_key' autocomplete='new-password' placeholder='" + String(strlen(cfg.backend_api_key) >= 32 ? "Configured; leave blank to keep" : "Required; at least 32 characters") + "'>"
+                "<p>Install gateway credentials and the CA certificate through local maintenance.</p>"
                 "</div>"
 
-                "<button type='submit' class='btn'>Save &amp; Commission Node</button>"
+                "<button type='submit' class='btn'>Save network settings</button>"
                 "</form>"
 
                 "<script>"

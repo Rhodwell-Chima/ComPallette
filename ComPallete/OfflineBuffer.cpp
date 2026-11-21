@@ -1,11 +1,13 @@
 #include "OfflineBuffer.h"
 #include <FS.h>
 #include <LittleFS.h>
+#include "DeviceTrust.h"
 
 OfflineBuffer::OfflineBuffer()
   : m_maxRamItems(BUFFER_MAX_RAM_ITEMS),
     m_maxFlashItems(BUFFER_MAX_FLASH_ITEMS),
     m_flashAvailable(false),
+    m_cutoverBlocked(false),
     m_totalFlushed(0),
     m_totalDropped(0),
     m_priorityBurst(0),
@@ -14,6 +16,7 @@ OfflineBuffer::OfflineBuffer()
 OfflineBuffer::~OfflineBuffer() {}
 
 bool OfflineBuffer::begin(size_t maxRamItems, size_t maxFlashItems) {
+  m_cutoverBlocked = false;
   m_maxRamItems = maxRamItems;
   m_maxFlashItems = maxFlashItems;
 
@@ -29,7 +32,7 @@ bool OfflineBuffer::begin(size_t maxRamItems, size_t maxFlashItems) {
     loadFromFlash();
   } else {
     m_flashAvailable = false;
-    Serial.println("[BUFFER WARNING] LittleFS mount failed! Operating in volatile RAM-only mode.");
+    Serial.println("[BUFFER WARNING] LittleFS mount failed! Durable ingestion disabled; local sensing and alarms remain active.");
   }
 
   Serial.printf("[BUFFER INIT] Max RAM: %u | Max Flash: %u | Restored Items: %u\n",
@@ -38,7 +41,7 @@ bool OfflineBuffer::begin(size_t maxRamItems, size_t maxFlashItems) {
 }
 
 bool OfflineBuffer::push(const String& packetJson, MessageType type, bool isPriority) {
-  if (packetJson.length() == 0) {
+  if (!m_flashAvailable || m_cutoverBlocked || packetJson.length() == 0) {
     return false;
   }
 
@@ -46,21 +49,9 @@ bool OfflineBuffer::push(const String& packetJson, MessageType type, bool isPrio
   const size_t maxItems = (m_maxRamItems < m_maxFlashItems) ? m_maxRamItems : m_maxFlashItems;
   if (maxItems == 0) return false;
   if (count() >= maxItems) {
-    // Evict oldest standard telemetry to preserve buffer space for critical data
-    if (!m_standardQueue.empty()) {
-      evictOldestStandard();
-    } else {
-      if (!isPriority) {
-        ++m_totalDropped;
-        Serial.println("[BUFFER FULL] Dropping incoming routine packet to preserve queued priority alerts.");
-        return false;
-      }
-      // Extremely rare: buffer is 100% full of un-flushed priority alerts
-      Serial.println("[BUFFER CRITICAL] Buffer fully saturated with priority alerts! Dropping oldest alert.");
-      if (m_priorityQueue.empty()) return false;
-      m_priorityQueue.erase(m_priorityQueue.begin());
-      m_totalDropped++;
-    }
+    ++m_totalDropped;
+    Serial.println("[BUFFER FULL] Cannot retain new packet; existing unacknowledged events preserved.");
+    return false;
   }
 
   BufferedItem item;
@@ -88,6 +79,7 @@ bool OfflineBuffer::push(const String& packetJson, MessageType type, bool isPrio
 }
 
 bool OfflineBuffer::peek(BufferedItem& outItem) {
+  if (m_cutoverBlocked) return false;
   // Permit a routine packet after a bounded run of priority packets.
   const bool choosePriority = !m_priorityQueue.empty() &&
     (m_standardQueue.empty() || m_priorityBurst < 5);
@@ -107,23 +99,32 @@ bool OfflineBuffer::peek(BufferedItem& outItem) {
 }
 
 bool OfflineBuffer::pop() {
-  if (m_peekedPriority && !m_priorityQueue.empty()) {
-    m_priorityQueue.erase(m_priorityQueue.begin());
-    if (m_priorityBurst < 255) ++m_priorityBurst;
-    m_totalFlushed++;
-    syncToFlash();
-    return true;
+  if (m_cutoverBlocked) return false;
+  auto& queue = m_peekedPriority ? m_priorityQueue : m_standardQueue;
+  if (queue.empty()) return false;
+  BufferedItem retained = queue.front();
+  queue.erase(queue.begin());
+  if (!syncToFlash()) {
+    queue.insert(queue.begin(), retained);
+    return false;
   }
+  if (m_peekedPriority) { if (m_priorityBurst < 255) ++m_priorityBurst; }
+  else m_priorityBurst = 0;
+  ++m_totalFlushed;
+  return true;
+}
 
-  if (!m_peekedPriority && !m_standardQueue.empty()) {
-    m_standardQueue.erase(m_standardQueue.begin());
-    m_priorityBurst = 0;
-    m_totalFlushed++;
-    syncToFlash();
-    return true;
-  }
-
-  return false;
+bool OfflineBuffer::archiveForCutover(const String& installation) {
+  const char* archive = "/queue-precutover.jsonl";
+  if (!m_flashAvailable || !DeviceTrust::ready() || installation != DeviceTrust::installation()
+      || LittleFS.exists(archive) || !LittleFS.exists(BUFFER_FLASH_FILE)) return false;
+  // Atomic rename preserves all old bytes, including records that cannot be parsed.
+  // Never overwrite an earlier archive or silently import it into a new installation.
+  if (!LittleFS.rename(BUFFER_FLASH_FILE, archive)) return false;
+  m_priorityQueue.clear(); m_standardQueue.clear(); m_priorityBurst = 0;
+  m_cutoverBlocked = false;
+  Serial.println("[BUFFER] Archived previous queue to /queue-precutover.jsonl. Export and retain it in the cutover record.");
+  return true;
 }
 
 size_t OfflineBuffer::count() const {
@@ -168,14 +169,14 @@ void OfflineBuffer::evictOldestStandard() {
 }
 
 bool OfflineBuffer::syncToFlash() {
-  if (!m_flashAvailable) {
-    return true;
+  if (!m_flashAvailable || m_cutoverBlocked) {
+    return false;
   }
 
   // If buffer is completely empty, remove file to reclaim flash space
   if (isEmpty()) {
     if (LittleFS.exists(BUFFER_FLASH_FILE)) {
-      LittleFS.remove(BUFFER_FLASH_FILE);
+      if (!LittleFS.remove(BUFFER_FLASH_FILE)) return false;
     }
     if (LittleFS.exists("/compallette_queue.tmp")) LittleFS.remove("/compallette_queue.tmp");
     if (LittleFS.exists("/compallette_queue.bak")) LittleFS.remove("/compallette_queue.bak");
@@ -193,12 +194,14 @@ bool OfflineBuffer::syncToFlash() {
   bool writeOk = true;
   // Priority queue items written first
   for (const auto& item : m_priorityQueue) {
-    if (f.printf("PRIO|%d|%u|%s\n", (int)item.type, item.queuedTimestampMs, item.rawJson.c_str()) <= 0) writeOk = false;
+    String line = "PRIO|" + String((int)item.type) + "|" + String(item.queuedTimestampMs) + "|" + item.rawJson + "\n";
+    if (f.print(line) != line.length()) writeOk = false;
   }
 
   // Followed by standard queue items
   for (const auto& item : m_standardQueue) {
-    if (f.printf("NORM|%d|%u|%s\n", (int)item.type, item.queuedTimestampMs, item.rawJson.c_str()) <= 0) writeOk = false;
+    String line = "NORM|" + String((int)item.type) + "|" + String(item.queuedTimestampMs) + "|" + item.rawJson + "\n";
+    if (f.print(line) != line.length()) writeOk = false;
   }
 
   f.flush();
@@ -259,7 +262,8 @@ void OfflineBuffer::loadFromFlash() {
     int thirdPipe = line.indexOf('|', secondPipe + 1);
 
     if (firstPipe == -1 || secondPipe == -1 || thirdPipe == -1) {
-      Serial.println("[BUFFER WARNING] Skipping corrupted line in flash buffer.");
+      m_cutoverBlocked = true;
+      Serial.println("[BUFFER BLOCKED] Corrupted stored record requires local review; snapshot preserved.");
       continue;
     }
 
@@ -268,6 +272,12 @@ void OfflineBuffer::loadFromFlash() {
     uint32_t ts = (uint32_t)line.substring(secondPipe + 1, thirdPipe).toInt();
     String rawJson = line.substring(thirdPipe + 1);
 
+    StaticJsonDocument<2048> stored;
+    if (deserializeJson(stored, rawJson) || !DeviceTrust::ready()
+        || String(stored["installation_id"] | "") != DeviceTrust::installation()) {
+      m_cutoverBlocked = true;
+      Serial.println("[BUFFER BLOCKED] Queue belongs to an old/unknown installation. Explicit archive required.");
+    }
     MessageEnvelope env{};
     TelemetryData telem{};
     AlertData alert{};
@@ -276,11 +286,16 @@ void OfflineBuffer::loadFromFlash() {
     if (typeInt <= MSG_UNKNOWN || typeInt > MSG_COMMAND_RESULT ||
         !deserializePacket(rawJson, env, telem, alert, heartbeat, legacy) ||
         env.msg_type != (MessageType)typeInt) {
-      ++m_totalDropped;
-      Serial.println("[BUFFER WARNING] Dropping invalid or mismatched persisted queue record.");
+      m_cutoverBlocked = true;
+      Serial.println("[BUFFER BLOCKED] Invalid persisted record requires local review; snapshot preserved.");
       continue;
     }
 
+    if (count() >= m_maxRamItems) {
+      m_cutoverBlocked = true;
+      Serial.println("[BUFFER BLOCKED] Stored queue exceeds RAM capacity; snapshot preserved for local export.");
+      break;
+    }
     BufferedItem item;
     item.type = (MessageType)typeInt;
     item.queuedTimestampMs = ts;

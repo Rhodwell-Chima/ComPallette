@@ -1,3 +1,4 @@
+#include "DeviceTrust.h"
 #include "GatewayManager.h"
 
 GatewayManager::GatewayManager()
@@ -409,6 +410,7 @@ String GatewayManager::resolveEndpoint(MessageType type) {
     case MSG_HEARTBEAT:    return ENDPOINT_HEARTBEAT;
     case MSG_PROV_REQ:     return ENDPOINT_PROV_REQUEST;
     case MSG_PROV_CONFIRM: return ENDPOINT_PROV_CONFIRM;
+    case MSG_COMMAND_RESULT: return ENDPOINT_PROV_CONFIRM;
     case MSG_TELEMETRY:
     default:               return ENDPOINT_TELEMETRY;
   }
@@ -441,13 +443,24 @@ bool GatewayManager::forwardPacket(const BufferedItem& item) {
   int httpCode = http.POST(body);
 
   if (httpCode >= 200 && httpCode < 300) {
-    Serial.printf("[GW FORWARD SUCCESS] Flushed %s packet to %s (HTTP %d | Remaining: %u)\n",
-                  item.isPriority ? "CRITICAL ALERT" : messageTypeToString(item.type),
-                  finalUrl.c_str(),
-                  httpCode,
-                  m_buffer.count() - 1);
+    StaticJsonDocument<2048> receipt;
+    StaticJsonDocument<2048> packet;
+    bool matched = !deserializeJson(receipt, http.getString()) && !deserializeJson(packet, item.rawJson);
+    if (matched && item.type == MSG_COMMAND_RESULT) {
+      matched = String(receipt["command_id"] | "") == String(packet["payload"]["command_id"] | "")
+        && String(receipt["received_state"] | "") == String(packet["payload"]["state"] | "");
+    } else if (matched) {
+      matched = receipt["status"] == "ok"
+        && String(receipt["installation_id"] | "") == DeviceTrust::installation()
+        && String(receipt["node_id"] | "") == String(packet["sender"] | "")
+        && (receipt["seq"] | 0UL) == (packet["seq"] | 0UL)
+        && String(receipt["event_type"] | "") == String(packet["type"] | "");
+    }
+    if (matched && receipt["control"].is<JsonObject>() && m_downlinkCb) {
+      String control; serializeJson(receipt["control"], control); m_downlinkCb(control);
+    }
     http.end();
-    return true;
+    return matched;
   }
 
   // Only a Django-issued validation code proves the event can never be
@@ -475,11 +488,11 @@ bool GatewayManager::forwardPacket(const BufferedItem& item) {
     if (responseBody.length() > 160) responseBody.remove(160);
 
     if (permanentlyInvalid) {
-      Serial.printf("[GW INVALID EVENT] HTTP %d for %s %s #%u; discarding permanently invalid event. Response (%d B): %s\n",
+      Serial.printf("[GW INVALID EVENT] HTTP %d for %s %s #%u; retaining invalid event for review. Response (%d B): %s\n",
                     httpCode, messageTypeToString(item.type), rejectedSender, rejectedSeq,
                     responseSize, responseBody.c_str());
       http.end();
-      return true;
+      return false; // Retain invalid data for explicit operator review.
     }
     if (responseBody.length() > 0) {
       Serial.printf("[GW CONFIG ERROR] HTTP %d for %s %s #%u; retaining packet for recovery. Response (%d B): %s\n",
@@ -508,55 +521,23 @@ bool GatewayManager::forwardPacket(const BufferedItem& item) {
 }
 
 bool GatewayManager::sendDirectTestPacket(const String& jsonPayload, MessageType type) {
-  if (WiFi.status() != WL_CONNECTED) {
-    Serial.println("[GW TEST ERROR] Cannot send test packet: Wi-Fi STA is NOT connected!");
+  if (m_useMqtt) {
+    Serial.println("[GW TEST] HTTP recovery is not selected. Use MQTT status diagnostics; transport will not switch automatically.");
     return false;
   }
-
-  String rawUrl = m_backendUrl + resolveEndpoint(type);
-  String finalUrl;
-  resolveMdnsHost(rawUrl, finalUrl);
-
-  Serial.println("\n--------------------------------------------------------------");
-  Serial.printf("[GW DIRECT TEST] Dispatching test POST to: %s\n", finalUrl.c_str());
-  Serial.printf("[GW DIRECT TEST] Payload: %s\n", jsonPayload.c_str());
-
-  HTTPClient http;
-  if (!http.begin(finalUrl)) {
-    Serial.println("[GW DIRECT TEST] HTTPClient::begin() failed.");
+  if (WiFi.status() != WL_CONNECTED || !DeviceTrust::ready()) {
+    Serial.println("[GW TEST] Uplink or local trust unavailable; persistence cannot be confirmed.");
     return false;
   }
-
-  http.setTimeout(BACKEND_TIMEOUT_MS);
-  http.addHeader("Content-Type", "application/json");
-  http.addHeader("X-API-Key", m_apiKey);
-  http.addHeader("X-Gateway-ID", m_deviceId);
-
-  int httpCode = http.POST(jsonPayload);
-  Serial.printf("[GW DIRECT TEST] Response Code: %d (%s)\n",
-                httpCode,
-                httpCode > 0 ? "HTTP Response" : http.errorToString(httpCode).c_str());
-
-  if (httpCode >= 200 && httpCode < 300) {
-    String resp = http.getString();
-    Serial.printf("[GW DIRECT TEST SUCCESS] Server returned: %s\n", resp.c_str());
-    http.end();
-    return true;
-  }
-
-  if (httpCode > 0) {
-    String response = http.getString();
-    if (httpCode == HTTP_CODE_UNAUTHORIZED || httpCode == HTTP_CODE_FORBIDDEN) {
-      Serial.printf("[GW DIRECT TEST AUTH ERROR] Backend rejected the Gateway credential (HTTP %d). Re-enter the Gateway API key through the captive portal; do not print or share that key. Response: %s\n",
-                    httpCode, response.c_str());
-    } else {
-      Serial.printf("[GW DIRECT TEST ERROR] Backend rejected the request (HTTP %d). Response: %s\n",
-                    httpCode, response.c_str());
-    }
-  }
-
-  http.end();
-  return false;
+  BufferedItem item;
+  item.rawJson = jsonPayload;
+  item.type = type;
+  item.isPriority = false;
+  item.queuedTimestampMs = millis();
+  const bool confirmed = forwardPacket(item);
+  Serial.println(confirmed ? "[GW TEST] Matching database persistence receipt received."
+                           : "[GW TEST] Persistence not confirmed. Check registration, transport and server diagnostics.");
+  return confirmed;
 }
 
 void GatewayManager::triggerBackoff() {

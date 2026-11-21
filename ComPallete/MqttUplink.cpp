@@ -2,9 +2,11 @@
 #include <LittleFS.h>
 #include <ArduinoJson.h>
 #include <time.h>
+#include "DeviceTrust.h"
+#include "NodeConfigManager.h"
 
 bool MqttUplink::begin(const String& uri, const String& gateway, const String& credential) {
-  if (!uri.startsWith("mqtts://")) return false;
+  if (!DeviceTrust::ready() || !uri.startsWith("mqtts://")) return false;
   // CA provisioning is explicit; never disable certificate/hostname verification.
   File certificate = LittleFS.open("/mqtt-ca.pem", "r");
   if (!certificate) { Serial.println("[MQTT] Missing /mqtt-ca.pem; transport disabled."); return false; }
@@ -73,17 +75,33 @@ void MqttUplink::update(OfflineBuffer& buffer, std::function<void(const String&)
         matched = String(message["command_id"] | "") == String(eventJson["payload"]["command_id"] | "")
           && String(message["received_state"] | "") == String(eventJson["payload"]["state"] | "");
       } else {
-        matched = message["status"] == "ok"
+        matched = String(message["installation_id"] | "") == DeviceTrust::installation()
+          && message["status"] == "ok"
           && String(message["node_id"] | "") == String(eventJson["sender"] | "")
           && (message["seq"] | 0UL) == (eventJson["seq"] | 0UL)
           && String(message["event_type"] | "") == String(eventJson["type"] | "");
       }
-      if (matched) { buffer.pop(); lastPublish = 0; }
+      if (matched) {
+        if (message["control"].is<JsonObject>() && downlink) { String control; serializeJson(message["control"], control); downlink(control); }
+        buffer.pop(); lastPublish = 0;
+      }
     } else if (String(incomingMessage.topic).endsWith("/commands")) {
-      const String kind = message["kind"] | "";
-      // Require a trusted local time source; never execute commands with unknown expiry.
-      if (time(nullptr) < 1700000000 || (message["expires_at"] | 0LL) <= time(nullptr)) continue;
-      if (kind != "PROVISION" && kind != "DIAGNOSTIC") continue;
+      if (!message["signed_body"].is<const char*>() || !message["mac"].is<const char*>()) continue;
+      StaticJsonDocument<1024> receipt;
+      const uint32_t sequence = nodeConfigManager.nextSequence();
+      if (!sequence) continue;
+      receipt["ver"] = 1; receipt["type"] = "COMMAND_RESULT"; receipt["seq"] = sequence;
+      receipt["installation_id"] = DeviceTrust::installation();
+      receipt["sender"] = nodeConfigManager.getDeviceId(); receipt["role"] = "GATEWAY";
+      receipt["zone"] = "UNASSIGNED"; receipt["uptime"] = millis();
+      JsonObject payload = receipt["payload"].to<JsonObject>();
+      payload["installation_id"] = DeviceTrust::installation();
+      payload["kind"] = "GATEWAY_RECEIPT";
+      payload["command_id"] = message["command_id"];
+      payload["node_id"] = message["node_id"];
+      payload["state"] = "GATEWAY_RECEIVED";
+      String raw; serializeJson(receipt, raw);
+      if (!buffer.push(raw, MSG_COMMAND_RESULT, true)) continue;
       if (downlink) downlink(String(incomingMessage.body));
     }
   }

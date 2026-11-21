@@ -13,6 +13,7 @@
 // eliminating the need to hardcode ("burn") worker IDs and roles into firmware binaries.
 
 struct NodeConfig {
+  bool      mesh_configured = false;
   bool      is_provisioned;            // True if configured, false if fresh out-of-box
   char      device_id[24];             // Assigned ID (e.g. "MINER-106" or "ANCHOR-LVL2")
   NodeRole  role;                      // ROLE_WEARABLE, ROLE_STATIONARY_ANCHOR, ROLE_GATEWAY
@@ -58,6 +59,7 @@ public:
 
   // Accessors
   const NodeConfig& get() const { return _config; }
+  bool meshConfigured() const { return _config.mesh_configured; }
   bool isProvisioned() const { return _config.is_provisioned; }
   const char* getDeviceId() const { return _config.device_id; }
   NodeRole getRole() const { return _config.role; }
@@ -71,6 +73,9 @@ public:
   const char* getUplinkPassword() const { return _config.uplink_password; }
   const char* getBackendUrl() const { return _config.backend_url; }
   const char* getBackendApiKey() const { return _config.backend_api_key; }
+
+  // Only the protected local file loader supplies gateway credentials.
+  bool loadGatewayCredential(const char* credential);
 
   // Print diagnostic summary to Serial
   void printConfig();
