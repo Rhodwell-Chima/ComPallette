@@ -13,4 +13,7 @@ void clockRequest(JsonObject payload);
 bool decode(JsonVariantConst frame, JsonDocument& body);
 bool applyTime(JsonVariantConst body);
 void sign(JsonDocument& body, JsonObject frame);
+bool provision(const char* hexKey = nullptr, const char* gatewayCredential = nullptr);
+bool wipe();
+void printStatus();
 }

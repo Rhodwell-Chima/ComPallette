@@ -208,4 +208,11 @@ inline NodeRole stringToNodeRole(const char* str) {
 #define BUFFER_MAX_FLASH_ITEMS  500        // Persistent LittleFS queue items (~100 KB flash)
 #define BUFFER_FLASH_FILE       "/compallette_buffer.jsonl"
 
+// ----------------------------------------------------------------------------
+// 9. Local Device Trust & Cryptographic Enrollment
+// ----------------------------------------------------------------------------
+#define DEFAULT_INSTALLATION_ID "6cb490b5-fdeb-4372-a197-a93ca7b5e92e"
+#define DEFAULT_SITE_ID         1
+#define DEFAULT_NTP_HOST        "innovation-hub03.local"
+
 #endif // CONFIG_H

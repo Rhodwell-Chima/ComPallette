@@ -500,6 +500,10 @@ void printHelpMenu() {
   Serial.println("  wifi            - Display Wi-Fi station status, IP, and RSSI");
   Serial.println("  mdns <host>     - Query Multicast DNS to resolve a .local hostname");
   Serial.println("  testpost        - Verify a heartbeat using explicitly selected HTTP recovery");
+  Serial.println("  trust           - Display device trust enrollment status & LittleFS details");
+  Serial.println("  trust-init [key]- Initialize /device-trust.json and gateway credentials on LittleFS");
+  Serial.println("  trust-wipe      - Wipe device trust credentials from LittleFS");
+  Serial.println("  buffer          - Display store-and-forward queue depths & drop counters");
   Serial.println("  buffer-archive <installation UUID> - Preserve old queue for cutover (export archive afterward)");
   Serial.println("  api [url]       - View or set the backend REST API URL in NVS");
   Serial.println("  key [token]     - View or set the 32+ character gateway API key in NVS");
@@ -601,7 +605,7 @@ void printBootDiagnostics() {
 }
 
 void handleSerialCLI() {
-  static char cliBuf[64];
+  static char cliBuf[256];
   static size_t cliIndex = 0;
 
   while (Serial.available() > 0) {
@@ -811,6 +815,49 @@ void handleSerialCLI() {
             || !gatewayManager.getBuffer().archiveForCutover(String(cmd + 15))) {
           Serial.println("[CLI] Archive refused. Use the current installation UUID, valid local trust, and an empty archive destination.");
         }
+      } else if (strcmp(cmd, "trust") == 0 || strcmp(cmd, "trust-status") == 0) {
+        DeviceTrust::printStatus();
+      } else if (strncmp(cmd, "trust-init", 10) == 0) {
+        char* args = cmd + 10;
+        while (*args == ' ') args++;
+        char keyBuf[65] = {0};
+        char credBuf[65] = {0};
+        if (strlen(args) > 0) {
+          char* space = strchr(args, ' ');
+          if (space) {
+            *space = '\0';
+            strncpy(keyBuf, args, sizeof(keyBuf) - 1);
+            char* p = space + 1;
+            while (*p == ' ') p++;
+            strncpy(credBuf, p, sizeof(credBuf) - 1);
+          } else {
+            strncpy(keyBuf, args, sizeof(keyBuf) - 1);
+          }
+        }
+        bool ok = DeviceTrust::provision(strlen(keyBuf) > 0 ? keyBuf : nullptr,
+                                         strlen(credBuf) > 0 ? credBuf : nullptr);
+        if (ok) {
+          Serial.println("[CLI] Device trust successfully provisioned and verified.");
+        } else {
+          Serial.println("[CLI ERROR] Failed to provision device trust. Run 'trust' for diagnostics.");
+        }
+      } else if (strcmp(cmd, "trust-wipe") == 0) {
+        DeviceTrust::wipe();
+      } else if (strcmp(cmd, "buffer") == 0) {
+        if (nodeConfigManager.getRole() == ROLE_GATEWAY) {
+          OfflineBuffer& buf = gatewayManager.getBuffer();
+          Serial.println("\n+--------------------------------------------------------------+");
+          Serial.println("|               GATEWAY STORE-AND-FORWARD BUFFER               |");
+          Serial.println("+--------------------------------------------------------------+");
+          Serial.printf("  Flash Storage  : %s\n", buf.isFlashAvailable() ? "AVAILABLE (LittleFS Mounted)" : "UNAVAILABLE (RAM Fallback Only)");
+          Serial.printf("  Queued Packets : %u (Priority: %u | Standard: %u)\n",
+                        buf.count(), buf.getPriorityCount(), buf.getStandardCount());
+          Serial.printf("  Total Flushed  : %u\n", buf.getTotalFlushed());
+          Serial.printf("  Total Dropped  : %u\n", buf.getTotalDropped());
+          Serial.println("+--------------------------------------------------------------+\n");
+        } else {
+          Serial.println("[CLI] Node is not running as Gateway; store-and-forward queue is inactive.");
+        }
       } else if (strcmp(cmd, "reset") == 0) {
         Serial.println("\n[CLI] Performing factory reset (wiping NVS)...");
         nodeConfigManager.clear();
@@ -863,7 +910,12 @@ void setup() {
 
   // 2. Initialize Hardware Abstraction Layer (MQ-7, MPU6050, Battery ADC)
   sensorHAL.begin();
-  if (!DeviceTrust::begin()) Serial.println("[TRUST] Local enrollment trust missing; remote commands and operational traffic disabled.");
+  if (!DeviceTrust::begin()) {
+    Serial.println("[TRUST WARNING] Local enrollment trust missing; remote commands and operational traffic disabled.");
+  } else {
+    Serial.printf("[TRUST] Local enrollment trust verified. Installation: %s | Hardware: %s\n",
+                  DeviceTrust::installation(), nodeConfigManager.getChipId());
+  }
 
   // 3. Operational Mode Dispatch
   if (!nodeConfigManager.meshConfigured()) {

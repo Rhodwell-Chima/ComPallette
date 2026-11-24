@@ -439,6 +439,16 @@ bool GatewayManager::forwardPacket(const BufferedItem& item) {
     if (deserializeJson(packet, body)) { http.end(); return false; }
     body = "";
     serializeJson(packet["payload"], body);
+  } else if (DeviceTrust::ready()) {
+    StaticJsonDocument<2048> packet;
+    if (!deserializeJson(packet, body)) {
+      const char* instId = packet["installation_id"] | "";
+      if (strlen(instId) == 0) {
+        packet["installation_id"] = DeviceTrust::installation();
+        body = "";
+        serializeJson(packet, body);
+      }
+    }
   }
   int httpCode = http.POST(body);
 

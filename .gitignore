@@ -28,3 +28,4 @@ dist/
 # Device provisioning material must remain in protected local storage
 device-trust.json
 gateway-credentials.json
+device-keys/

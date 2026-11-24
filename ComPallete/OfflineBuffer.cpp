@@ -26,7 +26,7 @@ bool OfflineBuffer::begin(size_t maxRamItems, size_t maxFlashItems) {
   m_peekedPriority = true;
 
   // Attempt to mount LittleFS for persistent crash-resilient storage
-  if (LittleFS.begin(false)) {
+  if (LittleFS.begin(false) || LittleFS.begin(true)) {
     m_flashAvailable = true;
     Serial.println("[BUFFER] LittleFS mounted successfully. Restoring persistent queue...");
     loadFromFlash();
