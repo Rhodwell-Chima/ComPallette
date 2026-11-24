@@ -44,6 +44,7 @@ int  calculateHopDistance(uint32_t targetNodeId);
 void sendTelemetryTask();
 void sendHeartbeatTask();
 void sendProvRequestTask();
+void sendLocalAckEvent(uint8_t clearedAlarms, uint32_t heldMs);
 
 Task taskSendTelemetry(TELEMETRY_INTERVAL_MS, TASK_FOREVER, &sendTelemetryTask);
 Task taskSendHeartbeat(HEARTBEAT_INTERVAL_MS, TASK_FOREVER, &sendHeartbeatTask);
@@ -64,6 +65,13 @@ void sendAlertEvent(AlertSeverity severity, const char* code, const char* detail
   const char* activeZone = (nodeConfigManager.getRole() == ROLE_WEARABLE) ? zoneTracker.getCurrentZone() : nodeConfigManager.getZoneId();
   strncpy(env.zone_id, activeZone, sizeof(env.zone_id) - 1);
   env.uptime_ms = millis();
+
+  // Populate direct anchor context
+  strncpy(env.anchor_id, zoneTracker.getNearestAnchorId(), sizeof(env.anchor_id) - 1);
+  strncpy(env.anchor_zone, zoneTracker.getCurrentZone(), sizeof(env.anchor_zone) - 1);
+  strncpy(env.link_state, zoneTracker.getLinkStateString(), sizeof(env.link_state) - 1);
+  env.hop_distance = (int8_t)zoneTracker.getHopDistance();
+  env.rssi = (int8_t)zoneTracker.getRssi();
 
   AlertData alert;
   alert.severity = severity;
@@ -87,10 +95,47 @@ void sendAlertEvent(AlertSeverity severity, const char* code, const char* detail
 
     Serial.println("\n**************************************************************");
     Serial.printf("[ALERT TX] Dispatched %s emergency event!\n", alertSeverityToString(severity));
-    Serial.printf("   |-- Origin  : %s (%s) @ %s\n", env.sender_id, env.role, env.zone_id);
+    Serial.printf("   |-- Origin  : %s (%s) @ %s (Anchor: %s | State: %s)\n",
+                  env.sender_id, env.role, env.zone_id, env.anchor_id, env.link_state);
     Serial.printf("   |-- Code    : %s\n", alert.alert_code);
     Serial.printf("   |-- Value   : %.2f\n", alert.trigger_value);
     Serial.printf("   |-- Details : %s\n", alert.details);
+    Serial.println("**************************************************************");
+  }
+}
+
+void sendLocalAckEvent(uint8_t clearedAlarms, uint32_t heldMs) {
+  if (captivePortal.isActive() || !nodeConfigManager.isProvisioned() || !DeviceTrust::ready()) return;
+  MessageEnvelope env;
+  env.version = PROTOCOL_VERSION;
+  env.msg_type = MSG_LOCAL_ACK;
+  env.seq = nodeConfigManager.nextSequence();
+  if (env.seq == 0) return;
+  strncpy(env.sender_id, nodeConfigManager.getDeviceId(), sizeof(env.sender_id) - 1);
+  strncpy(env.role, nodeRoleToString(nodeConfigManager.getRole()), sizeof(env.role) - 1);
+  const char* activeZone = (nodeConfigManager.getRole() == ROLE_WEARABLE) ? zoneTracker.getCurrentZone() : nodeConfigManager.getZoneId();
+  strncpy(env.zone_id, activeZone, sizeof(env.zone_id) - 1);
+  env.uptime_ms = millis();
+
+  strncpy(env.anchor_id, zoneTracker.getNearestAnchorId(), sizeof(env.anchor_id) - 1);
+  strncpy(env.anchor_zone, zoneTracker.getCurrentZone(), sizeof(env.anchor_zone) - 1);
+  strncpy(env.link_state, zoneTracker.getLinkStateString(), sizeof(env.link_state) - 1);
+  env.hop_distance = (int8_t)zoneTracker.getHopDistance();
+  env.rssi = (int8_t)zoneTracker.getRssi();
+
+  LocalAckData ack;
+  ack.cleared_alarms = clearedAlarms;
+  ack.held_ms = heldMs;
+  strncpy(ack.device_id, nodeConfigManager.getDeviceId(), sizeof(ack.device_id) - 1);
+
+  String packet;
+  if (serializeLocalAck(env, ack, packet)) {
+    mesh.sendBroadcast(packet);
+    if (nodeConfigManager.getRole() == ROLE_GATEWAY) {
+      gatewayManager.handleIncomingMeshPacket(mesh.getNodeId(), packet);
+    }
+    Serial.println("\n**************************************************************");
+    Serial.printf("[LOCAL ACK TX] Acknowledge hold (%u ms) transmitted (Cleared: 0x%02X)\n", heldMs, clearedAlarms);
     Serial.println("**************************************************************");
   }
 }
@@ -114,6 +159,19 @@ void changedConnectionCallback() {
 
   if (currentNodeCount < lastNodeCount) {
     Serial.println("[ALERT] A node has DISCONNECTED or dropped out of range!");
+    if (nodeConfigManager.getRole() == ROLE_WEARABLE && zoneTracker.hasAnchor()) {
+      uint32_t anchorNode = zoneTracker.getNearestAnchorNodeId();
+      bool anchorStillPresent = false;
+      for (auto it = nodeList.begin(); it != nodeList.end(); ++it) {
+        if (*it == anchorNode) {
+          anchorStillPresent = true;
+          break;
+        }
+      }
+      if (!anchorStillPresent) {
+        zoneTracker.handleDirectDisconnect(anchorNode);
+      }
+    }
   } else if (currentNodeCount > lastNodeCount) {
     Serial.println("[INFO] Mesh layout expanded with a new link.");
   }
@@ -143,14 +201,14 @@ void gatewayWiFiEvent(WiFiEvent_t event, WiFiEventInfo_t info) {
 }
 
 // ----------------------------------------------------------------------------
-// TOPOLOGY & PROXIMITY HELPER (Option 1)
+// TOPOLOGY & PROXIMITY HELPER
 // ----------------------------------------------------------------------------
 int calculateHopDistance(uint32_t targetNodeId) {
   if (targetNodeId == 0) return 99;
 
   String subJson = mesh.subConnectionJson();
   if (subJson.length() < 5) {
-    return 1; // Default to 1-hop if mesh topology is flat or direct peer
+    return 99; // Never default to 1-hop when topology is unverified!
   }
 
   StaticJsonDocument<1024> doc;
@@ -171,7 +229,7 @@ int calculateHopDistance(uint32_t targetNodeId) {
     }
   }
 
-  return 1; // In painlessMesh, direct upstream parent AP also appears as 1-hop
+  return 99; // Not a verified direct neighbor
 }
 
 void receivedCallback(uint32_t from, String &msg) {
@@ -193,17 +251,13 @@ void receivedCallback(uint32_t from, String &msg) {
     gatewayManager.handleIncomingMeshPacket(from, msg);
   }
 
-#if ENABLE_EXPERIMENTAL_BEACON_ZONE_TRACKING
-  // Experimental legacy zone inference; requires direct-link measurements and
-  // must remain disabled until the WROOM/S3 pilot passes its acceptance gate.
+  // Automatic Zone Tracking (Direct stationary anchor association)
   if (nodeConfigManager.getRole() == ROLE_WEARABLE) {
-    if (strcmp(env.role, "ANCHOR") == 0 || strcmp(env.role, "GATEWAY") == 0) {
-      int hops = calculateHopDistance(from);
-      int rssi = (WiFi.status() == WL_CONNECTED) ? WiFi.RSSI() : 0;
-      zoneTracker.handleAnchorBeacon(env.sender_id, env.zone_id, from, hops, rssi);
-    }
+    bool isStationary = (strcmp(env.role, "ANCHOR") == 0 || strcmp(env.role, "GATEWAY") == 0);
+    int hops = calculateHopDistance(from);
+    int rssi = env.rssi != 0 ? env.rssi : -65;
+    zoneTracker.handleAnchorBeacon(env.sender_id, env.zone_id, from, hops, rssi, isStationary);
   }
-#endif
 
   // Handle Option 1: Downlink Provisioning Assignment from Gateway
   if (env.msg_type == MSG_PROV_ASSIGN) {
@@ -211,11 +265,11 @@ void receivedCallback(uint32_t from, String &msg) {
     return;
   }
 
-  // Handle Standard v1 protocol packets
+  // Handle Standard v1/v2 protocol packets
   switch (env.msg_type) {
     case MSG_TELEMETRY:
-      Serial.printf("\n[TELEMETRY v%u | Seq #%u] %s (%s) @ %s | CO: %.1f ppm | Batt: %.2f V\n",
-                    env.version, env.seq, env.sender_id, env.role, env.zone_id, telem.co_ppm, telem.battery_v);
+      Serial.printf("\n[TELEMETRY v%u | Seq #%u] %s (%s) @ %s | T: %.1f C | H: %.1f %% | P: %.0f Pa | Batt: %.2f V\n",
+                    env.version, env.seq, env.sender_id, env.role, env.zone_id, telem.temp_c, telem.humidity_pct, telem.pressure_pa, telem.battery_v);
       break;
 
     case MSG_ALERT:
@@ -224,6 +278,12 @@ void receivedCallback(uint32_t from, String &msg) {
                     alertSeverityToString(alert.severity), env.sender_id, env.zone_id);
       Serial.printf("   |-- Code    : %s\n", alert.alert_code);
       Serial.printf("   |-- Details : %s\n", alert.details);
+      Serial.println("**************************************************************");
+      break;
+
+    case MSG_LOCAL_ACK:
+      Serial.println("\n**************************************************************");
+      Serial.printf(" [LOCAL ALARM ACKNOWLEDGED] Device: %s @ %s\n", env.sender_id, env.zone_id);
       Serial.println("**************************************************************");
       break;
 
@@ -250,33 +310,34 @@ void sendTelemetryTask() {
   SensorReadings readings = sensorHAL.read();
 
   TelemetryData data;
-  data.co_ppm = readings.co_ppm;
   data.temp_c = readings.temp_c;
   data.humidity_pct = readings.humidity_pct;
-  data.fall_detected = readings.fall_detected;
+  data.pressure_pa = readings.pressure_pa;
+  data.gas_resistance_ohm = readings.gas_resistance_ohm;
+  data.bme_healthy = readings.bme_healthy;
+  data.bme_warming = readings.bme_warming;
+  data.bme_gas_valid = readings.bme_gas_valid;
   data.battery_v = readings.battery_v;
+  data.battery_pct = readings.battery_pct;
+  data.fall_detected = readings.fall_detected;
   data.is_simulated = readings.is_simulated;
   data.sensor_ok = readings.sensor_ok;
-
-  // Emergency panic button
-  if (readings.panic_pressed) {
-    sensorHAL.setAlarmIndication(true, SEVERITY_CRITICAL);
-    sendAlertEvent(SEVERITY_CRITICAL, "PANIC_SOS", "Miner triggered physical SOS panic button", 1.0f);
-  }
+  data.co_ppm = readings.co_ppm;
+  data.has_co = readings.mq_healthy;
 
   // Threshold alerts
   if (data.fall_detected) {
-    sensorHAL.setAlarmIndication(true, SEVERITY_CRITICAL);
     sendAlertEvent(SEVERITY_CRITICAL, "MAN_DOWN", "Miner fall confirmed via IMU (impact + inactivity)", readings.accel_magnitude);
   }
-  if (data.co_ppm >= nodeConfigManager.get().co_critical_ppm) {
-    sensorHAL.setAlarmIndication(true, SEVERITY_CRITICAL);
-    sendAlertEvent(SEVERITY_CRITICAL, "GAS_CO_CRITICAL", "Dangerous CO concentration detected", data.co_ppm);
-  } else if (data.co_ppm >= nodeConfigManager.get().co_warning_ppm) {
-    sensorHAL.setAlarmIndication(true, SEVERITY_WARNING);
-    sendAlertEvent(SEVERITY_WARNING, "GAS_CO_HIGH", "CO concentration exceeded warning limit", data.co_ppm);
-  } else if (!data.fall_detected && !readings.panic_pressed) {
-    sensorHAL.setAlarmIndication(false);
+  // CO thresholds only apply to legacy MQ-7 devices that actually measure CO!
+  if (data.has_co) {
+    if (data.co_ppm >= nodeConfigManager.get().co_critical_ppm) {
+      sensorHAL.raiseAlarm(Safety::GasCritical);
+      sendAlertEvent(SEVERITY_CRITICAL, "GAS_CO_CRITICAL", "Dangerous CO concentration detected", data.co_ppm);
+    } else if (data.co_ppm >= nodeConfigManager.get().co_warning_ppm) {
+      sensorHAL.raiseAlarm(Safety::GasWarning);
+      sendAlertEvent(SEVERITY_WARNING, "GAS_CO_HIGH", "CO concentration exceeded warning limit", data.co_ppm);
+    }
   }
 
   if (captivePortal.isActive() || !nodeConfigManager.isProvisioned() || !DeviceTrust::ready()) return;
@@ -291,12 +352,20 @@ void sendTelemetryTask() {
   strncpy(env.zone_id, activeTelemZone, sizeof(env.zone_id) - 1);
   env.uptime_ms = millis();
 
+  // Populate direct anchor context
+  strncpy(env.anchor_id, zoneTracker.getNearestAnchorId(), sizeof(env.anchor_id) - 1);
+  strncpy(env.anchor_zone, zoneTracker.getCurrentZone(), sizeof(env.anchor_zone) - 1);
+  strncpy(env.link_state, zoneTracker.getLinkStateString(), sizeof(env.link_state) - 1);
+  env.hop_distance = (int8_t)zoneTracker.getHopDistance();
+  env.rssi = (int8_t)zoneTracker.getRssi();
+
   String packet;
   if (serializeTelemetry(env, data, packet)) {
     mesh.sendBroadcast(packet);
-    Serial.printf("[TX TELEM #%u] %s (%s) @ %s | CO: %.1f ppm | Temp: %.1f C | Batt: %.2f V (~%.0f%%) | IMU: %.2f g\n",
-                  env.seq, env.sender_id, env.role, env.zone_id,
-                  data.co_ppm, data.temp_c, data.battery_v, readings.battery_pct, readings.accel_magnitude);
+    Serial.printf("[TX TELEM v%u #%u] %s @ %s (%s) | T: %.1f C | H: %.1f %% | P: %.0f Pa | Gas: %.0f Ohm | Batt: %.2f V (~%.0f%%)\n",
+                  env.version, env.seq, env.sender_id, env.zone_id, env.link_state,
+                  data.temp_c, data.humidity_pct, data.pressure_pa, data.gas_resistance_ohm,
+                  data.battery_v, data.battery_pct);
 
     if (nodeConfigManager.getRole() == ROLE_GATEWAY) {
       gatewayManager.handleIncomingMeshPacket(mesh.getNodeId(), packet);
@@ -356,6 +425,7 @@ void sendProvRequestTask() {
   req.mesh_node_id = mesh.getNodeId();
   strncpy(req.fw_version, "1.1.0", sizeof(req.fw_version) - 1);
   req.battery_v = s.battery_v;
+  req.bme_healthy = s.bme_healthy;
   req.mq_healthy = s.mq_healthy;
   req.mpu_healthy = s.mpu_healthy;
 
@@ -432,6 +502,7 @@ void printHelpMenu() {
   Serial.println("  testpost        - Verify a heartbeat using explicitly selected HTTP recovery");
   Serial.println("  buffer-archive <installation UUID> - Preserve old queue for cutover (export archive afterward)");
   Serial.println("  api [url]       - View or set the backend REST API URL in NVS");
+  Serial.println("  key [token]     - View or set the 32+ character gateway API key in NVS");
   Serial.println("  uplink [ssid] [pass] - View or set uplink Wi-Fi credentials in NVS");
   Serial.println("  reset           - Factory reset all persistent NVS settings");
   Serial.println("  reboot          - Perform a software restart of the ESP32");
@@ -691,6 +762,25 @@ void handleSerialCLI() {
           Serial.printf("[CLI] Current Backend URL: %s\n", nodeConfigManager.getBackendUrl());
           Serial.println("  Usage: api <url> (e.g., api http://innovation-hub03.local:8000)");
         }
+      } else if (strncmp(cmd, "key", 3) == 0 || strncmp(cmd, "apikey", 6) == 0) {
+        char* newKey = strchr(cmd, ' ');
+        if (newKey) {
+          while (*newKey == ' ') newKey++;
+        }
+        if (newKey && strlen(newKey) > 0) {
+          if (strlen(newKey) >= 32) {
+            NodeConfig cfg = nodeConfigManager.get();
+            strncpy(cfg.backend_api_key, newKey, sizeof(cfg.backend_api_key) - 1);
+            if (!nodeConfigManager.save(cfg)) return;
+            Serial.printf("[CLI] Gateway API Key updated (length %u): %s\n", (unsigned)strlen(cfg.backend_api_key), cfg.backend_api_key);
+          } else {
+            Serial.printf("[CLI ERROR] API key must be at least 32 characters (got %u).\n", (unsigned)strlen(newKey));
+          }
+        } else {
+          const char* curKey = nodeConfigManager.getBackendApiKey();
+          Serial.printf("  Gateway API Key: %s (Length: %u)\n", strlen(curKey) >= 4 ? "***configured***" : "(none)", (unsigned)strlen(curKey));
+          Serial.println("  Usage: key <32+ character api key>");
+        }
       } else if (strncmp(cmd, "uplink", 6) == 0) {
         char* args = cmd + 6;
         while (*args == ' ') args++;
@@ -874,13 +964,39 @@ void setup() {
 // MAIN LOOP
 // ----------------------------------------------------------------------------
 void loop() {
+  uint32_t now = millis();
+
+  // High-rate emergency input processing (debouncing SOS and Acknowledge buttons)
+  sensorHAL.updateEmergencyInputs(now);
+
+  // Check physical acknowledge button hold (>= 2000 ms to clear active alarms)
+  uint8_t clearedAlarms = sensorHAL.checkAlarmAcknowledge(now);
+  if (clearedAlarms != 0) {
+    sendLocalAckEvent(clearedAlarms, 2000);
+  }
+
+  // Check physical emergency panic button
+  if (sensorHAL.checkPanicButton()) {
+    sensorHAL.setAlarmIndication(true, SEVERITY_CRITICAL);
+    if (!captivePortal.isActive()) {
+      sendAlertEvent(SEVERITY_CRITICAL, "PANIC_SOS", "Miner activated emergency panic button", 1.0f);
+    }
+  }
+
   static uint32_t lastLocalSample = 0;
-  if ((captivePortal.isActive() || !nodeConfigManager.isProvisioned()) && millis() - lastLocalSample >= TELEMETRY_INTERVAL_MS) {
-    lastLocalSample = millis();
+  if ((captivePortal.isActive() || !nodeConfigManager.isProvisioned()) && now - lastLocalSample >= TELEMETRY_INTERVAL_MS) {
+    lastLocalSample = now;
     sendTelemetryTask(); // Local sensing and alarm decisions precede transport guards.
   }
+
   // Drives dynamic subterranean zone tracking (Option 1: Anchor Proximity)
   zoneTracker.update();
+
+  // Immediate movement event check (emits boundary crossing updates promptly)
+  if (nodeConfigManager.getRole() == ROLE_WEARABLE && zoneTracker.consumeMovementEvent()) {
+    Serial.println("\n[ZONE TRACKER] Boundary crossing detected! Emitting immediate telemetry...");
+    sendTelemetryTask();
+  }
 
   // Option 3: Handle captive portal client requests if setup AP is active
   if (captivePortal.isActive()) {
@@ -892,14 +1008,6 @@ void loop() {
 
     if (nodeConfigManager.getRole() == ROLE_GATEWAY) {
       gatewayManager.update();
-    }
-  }
-
-  // Check physical emergency panic button
-  if (sensorHAL.checkPanicButton()) {
-    sensorHAL.setAlarmIndication(true, SEVERITY_CRITICAL);
-    if (!captivePortal.isActive()) {
-      sendAlertEvent(SEVERITY_CRITICAL, "PANIC_SOS", "Miner activated emergency panic button", 1.0f);
     }
   }
 

@@ -95,7 +95,7 @@ bool NodeConfigManager::load() {
 
     String api = _prefs.getString("api_url", BACKEND_BASE_URL);
     strncpy(_config.backend_url, api.c_str(), sizeof(_config.backend_url) - 1);
-    String apiKey = _prefs.getString("api_key", "");
+    String apiKey = _prefs.getString("api_key", BACKEND_DEFAULT_API_KEY);
     strncpy(_config.backend_api_key, apiKey.c_str(), sizeof(_config.backend_api_key) - 1);
 
     _config.co_warning_ppm = _prefs.getFloat("co_warn", CO_THRESHOLD_WARNING_PPM);
@@ -134,7 +134,7 @@ bool NodeConfigManager::load() {
 
     String api = _prefs.getString("api_url", BACKEND_BASE_URL);
     strncpy(_config.backend_url, api.c_str(), sizeof(_config.backend_url) - 1);
-    String apiKey = _prefs.getString("api_key", "");
+    String apiKey = _prefs.getString("api_key", BACKEND_DEFAULT_API_KEY);
     strncpy(_config.backend_api_key, apiKey.c_str(), sizeof(_config.backend_api_key) - 1);
 
     _config.co_warning_ppm = _prefs.getFloat("co_warn", CO_THRESHOLD_WARNING_PPM);
@@ -158,7 +158,11 @@ bool NodeConfigManager::load() {
     strlcpy(_config.backend_url, record["api_url"] | BACKEND_BASE_URL, sizeof(_config.backend_url));
     _config.co_warning_ppm = record["co_warn"] | CO_THRESHOLD_WARNING_PPM;
     _config.co_critical_ppm = record["co_crit"] | CO_THRESHOLD_CRITICAL_PPM;
-    _config.backend_api_key[0] = 0; // Supplied only by the protected local bundle.
+    if (record.containsKey("api_key") && strlen(record["api_key"] | "") >= 32) {
+      strlcpy(_config.backend_api_key, record["api_key"], sizeof(_config.backend_api_key));
+    } else if (strlen(_config.backend_api_key) < 32) {
+      strlcpy(_config.backend_api_key, BACKEND_DEFAULT_API_KEY, sizeof(_config.backend_api_key));
+    }
   }
 
   // One NVS value makes the commissioned identity atomic across power loss.
@@ -193,6 +197,7 @@ bool NodeConfigManager::save(const NodeConfig& cfg) {
   record["api_url"] = cfg.backend_url;
   record["co_warn"] = cfg.co_warning_ppm;
   record["co_crit"] = cfg.co_critical_ppm;
+  record["api_key"] = cfg.backend_api_key;
   String encoded;
   if (record.overflowed() || !serializeJson(record, encoded)
       || _prefs.putString("config_v2", encoded) != encoded.length()) {

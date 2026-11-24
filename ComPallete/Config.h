@@ -82,32 +82,67 @@ inline NodeRole stringToNodeRole(const char* str) {
 #define BATTERY_VOLTAGE_EMPTY      3.00f   // Critical shutdown / brownout threshold
 
 // ----------------------------------------------------------------------------
-// 5. Hardware Interface Pin Definitions (ESP32 / ESP32-S3 Auto-Detection)
+// 5. Named Hardware Profiles & Interface Pin Definitions
 // ----------------------------------------------------------------------------
-#if defined(CONFIG_IDF_TARGET_ESP32S3)
-// --- ESP32-S3 Pin Mapping ---
-// Note: On ESP32-S3, GPIO 19 & 20 are Native USB D-/D+ (USB Serial/JTAG).
-//       GPIO 22-37 do not exist. Pins 1-10 are ADC1.
+#define PROFILE_GENERIC_ESP32        1
+#define PROFILE_GENERIC_ESP32S3      2
+#define PROFILE_FEATHER_ESP32S3_BME  3
+
+#ifndef ACTIVE_HARDWARE_PROFILE
+  #if defined(ARDUINO_ADAFRUIT_FEATHER_ESP32S3) || defined(BOARD_FEATHER_ESP32S3) || defined(CONFIG_IDF_TARGET_ESP32S3)
+    #define ACTIVE_HARDWARE_PROFILE PROFILE_FEATHER_ESP32S3_BME
+  #else
+    #define ACTIVE_HARDWARE_PROFILE PROFILE_GENERIC_ESP32
+  #endif
+#endif
+
+#if (ACTIVE_HARDWARE_PROFILE == PROFILE_FEATHER_ESP32S3_BME)
+// --- Adafruit Feather ESP32-S3 (4MB Flash / 2MB PSRAM) + BME688 + MPU6050 ---
+// Uses board-defined pins and preserves native USB (GPIO 19/20)
+#define PIN_STATUS_LED          13         // Built-in red status LED (GPIO 13)
+#define PIN_I2C_POWER           7          // STEMMA QT / I2C switchable power pin (GPIO 7)
+#define PIN_I2C_SDA             3          // STEMMA QT / Hardware I2C SDA (GPIO 3)
+#define PIN_I2C_SCL             4          // STEMMA QT / Hardware I2C SCL (GPIO 4)
+#define PIN_BUZZER              18         // Active emergency alarm buzzer (GPIO 18 / A0)
+#define PIN_SOS_BUTTON          14         // Dedicated physical SOS panic button (GPIO 14 / A4, active LOW)
+#define PIN_ACK_BUTTON          15         // Separate physical alarm acknowledge button (GPIO 15 / A3, active LOW)
+#define PIN_BOOT_BUTTON         0          // Onboard BOOT button for SoftAP Setup (GPIO 0, active LOW)
+#define USE_ONBOARD_BATTERY_GAUGE true     // Feather onboard I2C fuel gauge (MAX17048 or LC709203F)
+#define PIN_GAS_ANALOG          -1         // Disabled on BME688 profile (I2C digital gas resistance)
+#define PIN_BATTERY_ADC         -1         // Disabled on Feather S3 profile (uses onboard I2C gauge)
+
+#elif (ACTIVE_HARDWARE_PROFILE == PROFILE_GENERIC_ESP32S3)
+// --- Generic ESP32-S3 Pin Mapping ---
 #define PIN_STATUS_LED          2          // Onboard status LED (GPIO 2)
 #define PIN_BUZZER              18         // Active emergency alarm buzzer (GPIO 18)
-#define PIN_SOS_BUTTON          14         // Emergency panic button (Safe GPIO 14; GPIO 19/20 reserved for USB CDC)
-#define PIN_BOOT_BUTTON         0          // Onboard BOOT button for SoftAP Setup Mode (GPIO 0, active LOW, pull-up)
+#define PIN_SOS_BUTTON          14         // Emergency panic button (GPIO 14)
+#define PIN_ACK_BUTTON          12         // Separate physical alarm acknowledge button (GPIO 12)
+#define PIN_BOOT_BUTTON         0          // Onboard BOOT button for SoftAP Setup Mode (GPIO 0)
 #define PIN_GAS_ANALOG          4          // ADC1_CH3 analog gas sensor pin (GPIO 4)
 #define PIN_BATTERY_ADC         5          // ADC1_CH4 battery divider pin (GPIO 5)
 #define PIN_I2C_SDA             8          // ESP32-S3 standard hardware I2C SDA (GPIO 8)
 #define PIN_I2C_SCL             9          // ESP32-S3 standard hardware I2C SCL (GPIO 9)
+#define USE_ONBOARD_BATTERY_GAUGE false
 
 #else
 // --- Classic ESP32 (WROOM / WROVER) Pin Mapping ---
 #define PIN_STATUS_LED          2          // Onboard status LED (GPIO 2)
 #define PIN_BUZZER              18         // Active emergency alarm buzzer (GPIO 18)
 #define PIN_SOS_BUTTON          19         // Emergency panic button (GPIO 19, active LOW, pull-up)
+#define PIN_ACK_BUTTON          23         // Separate physical alarm acknowledge button (GPIO 23, active LOW)
 #define PIN_BOOT_BUTTON         0          // Onboard BOOT button for SoftAP Setup Mode (GPIO 0, active LOW, pull-up)
 #define PIN_GAS_ANALOG          34         // ADC1_CH6 analog gas sensor pin (GPIO 34, input only)
 #define PIN_BATTERY_ADC         35         // ADC1_CH7 battery divider pin (GPIO 35, input only)
 #define PIN_I2C_SDA             21         // I2C SDA for MPU6050 IMU & sensors (GPIO 21)
 #define PIN_I2C_SCL             22         // I2C SCL for MPU6050 IMU & sensors (GPIO 22)
+#define USE_ONBOARD_BATTERY_GAUGE false
 #endif
+
+// I2C Sensor Bus Addresses
+#define BME688_I2C_ADDR_DEFAULT    0x77       // Primary BME688 I2C address
+#define BME688_I2C_ADDR_ALT        0x76       // Alternate BME688 I2C address
+#define MAX17048_I2C_ADDR          0x36       // Feather ESP32-S3 MAX17048 fuel gauge
+#define LC709203F_I2C_ADDR         0x0B       // Earlier Feather LC709203F fuel gauge
 
 // ----------------------------------------------------------------------------
 // 6. Sensor Calibration Constants (Phase 5 Hardware Abstraction Layer)
@@ -147,6 +182,7 @@ inline NodeRole stringToNodeRole(const char* str) {
 #define UPLINK_WIFI_PASSWORD    "V!brant2025#1nnov"
 #define BACKEND_BASE_URL        "http://innovation-hub03.local:8000"
 #define BACKEND_TIMEOUT_MS      4000       // HTTP request timeout in ms
+#define BACKEND_DEFAULT_API_KEY "compallette_gateway_secret_key_32bytes"
 
 // Backend API REST & WebSocket endpoints
 #define ENDPOINT_TELEMETRY      "/api/v1/telemetry"

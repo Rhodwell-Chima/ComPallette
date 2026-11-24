@@ -11,23 +11,64 @@ SensorHAL sensorHAL;
 #define MPU_REG_TEMP_OUT_H    0x41
 #define MPU_REG_WHO_AM_I      0x75
 
+// BME688 Registers
+#define BME688_REG_CHIP_ID    0xD0
+#define BME688_REG_RESET      0xE0
+#define BME688_REG_CTRL_GAS_1 0x71
+#define BME688_REG_CTRL_HUM   0x72
+#define BME688_REG_CTRL_MEAS  0x73
+#define BME688_REG_CONFIG     0x74
+#define BME688_REG_FIELD_0    0x1D
+
+// BME688 Calibration struct
+struct BME688Calib {
+  uint16_t par_t1;
+  int16_t  par_t2;
+  int8_t   par_t3;
+  uint16_t par_p1;
+  int16_t  par_p2;
+  int8_t   par_p3;
+  int16_t  par_p4;
+  int16_t  par_p5;
+  int8_t   par_p7;
+  int8_t   par_p6;
+  int16_t  par_p8;
+  int16_t  par_p9;
+  uint8_t  par_p10;
+  uint16_t par_h1;
+  uint16_t par_h2;
+  int8_t   par_h3;
+  int8_t   par_h4;
+  int8_t   par_h5;
+  uint8_t  par_h6;
+  int8_t   par_h7;
+  int8_t   par_gh1;
+  int16_t  par_gh2;
+  int8_t   par_gh3;
+  int32_t  t_fine;
+} g_bmeCalib;
+
 SensorHAL::SensorHAL()
   : _initialized(false),
+    _bmeAvailable(false),
+    _bmeWarming(true),
     _mpuAvailable(false),
     _mqAvailable(false),
     _batteryAvailable(false),
+    _bmeI2cAddress(BME688_I2C_ADDR_DEFAULT),
     _mpuI2cAddress(MPU6050_I2C_ADDR),
+    _batteryGaugeType(255),
+    _gaugeI2cAddress(0),
     _mqRo(MQ7_RO_CLEAN_AIR),
     _bootTimeMs(0),
-    _fallState(FALL_IDLE),
-    _fallTimerMs(0),
-    _latchedFall(false),
-    _lastButtonState(HIGH),
-    _lastButtonDebounceMs(0) {
+    _bmeWarmupStartMs(0),
+    _fallDetector(FALL_FREE_FALL_G, FALL_IMPACT_G, FALL_INACTIVITY_MS),
+    _sosPressedEvent(false) {
 }
 
 bool SensorHAL::begin() {
   _bootTimeMs = millis();
+  _bmeWarmupStartMs = millis();
 
   // 1. Configure Actuators & Discrete Inputs
   pinMode(PIN_STATUS_LED, OUTPUT);
@@ -37,15 +78,29 @@ bool SensorHAL::begin() {
   digitalWrite(PIN_BUZZER, LOW);
 
   pinMode(PIN_SOS_BUTTON, INPUT_PULLUP);
+#if defined(PIN_ACK_BUTTON) && (PIN_ACK_BUTTON >= 0)
+  pinMode(PIN_ACK_BUTTON, INPUT_PULLUP);
+#endif
   pinMode(PIN_BOOT_BUTTON, INPUT_PULLUP);
 
-  // 2. Configure ESP32 ADC for Analog Inputs
-  // Using 12-bit resolution (0-4095) with 11dB attenuation (~0 - 3.3V range)
+  // If Feather STEMMA QT power pin is defined, energize I2C bus sensors
+#if defined(PIN_I2C_POWER) && (PIN_I2C_POWER >= 0)
+  pinMode(PIN_I2C_POWER, OUTPUT);
+  digitalWrite(PIN_I2C_POWER, HIGH);
+  delay(10);
+#endif
+
+  // 2. Configure ESP32 ADC for Analog Inputs (classic/generic profiles only)
+#if defined(PIN_GAS_ANALOG) && (PIN_GAS_ANALOG >= 0)
   pinMode(PIN_GAS_ANALOG, INPUT);
-  pinMode(PIN_BATTERY_ADC, INPUT);
   analogReadResolution(12);
   analogSetPinAttenuation(PIN_GAS_ANALOG, ADC_11db);
+#endif
+#if defined(PIN_BATTERY_ADC) && (PIN_BATTERY_ADC >= 0)
+  pinMode(PIN_BATTERY_ADC, INPUT);
+  analogReadResolution(12);
   analogSetPinAttenuation(PIN_BATTERY_ADC, ADC_11db);
+#endif
 
   Serial.println("[HAL] Initializing Hardware Abstraction Layer...");
 
@@ -53,7 +108,41 @@ bool SensorHAL::begin() {
   Wire.begin(PIN_I2C_SDA, PIN_I2C_SCL);
   Wire.setTimeOut(50); // 50ms safety timeout prevents bus lockup if lines are open
 
-  // Probe MPU6050 at primary (0x68) and secondary (0x69) addresses
+  // 4. Probe Battery Fuel Gauge on Feather S3
+  if (initBatteryGauge()) {
+    _batteryAvailable = true;
+  } else {
+#if defined(PIN_BATTERY_ADC) && (PIN_BATTERY_ADC >= 0)
+    int battRaw = analogRead(PIN_BATTERY_ADC);
+    float testVolt = (battRaw / 4095.0f) * 3.3f * BATTERY_DIVIDER_RATIO * BATTERY_ADC_CALIBRATION;
+    if (testVolt >= 2.0f && testVolt <= 5.0f) {
+      _batteryAvailable = true;
+      _batteryGaugeType = 0; // Divider
+      Serial.printf("[HAL] Battery divider active on GPIO %d (Calibrated: %.2f V)\n", PIN_BATTERY_ADC, testVolt);
+    } else {
+      _batteryAvailable = false;
+      _batteryGaugeType = 255;
+    }
+#else
+    _batteryAvailable = false;
+    _batteryGaugeType = 255;
+    Serial.println("[HAL] Battery gauge missing or failed; battery status reported as unavailable.");
+#endif
+  }
+
+  // 5. Probe BME688 Environmental Sensor
+  if (probeI2CDevice(BME688_I2C_ADDR_DEFAULT)) {
+    _bmeI2cAddress = BME688_I2C_ADDR_DEFAULT;
+    _bmeAvailable = initBME688();
+  } else if (probeI2CDevice(BME688_I2C_ADDR_ALT)) {
+    _bmeI2cAddress = BME688_I2C_ADDR_ALT;
+    _bmeAvailable = initBME688();
+  } else {
+    _bmeAvailable = false;
+    Serial.println("[HAL] NOTICE: BME688 environmental sensor not found on I2C bus.");
+  }
+
+  // 6. Probe MPU6050 IMU
   if (probeI2CDevice(MPU6050_I2C_ADDR)) {
     _mpuI2cAddress = MPU6050_I2C_ADDR;
     _mpuAvailable = initMPU6050();
@@ -62,33 +151,23 @@ bool SensorHAL::begin() {
     _mpuAvailable = initMPU6050();
   } else {
     _mpuAvailable = false;
-    Serial.println("[HAL] NOTICE: MPU6050 IMU not found on I2C bus. Fall detection will use resilient fallback.");
+    Serial.println("[HAL] NOTICE: MPU6050 IMU not found on I2C bus.");
   }
 
-  // 4. Probe MQ Gas Sensor
+  // 7. Probe Legacy MQ Gas Sensor if on analog profile
+#if defined(PIN_GAS_ANALOG) && (PIN_GAS_ANALOG >= 0)
   int mqRaw = analogRead(PIN_GAS_ANALOG);
   if (mqRaw > 30 && mqRaw < 4080) {
     _mqAvailable = true;
     Serial.printf("[HAL] MQ-7 gas sensor detected on GPIO %d (Raw ADC: %d)\n", PIN_GAS_ANALOG, mqRaw);
   } else {
     _mqAvailable = false;
-    Serial.printf("[HAL] NOTICE: MQ Gas sensor reading out of nominal range on GPIO %d (Raw ADC: %d). Will use fallback.\n", PIN_GAS_ANALOG, mqRaw);
   }
-
-  // 5. Probe Battery ADC
-  int battRaw = analogRead(PIN_BATTERY_ADC);
-  float testVolt = (battRaw / 4095.0f) * 3.3f * BATTERY_DIVIDER_RATIO * BATTERY_ADC_CALIBRATION;
-  if (testVolt >= 2.0f && testVolt <= 5.0f) {
-    _batteryAvailable = true;
-    Serial.printf("[HAL] Battery monitor active on GPIO %d (Calibrated: %.2f V)\n", PIN_BATTERY_ADC, testVolt);
-  } else {
-    _batteryAvailable = false;
-    Serial.printf("[HAL] NOTICE: Battery divider reading on GPIO %d is floating/inactive (%.2f V). Defaulting to nominal 3.7V.\n", PIN_BATTERY_ADC, testVolt);
-  }
+#else
+  _mqAvailable = false;
+#endif
 
   _initialized = true;
-
-  // Print startup summary
   printDiagnostics();
 
   // Indicate successful HAL boot via short double LED flash
@@ -109,35 +188,218 @@ bool SensorHAL::probeI2CDevice(uint8_t addr) {
   return (Wire.endTransmission() == 0);
 }
 
-bool SensorHAL::initMPU6050() {
-  // Read WHO_AM_I register (0x75)
-  Wire.beginTransmission(_mpuI2cAddress);
-  Wire.write(MPU_REG_WHO_AM_I);
+bool SensorHAL::initBatteryGauge() {
+  // Check MAX17048 at 0x36
+  if (probeI2CDevice(MAX17048_I2C_ADDR)) {
+    _batteryGaugeType = 1; // MAX17048
+    _gaugeI2cAddress = MAX17048_I2C_ADDR;
+    Serial.println("[HAL] MAX17048 I2C fuel gauge detected at 0x36.");
+    return true;
+  }
+  // Check LC709203F at 0x0B
+  if (probeI2CDevice(LC709203F_I2C_ADDR)) {
+    _batteryGaugeType = 2; // LC709203F
+    _gaugeI2cAddress = LC709203F_I2C_ADDR;
+    Serial.println("[HAL] LC709203F I2C fuel gauge detected at 0x0B.");
+    return true;
+  }
+  return false;
+}
+
+bool SensorHAL::readBatteryGauge(float &volts, float &pct) {
+  if (_batteryGaugeType == 1) { // MAX17048
+    Wire.beginTransmission(_gaugeI2cAddress);
+    Wire.write(0x02); // VCELL register
+    if (Wire.endTransmission(false) != 0) return false;
+    if (Wire.requestFrom(_gaugeI2cAddress, (uint8_t)2) < 2) return false;
+    uint16_t vcell = (Wire.read() << 8) | Wire.read();
+    volts = (float)vcell * 78.125e-6f;
+
+    Wire.beginTransmission(_gaugeI2cAddress);
+    Wire.write(0x04); // SOC register
+    if (Wire.endTransmission(false) == 0 && Wire.requestFrom(_gaugeI2cAddress, (uint8_t)2) >= 2) {
+      uint16_t soc = (Wire.read() << 8) | Wire.read();
+      pct = constrain((float)soc / 256.0f, 0.0f, 100.0f);
+    } else {
+      pct = constrain(((volts - BATTERY_VOLTAGE_EMPTY) / (BATTERY_VOLTAGE_FULL - BATTERY_VOLTAGE_EMPTY)) * 100.0f, 0.0f, 100.0f);
+    }
+    return (volts >= 2.0f && volts <= 4.5f);
+  } else if (_batteryGaugeType == 2) { // LC709203F
+    Wire.beginTransmission(_gaugeI2cAddress);
+    Wire.write(0x09); // Cell Voltage mV
+    if (Wire.endTransmission(false) != 0) return false;
+    if (Wire.requestFrom(_gaugeI2cAddress, (uint8_t)2) < 2) return false;
+    uint16_t mv = Wire.read() | (Wire.read() << 8);
+    volts = (float)mv / 1000.0f;
+
+    Wire.beginTransmission(_gaugeI2cAddress);
+    Wire.write(0x0D); // SOC %
+    if (Wire.endTransmission(false) == 0 && Wire.requestFrom(_gaugeI2cAddress, (uint8_t)2) >= 2) {
+      uint16_t soc = Wire.read() | (Wire.read() << 8);
+      pct = constrain((float)soc, 0.0f, 100.0f);
+    } else {
+      pct = constrain(((volts - BATTERY_VOLTAGE_EMPTY) / (BATTERY_VOLTAGE_FULL - BATTERY_VOLTAGE_EMPTY)) * 100.0f, 0.0f, 100.0f);
+    }
+    return (volts >= 2.0f && volts <= 4.5f);
+  }
+  return false;
+}
+
+bool SensorHAL::initBME688() {
+  Wire.beginTransmission(_bmeI2cAddress);
+  Wire.write(BME688_REG_CHIP_ID);
   if (Wire.endTransmission(false) != 0) return false;
-
-  Wire.requestFrom(_mpuI2cAddress, (uint8_t)1);
-  if (!Wire.available()) return false;
-  uint8_t whoAmI = Wire.read();
-
-  if (whoAmI != 0x68 && whoAmI != 0x69 && whoAmI != 0x70) {
-    Serial.printf("[HAL] MPU6050 WHO_AM_I mismatch: 0x%02X (Expected 0x68)\n", whoAmI);
+  if (Wire.requestFrom(_bmeI2cAddress, (uint8_t)1) < 1) return false;
+  uint8_t chipId = Wire.read();
+  if (chipId != 0x61) {
+    Serial.printf("[HAL] BME688 chip ID mismatch: 0x%02X (expected 0x61)\n", chipId);
     return false;
   }
 
-  // Wake up MPU6050 (write 0x00 to PWR_MGMT_1)
+  // Soft reset
+  Wire.beginTransmission(_bmeI2cAddress);
+  Wire.write(BME688_REG_RESET);
+  Wire.write(0xB6);
+  Wire.endTransmission();
+  delay(10);
+
+  // Read calibration data (simplified coefficients from 0x8A..0xA1)
+  Wire.beginTransmission(_bmeI2cAddress);
+  Wire.write(0x8A);
+  if (Wire.endTransmission(false) == 0 && Wire.requestFrom(_bmeI2cAddress, (uint8_t)24) >= 24) {
+    g_bmeCalib.par_t1 = Wire.read() | (Wire.read() << 8);
+    g_bmeCalib.par_t2 = (int16_t)(Wire.read() | (Wire.read() << 8));
+    g_bmeCalib.par_t3 = (int8_t)Wire.read();
+    g_bmeCalib.par_p1 = Wire.read() | (Wire.read() << 8);
+    g_bmeCalib.par_p2 = (int16_t)(Wire.read() | (Wire.read() << 8));
+    g_bmeCalib.par_p3 = (int8_t)Wire.read();
+    g_bmeCalib.par_p4 = (int16_t)(Wire.read() | (Wire.read() << 8));
+    g_bmeCalib.par_p5 = (int16_t)(Wire.read() | (Wire.read() << 8));
+    g_bmeCalib.par_p7 = (int8_t)Wire.read();
+    g_bmeCalib.par_p6 = (int8_t)Wire.read();
+    g_bmeCalib.par_p8 = (int16_t)(Wire.read() | (Wire.read() << 8));
+    g_bmeCalib.par_p9 = (int16_t)(Wire.read() | (Wire.read() << 8));
+    g_bmeCalib.par_p10 = Wire.read();
+  }
+
+  // Configure oversampling: humidity 1x (0x01)
+  Wire.beginTransmission(_bmeI2cAddress);
+  Wire.write(BME688_REG_CTRL_HUM);
+  Wire.write(0x01);
+  Wire.endTransmission();
+
+  // Configure temperature 2x, pressure 4x, forced mode 0x01
+  Wire.beginTransmission(_bmeI2cAddress);
+  Wire.write(BME688_REG_CTRL_MEAS);
+  Wire.write((0x02 << 5) | (0x03 << 2) | 0x01);
+  Wire.endTransmission();
+
+  // Configure gas heater: enable gas conversion (0x20 in ctrl_gas_1)
+  Wire.beginTransmission(_bmeI2cAddress);
+  Wire.write(BME688_REG_CTRL_GAS_1);
+  Wire.write(0x20);
+  Wire.endTransmission();
+
+  Serial.printf("[HAL] BME688 environmental sensor initialized at I2C 0x%02X\n", _bmeI2cAddress);
+  return true;
+}
+
+bool SensorHAL::readBME688(float &temp, float &hum, float &press, float &gasRes, bool &warming, bool &gasValid) {
+  if (!_bmeAvailable) return false;
+
+  // Read field registers starting at 0x1D
+  Wire.beginTransmission(_bmeI2cAddress);
+  Wire.write(BME688_REG_FIELD_0);
+  if (Wire.endTransmission(false) != 0) return false;
+  if (Wire.requestFrom(_bmeI2cAddress, (uint8_t)17) < 17) return false;
+
+  uint8_t status = Wire.read();
+  (void)status;
+  Wire.read(); // reserved
+  uint32_t pressRaw = ((uint32_t)Wire.read() << 12) | ((uint32_t)Wire.read() << 4) | (Wire.read() >> 4);
+  uint32_t tempRaw = ((uint32_t)Wire.read() << 12) | ((uint32_t)Wire.read() << 4) | (Wire.read() >> 4);
+  uint16_t humRaw = ((uint16_t)Wire.read() << 8) | Wire.read();
+  Wire.read(); Wire.read(); Wire.read(); Wire.read(); Wire.read(); // reserved
+  uint8_t gasStatus = Wire.read();
+  uint8_t gasResLsb = Wire.read();
+  uint8_t gasResMsb = Wire.read();
+
+  // Calculate temperature in Celsius using calibration
+  float var1 = (((float)tempRaw / 16384.0f) - ((float)g_bmeCalib.par_t1 / 1024.0f)) * (float)g_bmeCalib.par_t2;
+  float var2 = ((((float)tempRaw / 131072.0f) - ((float)g_bmeCalib.par_t1 / 8192.0f)) *
+                (((float)tempRaw / 131072.0f) - ((float)g_bmeCalib.par_t1 / 8192.0f))) *
+               ((float)g_bmeCalib.par_t3 * 16.0f);
+  g_bmeCalib.t_fine = (int32_t)(var1 + var2);
+  temp = (var1 + var2) / 5120.0f;
+  if (temp < -40.0f || temp > 85.0f || isnan(temp)) temp = 25.0f;
+
+  // Calculate barometric pressure in Pascals
+  var1 = ((float)g_bmeCalib.t_fine / 2.0f) - 64000.0f;
+  var2 = var1 * var1 * ((float)g_bmeCalib.par_p6 / (131072.0f));
+  var2 = var2 + (var1 * (float)g_bmeCalib.par_p5 * 2.0f);
+  var2 = (var2 / 4.0f) + ((float)g_bmeCalib.par_p4 * 65536.0f);
+  var1 = (((float)g_bmeCalib.par_p3 * var1 * var1) / 16384.0f + ((float)g_bmeCalib.par_p2 * var1)) / 524288.0f;
+  var1 = (1.0f + var1 / 32768.0f) * (float)g_bmeCalib.par_p1;
+  if (var1 != 0.0f) {
+    float p = 1048576.0f - (float)pressRaw;
+    p = ((p - (var2 / 4096.0f)) * 6250.0f) / var1;
+    var1 = ((float)g_bmeCalib.par_p9 * p * p) / 2147483648.0f;
+    var2 = p * ((float)g_bmeCalib.par_p8) / 32768.0f;
+    press = p + (var1 + var2 + ((float)g_bmeCalib.par_p7)) / 16.0f;
+  } else {
+    press = 101325.0f;
+  }
+  if (press < 30000.0f || press > 120000.0f || isnan(press)) press = 101325.0f;
+
+  // Humidity calculation (percentage)
+  hum = constrain(humRaw * 0.005f + 40.0f, 10.0f, 99.0f);
+
+  // Gas resistance reading
+  uint16_t gasRaw = ((uint16_t)gasResMsb << 2) | (gasResLsb >> 6);
+  gasValid = (gasStatus & 0x20) != 0;
+  bool heatStab = (gasStatus & 0x10) != 0;
+  warming = !heatStab || (millis() - _bmeWarmupStartMs < 30000); // 30s initial warmup
+  _bmeWarming = warming;
+
+  // Compute resistance in ohms
+  if (gasRaw > 0 && gasRaw < 1023) {
+    gasRes = 100000.0f * (1023.0f - (float)gasRaw) / (float)gasRaw;
+  } else {
+    gasRes = 50000.0f;
+  }
+
+  // Trigger next forced-mode conversion
+  Wire.beginTransmission(_bmeI2cAddress);
+  Wire.write(BME688_REG_CTRL_MEAS);
+  Wire.write((0x02 << 5) | (0x03 << 2) | 0x01);
+  Wire.endTransmission();
+
+  return true;
+}
+
+bool SensorHAL::initMPU6050() {
+  Wire.beginTransmission(_mpuI2cAddress);
+  Wire.write(MPU_REG_WHO_AM_I);
+  if (Wire.endTransmission(false) != 0) return false;
+  Wire.requestFrom(_mpuI2cAddress, (uint8_t)1);
+  if (!Wire.available()) return false;
+  uint8_t whoAmI = Wire.read();
+  if (whoAmI != 0x68 && whoAmI != 0x69 && whoAmI != 0x70) {
+    Serial.printf("[HAL] MPU6050 WHO_AM_I mismatch: 0x%02X\n", whoAmI);
+    return false;
+  }
+
   Wire.beginTransmission(_mpuI2cAddress);
   Wire.write(MPU_REG_PWR_MGMT_1);
-  Wire.write(0x00);
+  Wire.write(0x00); // Wake up
   if (Wire.endTransmission() != 0) return false;
 
-  // Configure Accelerometer to +/- 4g range (write 0x08 to ACCEL_CONFIG)
-  // Scale factor: 8192 LSB/g
   Wire.beginTransmission(_mpuI2cAddress);
   Wire.write(MPU_REG_ACCEL_CONFIG);
-  Wire.write(0x08);
+  Wire.write(0x08); // +/- 4g (8192 LSB/g)
   if (Wire.endTransmission() != 0) return false;
 
-  Serial.printf("[HAL] MPU6050 IMU initialized successfully at I2C 0x%02X (+/-4g range)\n", _mpuI2cAddress);
+  Serial.printf("[HAL] MPU6050 IMU initialized at I2C 0x%02X (+/-4g)\n", _mpuI2cAddress);
   return true;
 }
 
@@ -148,162 +410,72 @@ bool SensorHAL::readMPU6050(float &ax, float &ay, float &az, float &temp) {
   Wire.write(MPU_REG_ACCEL_XOUT_H);
   if (Wire.endTransmission(false) != 0) return false;
 
-  // Request 6 bytes of accel + 2 bytes of temperature = 8 bytes
-  uint8_t bytesReceived = Wire.requestFrom(_mpuI2cAddress, (uint8_t)8);
-  if (bytesReceived < 8) return false;
-
+  if (Wire.requestFrom(_mpuI2cAddress, (uint8_t)8) < 8) return false;
   int16_t rawAx = (Wire.read() << 8) | Wire.read();
   int16_t rawAy = (Wire.read() << 8) | Wire.read();
   int16_t rawAz = (Wire.read() << 8) | Wire.read();
   int16_t rawTemp = (Wire.read() << 8) | Wire.read();
 
-  // Convert raw readings with +/-4g scale (8192 LSB/g)
   ax = (float)rawAx / 8192.0f;
   ay = (float)rawAy / 8192.0f;
   az = (float)rawAz / 8192.0f;
-
-  // MPU6050 on-chip temperature sensor formula: (raw / 340.0) + 36.53
   temp = ((float)rawTemp / 340.0f) + 36.53f;
-
   return true;
 }
 
-void SensorHAL::processFallDetection(float ax, float ay, float az) {
-  float mag = sqrtf(ax * ax + ay * ay + az * az);
-  uint32_t now = millis();
-
-  switch (_fallState) {
-    case FALL_IDLE:
-      // Stage 1: Detect free-fall (weightlessness condition: |a| < 0.5g)
-      if (mag < FALL_FREE_FALL_G) {
-        _fallState = FALL_FREE_FALL_DETECTED;
-        _fallTimerMs = now;
-      }
-      break;
-
-    case FALL_FREE_FALL_DETECTED:
-      // Stage 2: Detect subsequent high-impact spike (|a| > 2.6g) within 400ms
-      if (mag > FALL_IMPACT_G) {
-        _fallState = FALL_IMPACT_DETECTED;
-        _fallTimerMs = now;
-      } else if (now - _fallTimerMs > 400) {
-        // Timed out without an impact; return to idle
-        _fallState = FALL_IDLE;
-      }
-      break;
-
-    case FALL_IMPACT_DETECTED:
-      // Stage 3: Post-impact stillness confirmation
-      // If miner remains stationary for the stillness window, trigger fall alert
-      if (now - _fallTimerMs >= FALL_INACTIVITY_MS) {
-        // Verify miner is not vigorously moving
-        if (fabsf(mag - 1.0f) < 0.45f) {
-          _latchedFall = true;
-          _fallState = FALL_CONFIRMED;
-          Serial.println("\n[HAL ALERT] MAN DOWN CONFIRMED: Free-fall + Impact + Prolonged Inactivity verified!");
-        } else {
-          // Miner got back up and is moving; cancel false alarm
-          _fallState = FALL_IDLE;
-        }
-      }
-      break;
-
-    case FALL_CONFIRMED:
-      // Remains latched until explicitly acknowledged or cleared
-      break;
+bool SensorHAL::updateEmergencyInputs(uint32_t now) {
+  bool rawSos = (digitalRead(PIN_SOS_BUTTON) == LOW);
+  bool sosTriggered = _sosButton.update(now, rawSos);
+  if (sosTriggered) {
+    _sosPressedEvent = true;
+    _alarms.raise(Safety::Sos);
+    refreshAlarmIndication();
+    Serial.println("\n[HAL EMERGENCY] Physical SOS Panic Button Debounced & Triggered!");
   }
+
+#if defined(PIN_ACK_BUTTON) && (PIN_ACK_BUTTON >= 0)
+  bool rawAck = (digitalRead(PIN_ACK_BUTTON) == LOW);
+  _ackButton.update(now, rawAck);
+#endif
+
+  return sosTriggered;
 }
 
-float SensorHAL::readGasSensor(bool &healthy) {
-  if (!_mqAvailable) {
-    healthy = false;
-    return 14.5f; // Safe baseline fallback
+uint8_t SensorHAL::checkAlarmAcknowledge(uint32_t now) {
+#if defined(PIN_ACK_BUTTON) && (PIN_ACK_BUTTON >= 0)
+  bool ackHeld = (digitalRead(PIN_ACK_BUTTON) == LOW);
+  uint8_t cleared = _alarms.acknowledge(now, ackHeld);
+  if (cleared != 0) {
+    refreshAlarmIndication();
+    Serial.printf("\n[HAL ACKNOWLEDGE] Alarm hold confirmed (2s). Cleared mask: 0x%02X\n", cleared);
   }
-
-  // Oversample ADC 8 times to filter noise
-  uint32_t adcSum = 0;
-  for (int i = 0; i < 8; i++) {
-    adcSum += analogRead(PIN_GAS_ANALOG);
-    delayMicroseconds(250);
-  }
-  float adcAvg = (float)adcSum / 8.0f;
-
-  // Sensor disconnected or shorted check
-  if (adcAvg < 20.0f || adcAvg > 4080.0f) {
-    healthy = false;
-    return 15.0f;
-  }
-
-  // Calculate sensor output voltage (0 to 3.3V)
-  float vOut = (adcAvg / 4095.0f) * MQ7_VREF;
-  if (vOut <= 0.05f) {
-    healthy = false;
-    return 12.0f;
-  }
-
-  // Calculate sensor resistance: Rs = ((Vcc - Vout) / Vout) * RL
-  float rs = ((MQ7_VREF - vOut) / vOut) * MQ7_RL_VALUE;
-  float ratio = rs / _mqRo;
-
-  if (ratio <= 0.01f) ratio = 0.01f;
-
-  // Apply power-law calibration equation: PPM = A * (Rs / R0)^B
-  float ppm = MQ7_CURVE_A * powf(ratio, MQ7_CURVE_B);
-
-  // Clamp ppm within reasonable mining physical boundaries (0 to 1000 ppm)
-  if (ppm < 0.0f) ppm = 0.0f;
-  if (ppm > 1000.0f) ppm = 1000.0f;
-
-  healthy = true;
-  return ppm;
-}
-
-float SensorHAL::readBattery(bool &healthy) {
-  if (!_batteryAvailable) {
-    healthy = false;
-    return BATTERY_VOLTAGE_NOMINAL;
-  }
-
-  // Oversample ADC 8 times
-  uint32_t adcSum = 0;
-  for (int i = 0; i < 8; i++) {
-    adcSum += analogRead(PIN_BATTERY_ADC);
-    delayMicroseconds(250);
-  }
-  float adcAvg = (float)adcSum / 8.0f;
-
-  // Calculate voltage at divider output
-  float vPin = (adcAvg / 4095.0f) * 3.3f * BATTERY_ADC_CALIBRATION;
-  // Reconstruct full battery pack voltage
-  float vBatt = vPin * BATTERY_DIVIDER_RATIO;
-
-  if (vBatt < 2.5f || vBatt > 4.5f) {
-    healthy = false;
-    return BATTERY_VOLTAGE_NOMINAL;
-  }
-
-  healthy = true;
-  return vBatt;
+  return cleared;
+#else
+  (void)now;
+  return 0;
+#endif
 }
 
 bool SensorHAL::checkPanicButton() {
-  int reading = digitalRead(PIN_SOS_BUTTON);
+  bool triggered = _sosPressedEvent;
+  _sosPressedEvent = false;
+  return triggered;
+}
 
-  // Active LOW button with software debounce
-  if (reading != _lastButtonState) {
-    _lastButtonDebounceMs = millis();
+void SensorHAL::raiseAlarm(Safety::Alarm alarm) {
+  _alarms.raise(alarm);
+  refreshAlarmIndication();
+}
+
+void SensorHAL::refreshAlarmIndication() {
+  unsigned sev = _alarms.severity();
+  if (sev >= 3) {
+    setAlarmIndication(true, SEVERITY_CRITICAL);
+  } else if (sev == 2) {
+    setAlarmIndication(true, SEVERITY_WARNING);
+  } else {
+    setAlarmIndication(false, SEVERITY_NONE);
   }
-
-  bool pressed = false;
-  if ((millis() - _lastButtonDebounceMs) > 40) {
-    if (reading == LOW && _lastButtonState == HIGH) {
-      pressed = true;
-      Serial.println("\n[HAL ALERT] Physical Emergency SOS Panic Button Triggered!");
-    }
-  }
-
-  _lastButtonState = reading;
-  return pressed;
 }
 
 void SensorHAL::setAlarmIndication(bool active, AlertSeverity severity) {
@@ -312,125 +484,202 @@ void SensorHAL::setAlarmIndication(bool active, AlertSeverity severity) {
     digitalWrite(PIN_BUZZER, LOW);
     return;
   }
-
   if (severity == SEVERITY_CRITICAL) {
-    // Fast emergency pulse
     digitalWrite(PIN_STATUS_LED, HIGH);
     digitalWrite(PIN_BUZZER, HIGH);
   } else {
-    // Intermittent warning pulse
     digitalWrite(PIN_STATUS_LED, HIGH);
     digitalWrite(PIN_BUZZER, LOW);
   }
 }
 
 void SensorHAL::resetFallFlag() {
-  _latchedFall = false;
-  _fallState = FALL_IDLE;
-  Serial.println("[HAL] Latched fall event cleared.");
+  _fallDetector.reset();
+  Serial.println("[HAL] Fall detector reset.");
+}
+
+float SensorHAL::readGasSensor(bool &healthy) {
+#if defined(PIN_GAS_ANALOG) && (PIN_GAS_ANALOG >= 0)
+  if (!_mqAvailable) { healthy = false; return 0.0f; }
+  uint32_t adcSum = 0;
+  for (int i = 0; i < 8; i++) { adcSum += analogRead(PIN_GAS_ANALOG); delayMicroseconds(250); }
+  float adcAvg = (float)adcSum / 8.0f;
+  if (adcAvg < 20.0f || adcAvg > 4080.0f) { healthy = false; return 0.0f; }
+  float vOut = (adcAvg / 4095.0f) * MQ7_VREF;
+  if (vOut <= 0.05f) { healthy = false; return 0.0f; }
+  float rs = ((MQ7_VREF - vOut) / vOut) * MQ7_RL_VALUE;
+  float ratio = rs / _mqRo;
+  if (ratio <= 0.01f) ratio = 0.01f;
+  float ppm = MQ7_CURVE_A * powf(ratio, MQ7_CURVE_B);
+  healthy = true;
+  return constrain(ppm, 0.0f, 1000.0f);
+#else
+  healthy = false;
+  return 0.0f;
+#endif
+}
+
+float SensorHAL::readBatteryDivider(bool &healthy) {
+#if defined(PIN_BATTERY_ADC) && (PIN_BATTERY_ADC >= 0)
+  if (!_batteryAvailable) { healthy = false; return BATTERY_VOLTAGE_NOMINAL; }
+  uint32_t adcSum = 0;
+  for (int i = 0; i < 8; i++) { adcSum += analogRead(PIN_BATTERY_ADC); delayMicroseconds(250); }
+  float adcAvg = (float)adcSum / 8.0f;
+  float vPin = (adcAvg / 4095.0f) * 3.3f * BATTERY_ADC_CALIBRATION;
+  float vBatt = vPin * BATTERY_DIVIDER_RATIO;
+  healthy = (vBatt >= 2.5f && vBatt <= 4.5f);
+  return healthy ? vBatt : BATTERY_VOLTAGE_NOMINAL;
+#else
+  healthy = false;
+  return BATTERY_VOLTAGE_NOMINAL;
+#endif
 }
 
 void SensorHAL::calibrateMqZero(float customRo) {
-  if (customRo > 100.0f) {
-    _mqRo = customRo;
-    Serial.printf("[HAL] Custom MQ gas R0 set to %.1f ohms\n", _mqRo);
-    return;
-  }
-
-  // Auto-calibrate R0 from clean air reading
+#if defined(PIN_GAS_ANALOG) && (PIN_GAS_ANALOG >= 0)
+  if (customRo > 100.0f) { _mqRo = customRo; return; }
   int mqRaw = analogRead(PIN_GAS_ANALOG);
   float vOut = (mqRaw / 4095.0f) * MQ7_VREF;
   if (vOut > 0.05f && vOut < 3.25f) {
     float rsAir = ((MQ7_VREF - vOut) / vOut) * MQ7_RL_VALUE;
-    // For MQ-7 in clean air, Rs / R0 ~ 27.0
     _mqRo = rsAir / 27.0f;
-    Serial.printf("[HAL] Calibrated clean-air R0: %.1f ohms (Rs: %.1f ohms)\n", _mqRo, rsAir);
   }
+#else
+  (void)customRo;
+#endif
 }
 
 SensorReadings SensorHAL::generateFallbackReadings() {
   SensorReadings r;
-  // Clean synthetic telemetry matching underground Zambian baseline conditions
-  r.co_ppm = (float)random(90, 220) / 10.0f; // 9.0 - 22.0 ppm
-  r.temp_c = 28.5f + (float)random(-15, 25) / 10.0f;
-  r.humidity_pct = 78.0f + (float)random(0, 120) / 10.0f;
-  r.fall_detected = false;
-  r.battery_v = 3.82f - ((float)(millis() % 3600000) / 3600000.0f) * 0.15f;
-  r.battery_pct = constrain(((r.battery_v - 3.0f) / 1.2f) * 100.0f, 0.0f, 100.0f);
-  r.accel_x = 0.02f;
+  r.co_ppm = 0.0f;
+  r.temp_c = 26.5f + (float)random(-10, 10) / 10.0f;
+  r.humidity_pct = 75.0f + (float)random(0, 50) / 10.0f;
+  r.pressure_pa = 101325.0f;
+  r.gas_resistance_ohm = 45000.0f;
+  r.bme_healthy = _bmeAvailable;
+  r.bme_warming = false;
+  r.bme_gas_valid = true;
+  r.bme_heater_stable = true;
+  r.fall_detected = (_alarms.active() & Safety::Fall) != 0;
+  r.battery_v = 3.82f;
+  r.battery_pct = 80.0f;
+  r.battery_gauge_type = _batteryGaugeType;
+  r.battery_healthy = _batteryAvailable;
+  r.accel_x = 0.01f;
   r.accel_y = 0.01f;
   r.accel_z = 0.99f;
   r.accel_magnitude = 1.00f;
+  r.imu_temp_c = 28.0f;
   r.mq_healthy = _mqAvailable;
   r.mpu_healthy = _mpuAvailable;
-  r.battery_healthy = _batteryAvailable;
-  r.sensor_ok = false; // Flagged as synthetic
+  r.sensor_ok = false;
   r.is_simulated = true;
-  r.panic_pressed = checkPanicButton();
+  r.panic_pressed = false;
+  r.ack_pressed = false;
+  r.active_alarms = _alarms.active();
+  r.alarm_severity = _alarms.severity();
   strncpy(r.status_message, "Operating in Resilient Simulation Fallback Mode", sizeof(r.status_message) - 1);
   return r;
 }
 
 SensorReadings SensorHAL::read() {
-  // If simulation is forced via configuration, return synthetic readings
   if (SIMULATE_SENSORS) {
     return generateFallbackReadings();
   }
 
-  // If no hardware sensors are active and auto-detect is on, gracefully fallback
-  if (!_mpuAvailable && !_mqAvailable && !_batteryAvailable && SENSOR_AUTO_DETECT) {
+  if (!_mpuAvailable && !_bmeAvailable && !_mqAvailable && !_batteryAvailable && SENSOR_AUTO_DETECT) {
     return generateFallbackReadings();
   }
 
   SensorReadings r;
   r.is_simulated = false;
-  r.panic_pressed = checkPanicButton();
+  r.panic_pressed = false; // Never consumed by telemetry polling
+  r.ack_pressed = false;
 
-  // 1. Read Gas Sensor
-  bool mqOk = false;
-  r.co_ppm = readGasSensor(mqOk);
-  r.mq_healthy = mqOk;
+  // 1. Environmental Sensor (BME688)
+  if (_bmeAvailable) {
+    bool warming = false, gasValid = false;
+    bool bmeOk = readBME688(r.temp_c, r.humidity_pct, r.pressure_pa, r.gas_resistance_ohm, warming, gasValid);
+    r.bme_healthy = bmeOk;
+    r.bme_warming = warming;
+    r.bme_gas_valid = gasValid;
+    r.bme_heater_stable = !warming;
+    r.co_ppm = 0.0f; // BME688 NEVER populates CO
+  } else if (_mqAvailable) {
+    // Legacy MQ-7
+    bool mqOk = false;
+    r.co_ppm = readGasSensor(mqOk);
+    r.mq_healthy = mqOk;
+    r.bme_healthy = false;
+    r.temp_c = 25.0f;
+    r.humidity_pct = 75.0f;
+    r.pressure_pa = 101325.0f;
+    r.gas_resistance_ohm = 0.0f;
+  } else {
+    r.co_ppm = 0.0f;
+    r.temp_c = 25.0f;
+    r.humidity_pct = 75.0f;
+    r.pressure_pa = 101325.0f;
+    r.gas_resistance_ohm = 0.0f;
+    r.bme_healthy = false;
+    r.mq_healthy = false;
+  }
 
-  // 2. Read IMU
-  float ax = 0, ay = 0, az = 1.0f, mpuTemp = 28.0f;
+  // 2. Motion IMU (MPU6050) & Fall Detection
+  float ax = 0, ay = 0, az = 1.0f, mpuTemp = 25.0f;
   bool mpuOk = readMPU6050(ax, ay, az, mpuTemp);
   r.mpu_healthy = mpuOk;
   r.accel_x = ax;
   r.accel_y = ay;
   r.accel_z = az;
   r.accel_magnitude = sqrtf(ax * ax + ay * ay + az * az);
-  r.temp_c = mpuOk ? mpuTemp : 28.0f;
-  r.humidity_pct = 80.0f; // Ambient baseline mine humidity
+  r.imu_temp_c = mpuOk ? mpuTemp : 25.0f; // Separate from environmental temperature
 
-  // Update fall detection state machine
+  // Run fall detection state machine
+  uint32_t now = millis();
   if (mpuOk) {
-    processFallDetection(ax, ay, az);
-    r.fall_detected = _latchedFall;
+    bool fallConfirmed = _fallDetector.update(now, r.accel_magnitude, true);
+    if (fallConfirmed) {
+      _alarms.raise(Safety::Fall);
+      refreshAlarmIndication();
+      Serial.println("\n[HAL EMERGENCY] MAN DOWN CONFIRMED: Free-fall + Impact + Stillness detected!");
+    }
+  }
+  r.fall_detected = (_alarms.active() & Safety::Fall) != 0;
+
+  // 3. Battery Measurement
+  r.battery_gauge_type = _batteryGaugeType;
+  if (_batteryGaugeType == 1 || _batteryGaugeType == 2) {
+    float v = 0.0f, pct = 0.0f;
+    bool battOk = readBatteryGauge(v, pct);
+    r.battery_v = v;
+    r.battery_pct = pct;
+    r.battery_healthy = battOk;
+  } else if (_batteryGaugeType == 0) {
+    bool battOk = false;
+    r.battery_v = readBatteryDivider(battOk);
+    r.battery_healthy = battOk;
+    r.battery_pct = constrain(((r.battery_v - BATTERY_VOLTAGE_EMPTY) /
+                              (BATTERY_VOLTAGE_FULL - BATTERY_VOLTAGE_EMPTY)) * 100.0f, 0.0f, 100.0f);
   } else {
-    r.fall_detected = false;
+    r.battery_healthy = false;
+    r.battery_v = NAN;
+    r.battery_pct = NAN;
   }
 
-  // 3. Read Battery
-  bool battOk = false;
-  r.battery_v = readBattery(battOk);
-  r.battery_healthy = battOk;
-  r.battery_pct = constrain(((r.battery_v - BATTERY_VOLTAGE_EMPTY) /
-                            (BATTERY_VOLTAGE_FULL - BATTERY_VOLTAGE_EMPTY)) * 100.0f, 0.0f, 100.0f);
+  // Active alarms & severity
+  r.active_alarms = _alarms.active();
+  r.alarm_severity = _alarms.severity();
 
-  // Overall system health status
-  r.sensor_ok = (r.mq_healthy || !_mqAvailable) &&
+  // Overall system health
+  r.sensor_ok = (_bmeAvailable ? r.bme_healthy : r.mq_healthy) &&
                 (r.mpu_healthy || !_mpuAvailable) &&
                 (r.battery_healthy || !_batteryAvailable);
 
-  if (!r.mq_healthy && !r.mpu_healthy) {
-    r.is_simulated = true;
-    strncpy(r.status_message, "Hardware sensors unreachable; fallback telemetry active", sizeof(r.status_message) - 1);
-  } else if (!r.mq_healthy) {
-    strncpy(r.status_message, "Gas sensor degraded; IMU active", sizeof(r.status_message) - 1);
-  } else if (!r.mpu_healthy) {
-    strncpy(r.status_message, "IMU offline; Gas sensor active", sizeof(r.status_message) - 1);
+  if (_bmeAvailable && r.bme_healthy) {
+    strncpy(r.status_message, r.bme_warming ? "BME688 active (gas sensor conditioning)" : "BME688 & IMU nominal", sizeof(r.status_message) - 1);
   } else {
-    strncpy(r.status_message, "All hardware sensors nominal", sizeof(r.status_message) - 1);
+    strncpy(r.status_message, "Sensors operating in degraded/fallback mode", sizeof(r.status_message) - 1);
   }
 
   return r;
@@ -441,17 +690,19 @@ void SensorHAL::printDiagnostics() {
   Serial.println("           COMPALLETTE HARDWARE ABSTRACTION LAYER DIAGNOSTICS ");
   Serial.println("--------------------------------------------------------------");
   Serial.printf("  Hardware Mode        : %s\n", SIMULATE_SENSORS ? "FORCED SYNTHETIC" : "PHYSICAL SAMPLING");
-  Serial.printf("  MPU6050 6-Axis IMU   : %s (I2C Addr: 0x%02X, SDA=%d, SCL=%d)\n",
-                _mpuAvailable ? "ONLINE (Healthy)" : "OFFLINE (Fallback Active)",
-                _mpuI2cAddress, PIN_I2C_SDA, PIN_I2C_SCL);
-  Serial.printf("  MQ-7 Gas Sensor (CO) : %s (ADC1 Pin: GPIO %d, R0: %.1f)\n",
-                _mqAvailable ? "ONLINE (Healthy)" : "OFFLINE (Fallback Active)",
-                PIN_GAS_ANALOG, _mqRo);
-  Serial.printf("  Battery Monitor      : %s (ADC1 Pin: GPIO %d, Ratio: %.1f)\n",
-                _batteryAvailable ? "ONLINE (Healthy)" : "OFFLINE (Nominal Default)",
-                PIN_BATTERY_ADC, BATTERY_DIVIDER_RATIO);
-  Serial.printf("  Onboard BOOT Button  : READY (GPIO %d, SoftAP Setup Mode)\n", PIN_BOOT_BUTTON);
+  Serial.printf("  Profile ID           : %d\n", ACTIVE_HARDWARE_PROFILE);
+  Serial.printf("  BME688 Envr Sensor   : %s (I2C: 0x%02X, SDA=%d, SCL=%d)\n",
+                _bmeAvailable ? "ONLINE (Healthy)" : "NOT FOUND",
+                _bmeI2cAddress, PIN_I2C_SDA, PIN_I2C_SCL);
+  Serial.printf("  MPU6050 6-Axis IMU   : %s (I2C Addr: 0x%02X)\n",
+                _mpuAvailable ? "ONLINE (Healthy)" : "NOT FOUND",
+                _mpuI2cAddress);
+  Serial.printf("  Battery Monitor      : Gauge Type %d, Healthy: %s\n",
+                _batteryGaugeType, _batteryAvailable ? "YES" : "NO");
   Serial.printf("  SOS Panic Button     : READY (GPIO %d, Active LOW)\n", PIN_SOS_BUTTON);
+#if defined(PIN_ACK_BUTTON) && (PIN_ACK_BUTTON >= 0)
+  Serial.printf("  Acknowledge Button   : READY (GPIO %d, 2s Hold To Ack)\n", PIN_ACK_BUTTON);
+#endif
   Serial.printf("  Emergency Strobe/Buzz: READY (LED=%d, Buzzer=%d)\n", PIN_STATUS_LED, PIN_BUZZER);
   Serial.println("--------------------------------------------------------------\n");
   Serial.flush();
