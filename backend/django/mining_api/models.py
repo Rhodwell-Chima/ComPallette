@@ -29,9 +29,12 @@ class ProvisioningStatus(models.TextChoices):
 
 
 class LocationEvidence(models.TextChoices):
+    CURRENT = 'CURRENT', 'Current direct anchor link'
     CONFIRMED = 'CONFIRMED', 'Confirmed direct evidence'
-    ESTIMATED = 'ESTIMATED', 'Estimated zone'
+    TRANSITIONING = 'TRANSITIONING', 'Transitioning between anchors'
+    AMBIGUOUS = 'AMBIGUOUS', 'Ambiguous anchor evidence'
     LAST_KNOWN = 'LAST_KNOWN', 'Stale last-known zone'
+    ESTIMATED = 'ESTIMATED', 'Estimated zone'
     UNKNOWN = 'UNKNOWN', 'Unknown or unassigned'
 
 

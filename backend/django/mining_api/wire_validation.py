@@ -1,14 +1,26 @@
 from rest_framework import serializers
 
 
+class AnchorSerializer(serializers.Serializer):
+    id = serializers.CharField(max_length=32, required=False, allow_blank=True)
+    zone = serializers.CharField(max_length=64, required=False, allow_blank=True)
+    state = serializers.ChoiceField(
+        choices=('UNKNOWN', 'CURRENT', 'CONFIRMED', 'TRANSITIONING', 'AMBIGUOUS', 'LAST_KNOWN', 'ESTIMATED'),
+        required=False
+    )
+    hop = serializers.IntegerField(required=False)
+    rssi = serializers.IntegerField(required=False)
+
+
 class EnvelopeSerializer(serializers.Serializer):
-    ver = serializers.IntegerField(min_value=1, max_value=1)
+    ver = serializers.IntegerField(min_value=1, max_value=2)
     type = serializers.CharField(max_length=16)
     seq = serializers.IntegerField(min_value=1, max_value=2_147_483_647)
     sender = serializers.CharField(max_length=32, allow_blank=False)
     role = serializers.ChoiceField(choices=('WEARABLE', 'ANCHOR', 'GATEWAY', 'UNASSIGNED'))
     zone = serializers.CharField(max_length=64, allow_blank=False)
     uptime = serializers.IntegerField(min_value=0)
+    anchor = AnchorSerializer(required=False, allow_null=True)
     payload = serializers.DictField()
 
 
@@ -31,18 +43,28 @@ class TelemetryPayloadSerializer(serializers.Serializer):
     temp_c = serializers.FloatField(min_value=-50, max_value=100, required=False)
     hum = serializers.FloatField(min_value=0, max_value=100, required=False)
     humidity_pct = serializers.FloatField(min_value=0, max_value=100, required=False)
+    pressure_pa = serializers.FloatField(min_value=0, max_value=200000, required=False)
+    gas_resistance_ohm = serializers.FloatField(min_value=0, max_value=100000000, required=False)
     fall = serializers.BooleanField(required=False)
     fall_detected = serializers.BooleanField(required=False)
     batt = serializers.FloatField(min_value=0, max_value=10, required=False)
     battery_v = serializers.FloatField(min_value=0, max_value=10, required=False)
+    battery_pct = serializers.FloatField(min_value=0, max_value=100, required=False)
+    bme_gas_valid = serializers.BooleanField(required=False)
+    warming = serializers.BooleanField(required=False)
     sim = serializers.BooleanField(required=False)
     is_simulated = serializers.BooleanField(required=False)
     ok = serializers.BooleanField(required=False)
     sensor_ok = serializers.BooleanField(required=False)
+    active_alarms = serializers.IntegerField(min_value=0, max_value=255, required=False)
+    alarm_severity = serializers.IntegerField(min_value=0, max_value=3, required=False)
+    accel_magnitude = serializers.FloatField(required=False)
 
     def validate(self, attrs):
-        if 'co' not in attrs and 'co_ppm' not in attrs:
-            raise serializers.ValidationError('co or co_ppm is required')
+        candidates = ('co', 'co_ppm', 'temp', 'temp_c', 'hum', 'humidity_pct',
+                      'pressure_pa', 'gas_resistance_ohm', 'batt', 'battery_v', 'battery_pct')
+        if not any(k in attrs for k in candidates):
+            raise serializers.ValidationError('At least one measurement metric is required in telemetry payload')
         return attrs
 
 
@@ -83,6 +105,14 @@ class ProvisionPayloadSerializer(serializers.Serializer):
     batt = serializers.FloatField(min_value=0, max_value=10, required=False)
     mq_ok = serializers.BooleanField(required=False)
     mpu_ok = serializers.BooleanField(required=False)
+
+
+class LocalAckPayloadSerializer(serializers.Serializer):
+    cleared_alarms = serializers.IntegerField(min_value=0, max_value=255, required=False)
+    cleared = serializers.IntegerField(min_value=0, max_value=255, required=False)
+    held_ms = serializers.IntegerField(min_value=0, required=False)
+    device_id = serializers.CharField(max_length=32, required=False, allow_blank=True)
+    device = serializers.CharField(max_length=32, required=False, allow_blank=True)
 
 
 def validate_payload(serializer_class, payload):
