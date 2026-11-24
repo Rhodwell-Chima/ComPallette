@@ -55,28 +55,30 @@ Task taskSendProvRequest(8000, TASK_FOREVER, &sendProvRequestTask);
 // ----------------------------------------------------------------------------
 void sendAlertEvent(AlertSeverity severity, const char* code, const char* details, float triggerVal) {
   if (captivePortal.isActive() || !nodeConfigManager.isProvisioned() || !DeviceTrust::ready()) return;
-  MessageEnvelope env;
+  MessageEnvelope env{};
   env.version = PROTOCOL_VERSION;
   env.msg_type = MSG_ALERT;
   env.seq = nodeConfigManager.nextSequence();
   if (env.seq == 0) return;
-  strncpy(env.sender_id, nodeConfigManager.getDeviceId(), sizeof(env.sender_id) - 1);
-  strncpy(env.role, nodeRoleToString(nodeConfigManager.getRole()), sizeof(env.role) - 1);
+  strlcpy(env.sender_id, nodeConfigManager.getDeviceId(), sizeof(env.sender_id));
+  strlcpy(env.role, nodeRoleToString(nodeConfigManager.getRole()), sizeof(env.role));
   const char* activeZone = (nodeConfigManager.getRole() == ROLE_WEARABLE) ? zoneTracker.getCurrentZone() : nodeConfigManager.getZoneId();
-  strncpy(env.zone_id, activeZone, sizeof(env.zone_id) - 1);
+  strlcpy(env.zone_id, activeZone, sizeof(env.zone_id));
   env.uptime_ms = millis();
 
-  // Populate direct anchor context
-  strncpy(env.anchor_id, zoneTracker.getNearestAnchorId(), sizeof(env.anchor_id) - 1);
-  strncpy(env.anchor_zone, zoneTracker.getCurrentZone(), sizeof(env.anchor_zone) - 1);
-  strncpy(env.link_state, zoneTracker.getLinkStateString(), sizeof(env.link_state) - 1);
-  env.hop_distance = (int8_t)zoneTracker.getHopDistance();
-  env.rssi = (int8_t)zoneTracker.getRssi();
+  // Populate direct anchor context (wearables only)
+  if (nodeConfigManager.getRole() == ROLE_WEARABLE) {
+    strlcpy(env.anchor_id, zoneTracker.getNearestAnchorId(), sizeof(env.anchor_id));
+    strlcpy(env.anchor_zone, zoneTracker.getCurrentZone(), sizeof(env.anchor_zone));
+    strlcpy(env.link_state, zoneTracker.getLinkStateString(), sizeof(env.link_state));
+    env.hop_distance = (int8_t)zoneTracker.getHopDistance();
+    env.rssi = (int8_t)zoneTracker.getRssi();
+  }
 
-  AlertData alert;
+  AlertData alert{};
   alert.severity = severity;
-  strncpy(alert.alert_code, code, sizeof(alert.alert_code) - 1);
-  strncpy(alert.details, details, sizeof(alert.details) - 1);
+  strlcpy(alert.alert_code, code, sizeof(alert.alert_code));
+  strlcpy(alert.details, details, sizeof(alert.details));
   alert.trigger_value = triggerVal;
 
   String packet;
@@ -106,27 +108,29 @@ void sendAlertEvent(AlertSeverity severity, const char* code, const char* detail
 
 void sendLocalAckEvent(uint8_t clearedAlarms, uint32_t heldMs) {
   if (captivePortal.isActive() || !nodeConfigManager.isProvisioned() || !DeviceTrust::ready()) return;
-  MessageEnvelope env;
+  MessageEnvelope env{};
   env.version = PROTOCOL_VERSION;
   env.msg_type = MSG_LOCAL_ACK;
   env.seq = nodeConfigManager.nextSequence();
   if (env.seq == 0) return;
-  strncpy(env.sender_id, nodeConfigManager.getDeviceId(), sizeof(env.sender_id) - 1);
-  strncpy(env.role, nodeRoleToString(nodeConfigManager.getRole()), sizeof(env.role) - 1);
+  strlcpy(env.sender_id, nodeConfigManager.getDeviceId(), sizeof(env.sender_id));
+  strlcpy(env.role, nodeRoleToString(nodeConfigManager.getRole()), sizeof(env.role));
   const char* activeZone = (nodeConfigManager.getRole() == ROLE_WEARABLE) ? zoneTracker.getCurrentZone() : nodeConfigManager.getZoneId();
-  strncpy(env.zone_id, activeZone, sizeof(env.zone_id) - 1);
+  strlcpy(env.zone_id, activeZone, sizeof(env.zone_id));
   env.uptime_ms = millis();
 
-  strncpy(env.anchor_id, zoneTracker.getNearestAnchorId(), sizeof(env.anchor_id) - 1);
-  strncpy(env.anchor_zone, zoneTracker.getCurrentZone(), sizeof(env.anchor_zone) - 1);
-  strncpy(env.link_state, zoneTracker.getLinkStateString(), sizeof(env.link_state) - 1);
-  env.hop_distance = (int8_t)zoneTracker.getHopDistance();
-  env.rssi = (int8_t)zoneTracker.getRssi();
+  if (nodeConfigManager.getRole() == ROLE_WEARABLE) {
+    strlcpy(env.anchor_id, zoneTracker.getNearestAnchorId(), sizeof(env.anchor_id));
+    strlcpy(env.anchor_zone, zoneTracker.getCurrentZone(), sizeof(env.anchor_zone));
+    strlcpy(env.link_state, zoneTracker.getLinkStateString(), sizeof(env.link_state));
+    env.hop_distance = (int8_t)zoneTracker.getHopDistance();
+    env.rssi = (int8_t)zoneTracker.getRssi();
+  }
 
-  LocalAckData ack;
+  LocalAckData ack{};
   ack.cleared_alarms = clearedAlarms;
   ack.held_ms = heldMs;
-  strncpy(ack.device_id, nodeConfigManager.getDeviceId(), sizeof(ack.device_id) - 1);
+  strlcpy(ack.device_id, nodeConfigManager.getDeviceId(), sizeof(ack.device_id));
 
   String packet;
   if (serializeLocalAck(env, ack, packet)) {
@@ -234,10 +238,10 @@ int calculateHopDistance(uint32_t targetNodeId) {
 
 void receivedCallback(uint32_t from, String &msg) {
   if (handlePlatformCommand(msg, [](const String& response) { mesh.sendBroadcast(response); })) return;
-  MessageEnvelope env;
-  TelemetryData telem;
-  AlertData alert;
-  HeartbeatData hb;
+  MessageEnvelope env{};
+  TelemetryData telem{};
+  AlertData alert{};
+  HeartbeatData hb{};
   bool isLegacy = false;
 
   bool ok = deserializePacket(msg, env, telem, alert, hb, isLegacy);
@@ -341,23 +345,25 @@ void sendTelemetryTask() {
   }
 
   if (captivePortal.isActive() || !nodeConfigManager.isProvisioned() || !DeviceTrust::ready()) return;
-  MessageEnvelope env;
+  MessageEnvelope env{};
   env.version = PROTOCOL_VERSION;
   env.msg_type = MSG_TELEMETRY;
   env.seq = nodeConfigManager.nextSequence();
   if (env.seq == 0) return;
-  strncpy(env.sender_id, nodeConfigManager.getDeviceId(), sizeof(env.sender_id) - 1);
-  strncpy(env.role, nodeRoleToString(nodeConfigManager.getRole()), sizeof(env.role) - 1);
+  strlcpy(env.sender_id, nodeConfigManager.getDeviceId(), sizeof(env.sender_id));
+  strlcpy(env.role, nodeRoleToString(nodeConfigManager.getRole()), sizeof(env.role));
   const char* activeTelemZone = (nodeConfigManager.getRole() == ROLE_WEARABLE) ? zoneTracker.getCurrentZone() : nodeConfigManager.getZoneId();
-  strncpy(env.zone_id, activeTelemZone, sizeof(env.zone_id) - 1);
+  strlcpy(env.zone_id, activeTelemZone, sizeof(env.zone_id));
   env.uptime_ms = millis();
 
-  // Populate direct anchor context
-  strncpy(env.anchor_id, zoneTracker.getNearestAnchorId(), sizeof(env.anchor_id) - 1);
-  strncpy(env.anchor_zone, zoneTracker.getCurrentZone(), sizeof(env.anchor_zone) - 1);
-  strncpy(env.link_state, zoneTracker.getLinkStateString(), sizeof(env.link_state) - 1);
-  env.hop_distance = (int8_t)zoneTracker.getHopDistance();
-  env.rssi = (int8_t)zoneTracker.getRssi();
+  // Populate direct anchor context (wearable mobile nodes only)
+  if (nodeConfigManager.getRole() == ROLE_WEARABLE) {
+    strlcpy(env.anchor_id, zoneTracker.getNearestAnchorId(), sizeof(env.anchor_id));
+    strlcpy(env.anchor_zone, zoneTracker.getCurrentZone(), sizeof(env.anchor_zone));
+    strlcpy(env.link_state, zoneTracker.getLinkStateString(), sizeof(env.link_state));
+    env.hop_distance = (int8_t)zoneTracker.getHopDistance();
+    env.rssi = (int8_t)zoneTracker.getRssi();
+  }
 
   String packet;
   if (serializeTelemetry(env, data, packet)) {
@@ -375,21 +381,23 @@ void sendTelemetryTask() {
 
 // Keep-Alive Heartbeat Task
 void sendHeartbeatTask() {
-  MessageEnvelope env;
+  MessageEnvelope env{};
   env.version = PROTOCOL_VERSION;
   env.msg_type = MSG_HEARTBEAT;
   env.seq = nodeConfigManager.nextSequence();
   if (env.seq == 0) return;
-  strncpy(env.sender_id, nodeConfigManager.getDeviceId(), sizeof(env.sender_id) - 1);
-  strncpy(env.role, nodeRoleToString(nodeConfigManager.getRole()), sizeof(env.role) - 1);
+  strlcpy(env.sender_id, nodeConfigManager.getDeviceId(), sizeof(env.sender_id));
+  strlcpy(env.role, nodeRoleToString(nodeConfigManager.getRole()), sizeof(env.role));
   const char* activeHbZone = (nodeConfigManager.getRole() == ROLE_WEARABLE) ? zoneTracker.getCurrentZone() : nodeConfigManager.getZoneId();
-  strncpy(env.zone_id, activeHbZone, sizeof(env.zone_id) - 1);
+  strlcpy(env.zone_id, activeHbZone, sizeof(env.zone_id));
   env.uptime_ms = millis();
 
   HeartbeatData hb;
   hb.free_heap = ESP.getFreeHeap();
   hb.mesh_node_count = mesh.getNodeList().size();
-  hb.battery_v = sensorHAL.read().battery_v;
+  SensorReadings s = sensorHAL.read();
+  hb.battery_v = s.battery_v;
+  hb.battery_pct = s.battery_pct;
 
   String packet;
   if (serializeHeartbeat(env, hb, packet)) {
@@ -407,23 +415,23 @@ void sendHeartbeatTask() {
 void sendProvRequestTask() {
   if (!DeviceTrust::ready()) return;
 
-  MessageEnvelope env;
+  MessageEnvelope env{};
   env.version = PROTOCOL_VERSION;
   env.msg_type = MSG_PROV_REQ;
   env.seq = nodeConfigManager.nextSequence();
   if (env.seq == 0) return;
-  strncpy(env.sender_id, nodeConfigManager.getDeviceId(), sizeof(env.sender_id) - 1);
-  strncpy(env.role, "UNASSIGNED", sizeof(env.role) - 1);
-  strncpy(env.zone_id, "UNASSIGNED", sizeof(env.zone_id) - 1);
+  strlcpy(env.sender_id, nodeConfigManager.getDeviceId(), sizeof(env.sender_id));
+  strlcpy(env.role, "UNASSIGNED", sizeof(env.role));
+  strlcpy(env.zone_id, "UNASSIGNED", sizeof(env.zone_id));
   env.uptime_ms = millis();
 
   SensorReadings s = sensorHAL.read();
 
-  ProvisioningRequestData req;
-  strncpy(req.chip_mac, nodeConfigManager.getChipMac(), sizeof(req.chip_mac) - 1);
-  strncpy(req.chip_id, nodeConfigManager.getChipId(), sizeof(req.chip_id) - 1);
+  ProvisioningRequestData req{};
+  strlcpy(req.chip_mac, nodeConfigManager.getChipMac(), sizeof(req.chip_mac));
+  strlcpy(req.chip_id, nodeConfigManager.getChipId(), sizeof(req.chip_id));
   req.mesh_node_id = mesh.getNodeId();
-  strncpy(req.fw_version, "1.1.0", sizeof(req.fw_version) - 1);
+  strlcpy(req.fw_version, "1.1.0", sizeof(req.fw_version));
   req.battery_v = s.battery_v;
   req.bme_healthy = s.bme_healthy;
   req.mq_healthy = s.mq_healthy;
@@ -730,20 +738,22 @@ void handleSerialCLI() {
         }
       } else if (strcmp(cmd, "testpost") == 0) {
         Serial.println("\n[CLI] Generating and dispatching live test heartbeat...");
-        MessageEnvelope env;
+        MessageEnvelope env{};
         env.version = PROTOCOL_VERSION;
         env.msg_type = MSG_HEARTBEAT;
         env.seq = nodeConfigManager.nextSequence();
         if (env.seq == 0) return;
-        strncpy(env.sender_id, nodeConfigManager.getDeviceId(), sizeof(env.sender_id) - 1);
-        strncpy(env.role, nodeRoleToString(nodeConfigManager.getRole()), sizeof(env.role) - 1);
-        strncpy(env.zone_id, (nodeConfigManager.getRole() == ROLE_WEARABLE) ? zoneTracker.getCurrentZone() : nodeConfigManager.getZoneId(), sizeof(env.zone_id) - 1);
+        strlcpy(env.sender_id, nodeConfigManager.getDeviceId(), sizeof(env.sender_id));
+        strlcpy(env.role, nodeRoleToString(nodeConfigManager.getRole()), sizeof(env.role));
+        strlcpy(env.zone_id, (nodeConfigManager.getRole() == ROLE_WEARABLE) ? zoneTracker.getCurrentZone() : nodeConfigManager.getZoneId(), sizeof(env.zone_id));
         env.uptime_ms = millis();
 
-        HeartbeatData hb;
+        HeartbeatData hb{};
         hb.free_heap = ESP.getFreeHeap();
         hb.mesh_node_count = mesh.getNodeList().size();
-        hb.battery_v = sensorHAL.read().battery_v;
+        SensorReadings s = sensorHAL.read();
+        hb.battery_v = s.battery_v;
+        hb.battery_pct = s.battery_pct;
 
         String packet;
         if (serializeHeartbeat(env, hb, packet)) {

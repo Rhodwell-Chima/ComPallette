@@ -46,60 +46,60 @@ enum AlertSeverity {
 
 // Standardized message envelope wrapping every packet
 struct MessageEnvelope {
-  uint8_t       version;              // Protocol version (1 or 2)
-  MessageType   msg_type;             // Type of message
-  uint32_t      seq;                  // Incremental sequence counter
-  char          sender_id[24];        // Device / Personnel identifier
-  char          role[20];             // "WEARABLE", "ANCHOR", "GATEWAY"
-  char          zone_id[24];          // Spatial anchor/zone (e.g., "ZONE-A")
-  uint32_t      uptime_ms;            // Sender uptime in ms
+  uint8_t       version = 2;          // Protocol version (1 or 2)
+  MessageType   msg_type = MSG_UNKNOWN; // Type of message
+  uint32_t      seq = 0;              // Incremental sequence counter
+  char          sender_id[24] = {0};  // Device / Personnel identifier
+  char          role[20] = {0};       // "WEARABLE", "ANCHOR", "GATEWAY"
+  char          zone_id[24] = {0};    // Spatial anchor/zone (e.g., "ZONE-A")
+  uint32_t      uptime_ms = 0;        // Sender uptime in ms
   // Wire v2 Anchor Proximity Context
-  char          anchor_id[24];        // Nearest stationary anchor ID (e.g. "ANCHOR-Z01")
-  char          anchor_zone[24];      // Anchor physical zone
-  char          link_state[16];       // "CURRENT", "TRANSITIONING", "AMBIGUOUS", "LAST_KNOWN", "UNKNOWN"
-  int8_t        hop_distance;         // 1 = direct anchor, >1 = relay
-  int8_t        rssi;                 // Signal strength in dBm
+  char          anchor_id[24] = {0};  // Nearest stationary anchor ID (e.g. "ANCHOR-Z01")
+  char          anchor_zone[24] = {0};// Anchor physical zone
+  char          link_state[16] = {0}; // "CURRENT", "TRANSITIONING", "AMBIGUOUS", "LAST_KNOWN", "UNKNOWN"
+  int8_t        hop_distance = 0;     // 1 = direct anchor, >1 = relay
+  int8_t        rssi = 0;             // Signal strength in dBm
 };
 
 // Telemetry Payload (periodic environmental and device status)
 struct TelemetryData {
-  float   temp_c;                     // Ambient temperature (Celsius)
-  float   humidity_pct;               // Relative humidity (%)
-  float   pressure_pa;                // Barometric pressure (Pascals)
-  float   gas_resistance_ohm;         // Raw BME688 gas resistance (Ohms)
-  bool    bme_healthy;                // BME688 health state
-  bool    bme_warming;                // Gas heater conditioning / warmup flag
-  bool    bme_gas_valid;              // Gas reading validity
-  float   battery_v;                  // Battery voltage
-  float   battery_pct;                // Battery percentage (0-100%)
-  bool    fall_detected;              // True if fall/man-down condition detected
-  bool    is_simulated;               // True if data is synthetic
-  bool    sensor_ok;                  // True if sensors healthy
-  float   co_ppm;                     // Carbon Monoxide in ppm (legacy hardware only)
-  bool    has_co;                     // False for BME688, true for legacy MQ-7
+  float   temp_c = 0.0f;              // Ambient temperature (Celsius)
+  float   humidity_pct = 0.0f;        // Relative humidity (%)
+  float   pressure_pa = 0.0f;         // Barometric pressure (Pascals)
+  float   gas_resistance_ohm = 0.0f;  // Raw BME688 gas resistance (Ohms)
+  bool    bme_healthy = false;        // BME688 health state
+  bool    bme_warming = false;        // Gas heater conditioning / warmup flag
+  bool    bme_gas_valid = false;      // Gas reading validity
+  float   battery_v = 0.0f;           // Battery voltage
+  float   battery_pct = 0.0f;         // Battery percentage (0-100%)
+  bool    fall_detected = false;      // True if fall/man-down condition detected
+  bool    is_simulated = false;       // True if data is synthetic
+  bool    sensor_ok = false;          // True if sensors healthy
+  float   co_ppm = 0.0f;              // Carbon Monoxide in ppm (legacy hardware only)
+  bool    has_co = false;             // False for BME688, true for legacy MQ-7
 };
 
 // Alert Payload (event-driven safety events)
 struct AlertData {
-  AlertSeverity severity;             // INFO, WARNING, CRITICAL
-  char          alert_code[24];       // e.g. "MAN_DOWN", "PANIC_SOS", "GAS_CRITICAL"
-  char          details[64];          // Human-readable summary
-  float         trigger_value;        // Reading that triggered alert
+  AlertSeverity severity = SEVERITY_WARNING; // INFO, WARNING, CRITICAL
+  char          alert_code[24] = {0}; // e.g. "MAN_DOWN", "PANIC_SOS", "GAS_CRITICAL"
+  char          details[64] = {0};    // Human-readable summary
+  float         trigger_value = 0.0f; // Reading that triggered alert
 };
 
 // Local Physical Alarm Acknowledgement Event
 struct LocalAckData {
-  uint8_t       cleared_alarms;       // Mask of alarms cleared by hold
-  uint32_t      held_ms;              // Duration button was held (>= 2000 ms)
-  char          device_id[24];        // Device identifier
+  uint8_t       cleared_alarms = 0;   // Mask of alarms cleared by hold
+  uint32_t      held_ms = 0;          // Duration button was held (>= 2000 ms)
+  char          device_id[24] = {0};  // Device identifier
 };
 
 // Heartbeat Payload (device health & mesh statistics)
 struct HeartbeatData {
-  uint32_t  free_heap;                // Free heap memory in bytes
-  int       mesh_node_count;          // Number of peers visible to this node
-  float     battery_v;                // Battery voltage
-  float     battery_pct;              // Battery percentage
+  uint32_t  free_heap = 0;            // Free heap memory in bytes
+  int       mesh_node_count = 0;      // Number of peers visible to this node
+  float     battery_v = 0.0f;         // Battery voltage
+  float     battery_pct = 0.0f;       // Battery percentage
 };
 
 // ----------------------------------------------------------------------------
@@ -107,14 +107,14 @@ struct HeartbeatData {
 // ----------------------------------------------------------------------------
 
 struct ProvisioningRequestData {
-  char      chip_mac[20];             // Factory IEEE MAC address
-  char      chip_id[16];              // Hardware hex chip identifier
-  uint32_t  mesh_node_id;             // painlessMesh local chip ID
-  char      fw_version[12];           // Firmware version
-  float     battery_v;                // Measured battery voltage
-  bool      bme_healthy;              // Environmental sensor status
-  bool      mq_healthy;               // Legacy MQ gas sensor status
-  bool      mpu_healthy;              // MPU6050 IMU status
+  char      chip_mac[20] = {0};       // Factory IEEE MAC address
+  char      chip_id[16] = {0};        // Hardware hex chip identifier
+  uint32_t  mesh_node_id = 0;         // painlessMesh local chip ID
+  char      fw_version[12] = {0};     // Firmware version
+  float     battery_v = 0.0f;         // Measured battery voltage
+  bool      bme_healthy = false;      // Environmental sensor status
+  bool      mq_healthy = false;       // Legacy MQ gas sensor status
+  bool      mpu_healthy = false;      // MPU6050 IMU status
 };
 
 struct ProvisioningAssignData {

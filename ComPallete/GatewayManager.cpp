@@ -93,10 +93,10 @@ const char* GatewayManager::getStateString() const {
 }
 
 void GatewayManager::handleIncomingMeshPacket(uint32_t fromNodeId, const String& rawMsg) {
-  MessageEnvelope env;
-  TelemetryData telem;
-  AlertData alert;
-  HeartbeatData hb;
+  MessageEnvelope env{};
+  TelemetryData telem{};
+  AlertData alert{};
+  HeartbeatData hb{};
   bool isLegacy = false;
 
   bool parsed = deserializePacket(rawMsg, env, telem, alert, hb, isLegacy);

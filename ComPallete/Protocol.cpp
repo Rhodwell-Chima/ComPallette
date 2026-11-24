@@ -71,11 +71,11 @@ bool validateEnvelope(const MessageEnvelope& env) {
 
 // Helper to write anchor context into JSON document
 static void writeAnchorContext(JsonObject root, const MessageEnvelope& env) {
-  if (strlen(env.anchor_id) > 0 || strlen(env.link_state) > 0) {
+  if (strcmp(env.role, "GATEWAY") != 0 && (env.anchor_id[0] != '\0' || env.link_state[0] != '\0')) {
     JsonObject anchor = root["anchor"].to<JsonObject>();
     anchor["id"] = env.anchor_id;
     anchor["zone"] = env.anchor_zone;
-    anchor["state"] = strlen(env.link_state) > 0 ? env.link_state : "CURRENT";
+    anchor["state"] = env.link_state[0] != '\0' ? env.link_state : "CURRENT";
     anchor["hop"] = (int)env.hop_distance;
     anchor["rssi"] = (int)env.rssi;
   }
@@ -326,13 +326,13 @@ bool deserializePacket(
   outEnv.msg_type = stringToMessageType(typeStr);
 
   const char* senderStr = doc["sender"] | "";
-  strncpy(outEnv.sender_id, senderStr, sizeof(outEnv.sender_id) - 1);
+  strlcpy(outEnv.sender_id, senderStr, sizeof(outEnv.sender_id));
 
   const char* roleStr = doc["role"] | "UNKNOWN";
-  strncpy(outEnv.role, roleStr, sizeof(outEnv.role) - 1);
+  strlcpy(outEnv.role, roleStr, sizeof(outEnv.role));
 
   const char* zoneStr = doc["zone"] | "";
-  strncpy(outEnv.zone_id, zoneStr, sizeof(outEnv.zone_id) - 1);
+  strlcpy(outEnv.zone_id, zoneStr, sizeof(outEnv.zone_id));
 
   // Unpack Anchor Context if present
   if (doc.containsKey("anchor") && doc["anchor"].is<JsonObject>()) {
@@ -340,9 +340,9 @@ bool deserializePacket(
     const char* aId = anchor["id"] | "";
     const char* aZone = anchor["zone"] | "";
     const char* aState = anchor["state"] | "CURRENT";
-    strncpy(outEnv.anchor_id, aId, sizeof(outEnv.anchor_id) - 1);
-    strncpy(outEnv.anchor_zone, aZone, sizeof(outEnv.anchor_zone) - 1);
-    strncpy(outEnv.link_state, aState, sizeof(outEnv.link_state) - 1);
+    strlcpy(outEnv.anchor_id, aId, sizeof(outEnv.anchor_id));
+    strlcpy(outEnv.anchor_zone, aZone, sizeof(outEnv.anchor_zone));
+    strlcpy(outEnv.link_state, aState, sizeof(outEnv.link_state));
     outEnv.hop_distance = (int8_t)(anchor["hop"] | 1);
     outEnv.rssi = (int8_t)(anchor["rssi"] | 0);
   }
