@@ -18,7 +18,7 @@ export function AlertsPage() {
   const [filter, setFilter] = useState<'ALL' | AlertStatus>('ALL');
   const [confirming, setConfirming] = useState(false);
   const cancelRef = useRef<HTMLButtonElement>(null);
-  const alerts = useQuery({ queryKey: ['alerts', selectedSiteId, filter], queryFn: () => platformApi.alerts(selectedSiteId, filter === 'ALL' ? undefined : filter), enabled: Boolean(selectedSiteId), refetchInterval: 10_000 });
+  const alerts = useQuery({ queryKey: ['alerts', selectedSiteId, filter], queryFn: () => platformApi.alerts(selectedSiteId, filter === 'ALL' ? undefined : filter), enabled: Boolean(selectedSiteId), refetchInterval: 5_000 });
   const requestedId = Number(params.get('alert'));
   const selected = alerts.data?.alerts.find(alert => alert.id === requestedId) ?? alerts.data?.alerts[0];
   useEffect(() => {

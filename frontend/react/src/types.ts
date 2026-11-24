@@ -2,7 +2,7 @@ export type NodeRole = 'WEARABLE' | 'ANCHOR' | 'GATEWAY';
 export type NodeStatus = 'ONLINE' | 'STALE' | 'OFFLINE';
 export type AlertSeverity = 'INFO' | 'WARNING' | 'CRITICAL';
 export type AlertStatus = 'NEW' | 'ACKNOWLEDGED' | 'INVESTIGATING' | 'RESOLVED';
-export type LocationEvidence = 'CONFIRMED' | 'ESTIMATED' | 'LAST_KNOWN' | 'UNKNOWN';
+export type LocationEvidence = 'CURRENT' | 'CONFIRMED' | 'TRANSITIONING' | 'AMBIGUOUS' | 'LAST_KNOWN' | 'ESTIMATED' | 'UNKNOWN';
 
 export interface Organisation {
   id: number;

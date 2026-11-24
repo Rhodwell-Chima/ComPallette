@@ -72,6 +72,7 @@ function EntityDetailContent({ kind, id }: { kind: Kind; id: string }) {
     <section className="panel" style={{ padding: '1rem' }}>
       <h2>Current relationships</h2>
       <LocationLabel evidence={data.location_evidence ?? 'UNKNOWN'} zone={data.current_zone} />
+      {data.location_observed_at ? <p style={{ fontSize: '0.8rem', color: 'var(--muted)', margin: '4px 0' }}>Evidence observed: {new Date(data.location_observed_at).toLocaleString()}</p> : null}
       <p>Zone membership only. A configured zone or custody assignment does not establish observed presence.</p>
       {assignments.length ? assignments.map(item => <p key={item.id}>Device <Link to={`/devices/${encodeURIComponent(item.node_id ?? '')}`}>{item.node_id}</Link>{item.personnel_id && <> · <Link to={`/personnel/${item.personnel_id}`}>Personnel #{item.personnel_id}</Link></>}{item.asset_id && <> · <Link to={`/assets/${item.asset_id}`}>Asset #{item.asset_id}</Link></>}</p>) : <p>No active device assignment.</p>}
       {custody.map(item => <p key={item.id}>Custodian: <Link to={`/personnel/${item.personnel_id}`}>Personnel #{item.personnel_id}</Link> · <Link to={`/assets/${item.asset_id}`}>Asset #{item.asset_id}</Link></p>)}

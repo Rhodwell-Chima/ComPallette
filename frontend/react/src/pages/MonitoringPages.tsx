@@ -10,6 +10,16 @@ import { Pagination } from '../platform/pagination';
 import { SkeletonCard, SkeletonTable } from '../platform/loading';
 import { StaggerContainer, StaggerItem } from '../platform/feed';
 
+function formatMeasurementValue(value: number, unit: string) {
+  if (unit === 'Pa') {
+    return `${(value / 100).toFixed(1)} hPa`;
+  }
+  if (unit === 'Ω') {
+    return value >= 1000 ? `${(value / 1000).toFixed(1)} kΩ` : `${value} Ω`;
+  }
+  return `${value} ${unit}`;
+}
+
 function Trend({ readings, unit }: { readings: MeasurementReading[]; unit: string }) {
   const points = [...readings].reverse();
   if (points.length < 2) return <p className="muted" style={{ padding: '1rem 0' }}>At least two reported values are required to draw a trend.</p>;
@@ -151,7 +161,7 @@ function EnvironmentalSitePage() {
                           <strong>{item.display_name}</strong>
                           <small>{item.node_id} &middot; {item.zone || 'No zone'}</small>
                         </div>
-                        <b>{item.latest_value} <small>{item.unit}</small></b>
+                        <b>{formatMeasurementValue(item.latest_value, item.unit)}</b>
                         <span>{item.sensor_ok ? 'Sensor reporting' : 'Sensor health unconfirmed'}</span>
                       </button>
                     </StaggerItem>
@@ -225,7 +235,7 @@ function EnvironmentalSitePage() {
                             <td>{formatTimestamp(reading.received_at)}</td>
                             <td><strong>{reading.node_id}</strong></td>
                             <td>{reading.zone || 'Unassigned'}</td>
-                            <td><b>{reading.value} <small>{reading.unit}</small></b></td>
+                            <td><b>{formatMeasurementValue(reading.value, reading.unit)}</b></td>
                           </tr>
                         ))}
                       </tbody>

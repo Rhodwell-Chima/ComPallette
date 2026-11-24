@@ -16,7 +16,14 @@ export function StatusPill({ value, tone }: { value: string; tone?: string }) {
 }
 
 export function LocationLabel({ evidence, zone }: { evidence?: LocationEvidence; zone?: string }) {
-  const label = evidence === 'CONFIRMED' ? 'Confirmed zone' : evidence === 'ESTIMATED' ? 'Estimated zone' : evidence === 'LAST_KNOWN' ? 'Last-known zone' : 'Location unknown';
+  const label =
+    evidence === 'CURRENT' ? 'Current zone' :
+    evidence === 'CONFIRMED' ? 'Confirmed zone' :
+    evidence === 'TRANSITIONING' ? 'Transitioning zone' :
+    evidence === 'AMBIGUOUS' ? 'Ambiguous zone' :
+    evidence === 'LAST_KNOWN' ? 'Last-known zone' :
+    evidence === 'ESTIMATED' ? 'Estimated zone' :
+    'Location unknown';
   return <span className={`location-label ${evidence?.toLowerCase() ?? 'unknown'}`} title={label}><MapPin size={13} /> {zone && evidence !== 'UNKNOWN' ? `${label}: ${zone}` : label}</span>;
 }
 

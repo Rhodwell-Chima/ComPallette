@@ -24,17 +24,15 @@ const THEME_STORAGE_KEY = 'compallette.theme';
 
 export function PlatformProvider({ children }: { children: ReactNode }) {
   const { session } = useOperatorSession();
-  const bootstrap = useQuery({ queryKey: ['platform-bootstrap'], queryFn: platformApi.bootstrap, staleTime: 60_000 });
-  const [selectedSiteId, setSelectedSite] = useState<number | undefined>(() => {
-    const stored = window.localStorage.getItem(SITE_STORAGE_KEY);
+  const bootstrap = useQuery({ queryKey: ['platform-bootstrap', session.username], queryFn: platformApi.bootstrap, staleTime: 0, refetchInterval: 15_000 });
+  const siteStorageKey = `${SITE_STORAGE_KEY}:${session.username ?? 'operator'}`;
+  const [requestedSiteId, setSelectedSite] = useState<number | undefined>(() => {
+    const stored = window.localStorage.getItem(siteStorageKey);
     return stored ? Number(stored) : undefined;
   });
   const [theme, setTheme] = useState<'light' | 'dark'>(() => window.localStorage.getItem(THEME_STORAGE_KEY) === 'dark' ? 'dark' : 'light');
   const sites = bootstrap.data?.sites ?? session.sites ?? [];
-
-  useEffect(() => {
-    if (sites.length && !sites.some((site: Site) => site.id === selectedSiteId)) setSelectedSite(sites[0].id);
-  }, [selectedSiteId, sites]);
+  const selectedSiteId = sites.some((site: Site) => site.id === requestedSiteId) ? requestedSiteId : sites[0]?.id;
 
   useEffect(() => {
     document.documentElement.dataset.theme = theme;
@@ -46,7 +44,8 @@ export function PlatformProvider({ children }: { children: ReactNode }) {
     selectedSiteId,
     selectedSite: sites.find((site: Site) => site.id === selectedSiteId),
     setSelectedSiteId: (siteId) => {
-      window.localStorage.setItem(SITE_STORAGE_KEY, String(siteId));
+      if (!sites.some((site: Site) => site.id === siteId)) return;
+      window.localStorage.setItem(siteStorageKey, String(siteId));
       setSelectedSite(siteId);
     },
     capabilities: bootstrap.data?.site_capabilities?.[String(selectedSiteId)] ?? [],
@@ -54,7 +53,7 @@ export function PlatformProvider({ children }: { children: ReactNode }) {
     theme,
     toggleTheme: () => setTheme(current => current === 'light' ? 'dark' : 'light'),
     isLoading: bootstrap.isLoading,
-  }), [bootstrap.data, bootstrap.isLoading, selectedSiteId, session.capabilities, sites, theme]);
+  }), [bootstrap.data, bootstrap.isLoading, selectedSiteId, siteStorageKey, sites, theme]);
 
   if (bootstrap.isLoading) return <LoadingState label="Checking platform compatibility…" />;
   if (bootstrap.isError) return <ErrorState message="Platform configuration could not be loaded." retry={() => void bootstrap.refetch()} />;

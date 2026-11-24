@@ -27,6 +27,7 @@ import { fetchBackendHealth, platformApi } from '../services/api';
 import { usePlatform } from './PlatformContext';
 import { BackendConnection } from './BackendConnection';
 import { useOperatorSession } from '../components/AuthGate';
+import { POLL_OPERATIONAL_MS, POLL_TRACKING_MS, queryKeys } from './queryKeys';
 
 export interface NavbarProps {
   transparent?: boolean;
@@ -133,16 +134,17 @@ export function Navbar({ transparent = false, className = '' }: NavbarProps) {
   const health = useQuery({
     queryKey: ['backend-health'],
     queryFn: fetchBackendHealth,
-    refetchInterval: 30_000,
+    refetchInterval: POLL_OPERATIONAL_MS,
     retry: 1,
   });
 
   // Query alerts to display the active notification indicator on the bell
   const alertsQuery = useQuery({
-    queryKey: ['navbar-alerts', selectedSiteId],
+    queryKey: queryKeys.alerts(selectedSiteId, 'NEW'),
     queryFn: () => platformApi.alerts(selectedSiteId, 'NEW'),
     enabled: Boolean(selectedSiteId),
-    staleTime: 30_000,
+    staleTime: 0,
+    refetchInterval: POLL_TRACKING_MS,
   });
   const unacknowledgedCount = alertsQuery.data?.alerts?.length ?? 0;
 

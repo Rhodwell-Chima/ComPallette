@@ -60,6 +60,19 @@ export interface BackendHealth {
 
 type AuthenticationFailureHandler = () => void;
 let authenticationFailureHandler: AuthenticationFailureHandler | undefined;
+let operatorRequestGeneration = 0;
+const operatorRequests = new Set<AbortController>();
+
+/** Invalidate before logout/account changes so late responses cannot affect a new session. */
+export function invalidateOperatorRequests(): void {
+  operatorRequestGeneration += 1;
+  for (const controller of operatorRequests) controller.abort();
+  operatorRequests.clear();
+}
+
+function assertRequestGeneration(generation: number): void {
+  if (generation !== operatorRequestGeneration) throw new DOMException('The operator session changed.', 'AbortError');
+}
 
 export function setAuthenticationFailureHandler(handler: AuthenticationFailureHandler): () => void {
   authenticationFailureHandler = handler;
@@ -104,24 +117,39 @@ interface RequestOptions {
 }
 
 export async function request(path: string, init: RequestInit = {}, options: RequestOptions = {}): Promise<Response> {
+  const generation = operatorRequestGeneration;
+  const controller = new AbortController();
+  const abort = () => controller.abort();
+  if (init.signal?.aborted) controller.abort();
+  init.signal?.addEventListener('abort', abort, { once: true });
+  operatorRequests.add(controller);
   let response: Response;
   try {
     response = await fetch(`${API_BASE}${path}`, {
       credentials: 'same-origin',
       ...init,
+      signal: controller.signal,
     });
-  } catch {
+    assertRequestGeneration(generation);
+  } catch (error) {
+    if (controller.signal.aborted || generation !== operatorRequestGeneration) throw new DOMException('Request cancelled.', 'AbortError');
+    if (error instanceof DOMException && error.name === 'AbortError') throw error;
     throw new ApiError('The ComPallette backend is unavailable. Check the service and network connection.', 0, 'unavailable');
+  } finally {
+    operatorRequests.delete(controller);
+    init.signal?.removeEventListener('abort', abort);
   }
 
   if (response.ok) return response;
 
+  const payload = await response.clone().json().catch(() => ({}));
+  const message = await responseMessage(response);
+  assertRequestGeneration(generation);
   const kind = errorKind(response.status);
   if (kind === 'authentication' && options.notifyAuthenticationFailure !== false) {
     authenticationFailureHandler?.();
   }
-  const payload = await response.clone().json().catch(() => ({}));
-  throw new ApiError(await responseMessage(response), response.status, kind, payload.error_code, payload.details ?? payload);
+  throw new ApiError(message, response.status, kind, payload.error_code, payload.details ?? payload);
 }
 
 function jsonRequest(method: string, body?: unknown): RequestInit {
@@ -187,8 +215,12 @@ function siteQuery(siteId?: number, params: Record<string, string | number | und
   return serialized ? `?${serialized}` : '';
 }
 
-async function json<T>(path: string, init?: RequestInit): Promise<T> {
-  return (await request(path, init)).json() as Promise<T>;
+async function json<T>(path: string, init?: RequestInit, options?: RequestOptions): Promise<T> {
+  const generation = operatorRequestGeneration;
+  const response = await request(path, init, options);
+  const data: T = await response.json();
+  assertRequestGeneration(generation);
+  return data;
 }
 
 export const platformApi = {
