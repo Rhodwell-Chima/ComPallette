@@ -1,9 +1,11 @@
 import { useMemo, useState } from 'react';
+import { Link } from 'react-router-dom';
 import { Canvas } from '@react-three/fiber';
 import { Html, OrbitControls } from '@react-three/drei';
 import * as THREE from 'three';
 import {
   ArrowLeft,
+  ArrowRight,
   Box,
   Eye,
   Layers3,
@@ -807,6 +809,12 @@ export function TwinPage() {
                   <span className="twin-spec-key">Last Observed</span>
                   <span className="twin-spec-val">{formatTimestamp(selected.observed_at)}</span>
                 </div>
+              </div>
+
+              <div style={{ marginTop: '12px' }}>
+                <Link to={`/devices/${encodeURIComponent(selected.node_id)}`} className="button secondary" style={{ width: '100%', justifyContent: 'center' }}>
+                  Inspect Diagnostics &amp; History <ArrowRight size={13} />
+                </Link>
               </div>
 
               {/* If Anchor, display all occupants currently detected at this anchor */}

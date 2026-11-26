@@ -1,14 +1,15 @@
 import { Link } from 'react-router-dom';
 import { useMemo, useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
-import { Activity, BatteryMedium, Gauge, RadioTower, RefreshCw, ShieldAlert, Sparkles } from 'lucide-react';
+import { Activity, BatteryMedium, Gauge, Plus, RadioTower, RefreshCw, ShieldAlert, Sparkles } from 'lucide-react';
 import { platformApi } from '../services/api';
-import { MeasurementReading } from '../types';
+import { MeasurementReading, NodeRole } from '../types';
 import { usePlatform } from '../platform/PlatformContext';
 import { EmptyState, ErrorState, LoadingState, LocationLabel, NodeStatusPill, PageHeader, StatusPill, formatTimestamp } from '../platform/ui';
 import { Pagination } from '../platform/pagination';
 import { SkeletonCard, SkeletonTable } from '../platform/loading';
 import { StaggerContainer, StaggerItem } from '../platform/feed';
+import { CommissioningModal } from '../components/CommissioningModal';
 
 function formatMeasurementValue(value: number, unit: string) {
   if (unit === 'Pa') {
@@ -268,8 +269,10 @@ function EnvironmentalSitePage() {
 }
 
 export function DevicesPage() {
-  const { selectedSiteId } = usePlatform();
+  const { selectedSiteId, can } = usePlatform();
   const [filter, setFilter] = useState('ALL');
+  const [roleFilter, setRoleFilter] = useState<'ALL' | NodeRole>('ALL');
+  const [showCommission, setShowCommission] = useState(false);
   const [page, setPage] = useState(1);
   const [pageSize, setPageSize] = useState(25);
 
@@ -285,9 +288,10 @@ export function DevicesPage() {
   if (devices.isError || !devices.data) return <ErrorState message="Devices could not be loaded." retry={() => void devices.refetch()} />;
 
   const allNodes = devices.data.nodes || [];
-  const totalNodes = allNodes.length;
+  const filteredNodes = allNodes.filter(node => roleFilter === 'ALL' || node.role === roleFilter);
+  const totalNodes = filteredNodes.length;
   const totalPages = Math.max(1, Math.ceil(totalNodes / pageSize));
-  const paginatedNodes = allNodes.slice((page - 1) * pageSize, page * pageSize);
+  const paginatedNodes = filteredNodes.slice((page - 1) * pageSize, page * pageSize);
 
   return (
     <>
@@ -295,6 +299,13 @@ export function DevicesPage() {
         eyebrow="INFRASTRUCTURE"
         title="Devices & network"
         description="A unified registry for reporting wearables, anchors, gateways and environmental nodes. Health values shown here are persisted backend values only."
+        actions={
+          can('manage_devices') ? (
+            <button className="button primary" onClick={() => setShowCommission(true)}>
+              <Plus size={15} /> Commission Device
+            </button>
+          ) : undefined
+        }
       />
       <div className="segmented" aria-label="Device status filter">
         {['ALL', 'ONLINE', 'STALE', 'OFFLINE'].map((status) => (
@@ -310,6 +321,21 @@ export function DevicesPage() {
           </button>
         ))}
       </div>
+      <div className="segmented" style={{ marginTop: '8px' }} aria-label="Device role filter">
+        {(['ALL', 'WEARABLE', 'ANCHOR', 'GATEWAY'] as const).map((r) => (
+          <button
+            className={roleFilter === r ? 'active' : ''}
+            key={r}
+            onClick={() => {
+              setRoleFilter(r);
+              setPage(1);
+            }}
+          >
+            {r}
+          </button>
+        ))}
+      </div>
+      <CommissioningModal isOpen={showCommission} onClose={() => setShowCommission(false)} />
       <section className="panel registry-panel">
         <div className="panel-toolbar">
           <span>{totalNodes} devices</span>

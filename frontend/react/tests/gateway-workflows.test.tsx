@@ -4,6 +4,7 @@ import { afterEach, expect, it, vi } from 'vitest';
 import { MemoryRouter } from 'react-router-dom';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { GatewaysPage } from '../src/pages/GatewaysPage';
+import { DevicesPage } from '../src/pages/MonitoringPages';
 import { platformApi } from '../src/services/api';
 
 vi.mock('../src/platform/PlatformContext', () => ({ usePlatform: () => ({ selectedSiteId: 1, can: () => true }) }));
@@ -53,4 +54,36 @@ it('guards credential rotation with its current version', async () => {
   await userEvent.click(await screen.findByRole('button', { name: 'Rotate credential' }));
   expect(mutate.mock.calls[0][0]).toMatchObject({ gateway_id: 4, site: 1, action: 'rotate', expected_version: 3, operation_id: expect.any(String) });
   await screen.findByText('Install locally.');
+});
+
+it('renders Commission Device button and filters by role in DevicesPage', async () => {
+  vi.spyOn(platformApi, 'devices').mockResolvedValue({
+    nodes: [
+      { node_id: 'TAG-101', role: 'WEARABLE', status: 'ONLINE', current_zone: 'Z1', last_seen_ts: 1000, last_seq: 1, battery_v: 3.8, free_heap: 50000, is_simulated: false, sensor_ok: true, latest_co: 0, latest_temp: 20, latest_hum: 50 },
+      { node_id: 'ANCHOR-201', role: 'ANCHOR', status: 'ONLINE', current_zone: 'Z2', last_seen_ts: 1000, last_seq: 1, battery_v: 4.1, free_heap: 80000, is_simulated: false, sensor_ok: true, latest_co: 0, latest_temp: 22, latest_hum: 45 },
+    ],
+    count: 2,
+  });
+  vi.spyOn(platformApi, 'gateways').mockResolvedValue({
+    gateways: [], discoveries: [], devices: [], commands: [],
+  });
+  vi.spyOn(platformApi, 'zones').mockResolvedValue({ zones: [] });
+
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false, gcTime: 0 }, mutations: { retry: false } } });
+  render(<QueryClientProvider client={client}><MemoryRouter><DevicesPage /></MemoryRouter></QueryClientProvider>);
+
+  expect(await screen.findByText('TAG-101')).toBeInTheDocument();
+  expect(screen.getByText('ANCHOR-201')).toBeInTheDocument();
+
+  // Test role filter
+  const anchorFilterBtn = screen.getByRole('button', { name: 'ANCHOR' });
+  await userEvent.click(anchorFilterBtn);
+
+  expect(screen.getByText('ANCHOR-201')).toBeInTheDocument();
+  expect(screen.queryByText('TAG-101')).not.toBeInTheDocument();
+
+  // Test Commission Device CTA opens modal
+  const commissionBtn = screen.getByRole('button', { name: 'Commission Device' });
+  await userEvent.click(commissionBtn);
+  expect(await screen.findByText('Commission Discovered Hardware')).toBeInTheDocument();
 });
