@@ -231,6 +231,23 @@ export const platformApi = {
   gateways: (site: number) => json<GatewaysResponse>(`/api/v1/gateways${siteQuery(site)}`),
   gatewayAction: (input: Record<string, unknown>) => json<GatewayMutationResult>('/api/v1/gateways', jsonRequest('POST', input)),
   command: (input: Record<string, unknown>) => json<CommandMutationResult>('/api/v1/commands', jsonRequest('POST', input)),
+  commissionDevice: (data: {
+    gateway_id: number;
+    discovery_id: number;
+    node_id: string;
+    role: 'WEARABLE' | 'ANCHOR';
+    zone_id?: number | null;
+    device_key?: string;
+    expected_version: number;
+  }) =>
+    json<CommandMutationResult>(
+      '/api/v1/commands',
+      jsonRequest('POST', {
+        operation_id: typeof crypto !== 'undefined' && crypto.randomUUID ? crypto.randomUUID() : `op-${Date.now()}-${Math.random().toString(36).substring(2, 9)}`,
+        kind: 'PROVISION',
+        ...data,
+      }),
+    ),
   bootstrap: () => json<{ contract_version: number; build_revision: string; organisations: Organisation[]; sites: Site[]; capabilities: string[]; site_capabilities?: Record<string, string[]> }>('/api/v1/platform/bootstrap'),
   dashboard: (siteId?: number, params: { start_date?: string; end_date?: string; range?: string } = {}) =>
     json<EnhancedDashboardData>(`/api/v1/dashboard${siteQuery(siteId, params)}`),

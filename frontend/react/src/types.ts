@@ -62,6 +62,8 @@ export interface FacilityLayout {
 
 export interface NodeItem {
   node_id: string;
+  hardware_id?: string;
+  commissioned?: boolean;
   role: NodeRole;
   current_zone: string;
   last_seen_ts: number;
@@ -74,6 +76,8 @@ export interface NodeItem {
   latest_co: number;
   latest_temp: number;
   latest_hum: number;
+  latest_pressure?: number | null;
+  latest_gas_resistance?: number | null;
   organisation?: number | null;
   site?: number | null;
   site_name?: string;
@@ -83,6 +87,16 @@ export interface NodeItem {
   location_observed_at?: number;
   assigned_person?: string;
   assigned_asset?: string;
+}
+
+export interface DiscoveredDevice {
+  id: number;
+  gateway_id: number;
+  hardware_id: string;
+  sender_id: string;
+  last_seen: string;
+  version: number;
+  payload?: Record<string, any>;
 }
 
 export interface TelemetryItem {
