@@ -74,8 +74,33 @@ function EntityDetailContent({ kind, id }: { kind: Kind; id: string }) {
       <LocationLabel evidence={data.location_evidence ?? 'UNKNOWN'} zone={data.current_zone} />
       {data.location_observed_at ? <p style={{ fontSize: '0.8rem', color: 'var(--muted)', margin: '4px 0' }}>Evidence observed: {new Date(data.location_observed_at).toLocaleString()}</p> : null}
       <p>Zone membership only. A configured zone or custody assignment does not establish observed presence.</p>
-      {assignments.length ? assignments.map(item => <p key={item.id}>Device <Link to={`/devices/${encodeURIComponent(item.node_id ?? '')}`}>{item.node_id}</Link>{item.personnel_id && <> · <Link to={`/personnel/${item.personnel_id}`}>Personnel #{item.personnel_id}</Link></>}{item.asset_id && <> · <Link to={`/assets/${item.asset_id}`}>Asset #{item.asset_id}</Link></>}</p>) : <p>No active device assignment.</p>}
-      {custody.map(item => <p key={item.id}>Custodian: <Link to={`/personnel/${item.personnel_id}`}>Personnel #{item.personnel_id}</Link> · <Link to={`/assets/${item.asset_id}`}>Asset #{item.asset_id}</Link></p>)}
+      {assignments.length ? assignments.map(item => (
+        <p key={item.id}>
+          Device <Link to={`/devices/${encodeURIComponent(item.node_id ?? '')}`}>{item.node_id}</Link>
+          {Boolean(item.personnel_id) && (
+            <> · <Link to={`/personnel/${item.personnel_id}`}>Personnel #{item.personnel_id}</Link></>
+          )}
+          {Boolean(item.asset_id) && (
+            <> · <Link to={`/assets/${item.asset_id}`}>Asset #{item.asset_id}</Link></>
+          )}
+        </p>
+      )) : <p>No active device assignment.</p>}
+      {custody.map(item => (
+        <p key={item.id}>
+          Custodian:{' '}
+          {item.personnel_id ? (
+            <Link to={`/personnel/${item.personnel_id}`}>Personnel #{item.personnel_id}</Link>
+          ) : (
+            <span className="muted">Unassigned Person</span>
+          )}
+          {' · '}
+          {item.asset_id ? (
+            <Link to={`/assets/${item.asset_id}`}>Asset #{item.asset_id}</Link>
+          ) : (
+            <span className="muted">Unassigned Asset</span>
+          )}
+        </p>
+      ))}
       {kind === 'personnel' && <p>Operator account ID: {data.user_id ?? 'None'}</p>}
       {permitted && <div className="entity-actions">
         {kind === 'personnel' && can('manage_users') && <button className="button" onClick={() => open('link_user')}>Link operator account</button>}

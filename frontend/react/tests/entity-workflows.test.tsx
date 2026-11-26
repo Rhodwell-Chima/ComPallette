@@ -43,3 +43,18 @@ it('closes the old form when the selected site changes', async () => {
   await userEvent.click(await screen.findByRole('button', { name: 'Edit name' }));
   expect(screen.getByLabelText('Name')).toHaveValue('');
 });
+
+it('renders safe fallbacks for null or missing relationship links without broken hrefs', async () => {
+  vi.spyOn(platformApi, 'entity').mockImplementation(async () => ({
+    ...data(),
+    current_assignments: [{ id: 101, node_id: 'TAG-1', personnel_id: null, asset_id: null }],
+    current_custody: [{ id: 201, personnel_id: null, asset_id: null }],
+  }));
+  setup();
+  expect(await screen.findByText('TAG-1')).toBeInTheDocument();
+  expect(screen.getByText('Unassigned Person')).toBeInTheDocument();
+  expect(screen.getByText('Unassigned Asset')).toBeInTheDocument();
+  const links = screen.getAllByRole('link');
+  const hrefs = links.map(link => link.getAttribute('href'));
+  expect(hrefs.some(h => h && h.includes('undefined'))).toBe(false);
+});
