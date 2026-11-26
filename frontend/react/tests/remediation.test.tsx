@@ -132,6 +132,26 @@ describe('alert workflow', () => {
     expect(mutation).toHaveBeenCalledTimes(1);
     expect(platformApi.alerts).toHaveBeenCalledTimes(3);
   });
+  it('selects alert and auto-opens remediation modal when deep-linked with ?alert=', async () => {
+    vi.spyOn(platformApi, 'alerts').mockResolvedValue({
+      alerts: [alert(1, 'NEW'), alert(2, 'ACKNOWLEDGED')],
+      count: 2,
+    });
+    const client = clientFor();
+    render(
+      <QueryClientProvider client={client}>
+        <MemoryRouter initialEntries={['/alerts?alert=2']}>
+          <AlertSessionProvider>
+            <AlertsPage />
+          </AlertSessionProvider>
+        </MemoryRouter>
+      </QueryClientProvider>
+    );
+    await waitFor(() => {
+      expect(screen.getByRole('dialog')).toBeVisible();
+    });
+    expect(screen.getByText(/Resolve alert #2/)).toBeVisible();
+  });
 });
 
 describe('environmental request states', () => {

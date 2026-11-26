@@ -18,8 +18,18 @@ export function AlertsPage() {
   const [filter, setFilter] = useState<'ALL' | AlertStatus>('ALL');
   const [confirming, setConfirming] = useState(false);
   const cancelRef = useRef<HTMLButtonElement>(null);
-  const alerts = useQuery({ queryKey: ['alerts', selectedSiteId, filter], queryFn: () => platformApi.alerts(selectedSiteId, filter === 'ALL' ? undefined : filter), enabled: Boolean(selectedSiteId), refetchInterval: 5_000 });
-  const requestedId = Number(params.get('alert'));
+  const requestedParam = params.get('alert');
+  const requestedId = requestedParam ? Number(requestedParam) : null;
+  const initialRequestedIdRef = useRef<number | null>(requestedId);
+  const autoOpenedRef = useRef(false);
+
+  const alerts = useQuery({
+    queryKey: ['alerts', selectedSiteId, filter],
+    queryFn: () => platformApi.alerts(selectedSiteId, filter === 'ALL' ? undefined : filter),
+    enabled: Boolean(selectedSiteId),
+    refetchInterval: 5_000,
+  });
+
   const selected = alerts.data?.alerts.find(alert => alert.id === requestedId) ?? alerts.data?.alerts[0];
   useEffect(() => {
     if (!alerts.isSuccess) return;
@@ -28,7 +38,22 @@ export function AlertsPage() {
     if (selected) next.set('alert', String(selected.id)); else next.delete('alert');
     setParams(next, { replace: true });
   }, [alerts.isSuccess, selected?.id, requestedId, params, setParams]);
-  useEffect(() => { setConfirming(false); }, [selectedSiteId, selected?.id, filter]);
+
+  useEffect(() => {
+    if (
+      !autoOpenedRef.current &&
+      initialRequestedIdRef.current &&
+      selected?.id === initialRequestedIdRef.current &&
+      selected.status !== 'RESOLVED'
+    ) {
+      autoOpenedRef.current = true;
+      setConfirming(true);
+    }
+  }, [selected?.id, selected?.status]);
+
+  useEffect(() => {
+    setConfirming(false);
+  }, [selectedSiteId]);
 
   if (!selectedSiteId) return <EmptyState title="No site selected" detail="Select a permitted site to review its alerts." />;
   const notices = Object.entries(session.feedback).filter(([key]) => key.startsWith(`${selectedSiteId}:`));
