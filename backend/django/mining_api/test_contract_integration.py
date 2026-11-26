@@ -428,3 +428,165 @@ class DeviceKeyManagementEdgeCaseTests(TestCase):
         }
         res = self.client.post('/api/v1/commands', cmd_payload, format='json')
         self.assertEqual(res.status_code, 400)
+
+
+class DiscoveryAndQuarantineResolutionTests(TestCase):
+    def setUp(self):
+        self.directory = tempfile.TemporaryDirectory()
+        self.addCleanup(self.directory.cleanup)
+        config = override_settings(
+            COMPALLETTE_INSTALLATION_ID=INSTALLATION,
+            COMPALLETTE_DEVICE_KEY_DIR=self.directory.name,
+        )
+        config.enable()
+        self.addCleanup(config.disable)
+        self.org = Organisation.objects.create(name='Quarantine Org', slug='quarantine-org')
+        self.site = Site.objects.create(organisation=self.org, name='Quarantine Site', code='QUAR')
+        self.operator = get_user_model().objects.create_superuser(username='quar-admin', password='test-only')
+        self.client = APIClient()
+        self.client.force_authenticate(self.operator)
+        gateway_node = Node.objects.create(node_id='GW-QUAR', hardware_id='GWQUAR01', role='GATEWAY', organisation=self.org, site=self.site, commissioned=True)
+        self.gateway = GatewayRegistration.objects.create(node=gateway_node, site=self.site, credentials_installed=True, credential_hash=make_password('test-gw-quar-key'))
+        self.headers = {'HTTP_X_GATEWAY_ID': gateway_node.pk, 'HTTP_X_API_KEY': 'test-gw-quar-key'}
+
+    def test_commission_confirmation_clears_discovery_and_all_quarantine_records(self):
+        hardware = 'RESOLVE01'
+        key = KEY
+        Path(self.directory.name, f'{hardware}.json').write_text(json.dumps({
+            'installation_id': INSTALLATION, 'site_id': self.site.pk, 'hardware_id': hardware, 'key': key.hex()
+        }))
+
+        request_frame = {'kind': 'TIME_REQUEST', 'installation_id': INSTALLATION, 'hardware_id': hardware, 'boot_nonce': '7' * 32, 'sync_nonce': '8' * 32}
+        prov_packet = {'installation_id': INSTALLATION, 'ver': 1, 'type': 'PROV_REQ', 'seq': 1, 'sender': f'PROV-{hardware}', 'role': 'UNASSIGNED', 'zone': 'UNASSIGNED', 'uptime': 1,
+                       'payload': {'chip_id': hardware, 'clock_request': sign(request_frame, key)}}
+        res = self.client.post('/api/v1/provision/request', prov_packet, format='json', **self.headers)
+        self.assertEqual(res.status_code, 200)
+
+        hb_packet1 = {'installation_id': INSTALLATION, 'ver': 1, 'type': 'HEARTBEAT', 'seq': 2, 'sender': f'PROV-{hardware}', 'role': 'UNASSIGNED', 'zone': 'UNASSIGNED', 'uptime': 2, 'payload': {'heap': 1000, 'batt': 3.8}}
+        hb_packet2 = {'installation_id': INSTALLATION, 'ver': 1, 'type': 'HEARTBEAT', 'seq': 3, 'sender': hardware, 'role': 'UNASSIGNED', 'zone': 'UNASSIGNED', 'uptime': 3, 'payload': {'heap': 1000, 'batt': 3.8}}
+        res1 = self.client.post('/api/v1/heartbeat', hb_packet1, format='json', **self.headers)
+        res2 = self.client.post('/api/v1/heartbeat', hb_packet2, format='json', **self.headers)
+        self.assertEqual(res1.status_code, 200)
+        self.assertEqual(res2.status_code, 200)
+
+        self.assertTrue(DeviceDiscovery.objects.filter(gateway=self.gateway, hardware_id=hardware).exists())
+        self.assertGreaterEqual(QuarantinedEvent.objects.filter(site=self.site).count(), 2)
+
+        discovery = DeviceDiscovery.objects.get(hardware_id=hardware)
+        cmd_payload = {
+            'operation_id': str(uuid.uuid4()),
+            'gateway_id': self.gateway.pk,
+            'node_id': 'TAG-RESOLVED',
+            'kind': 'PROVISION',
+            'discovery_id': discovery.pk,
+            'role': 'WEARABLE',
+            'expected_version': discovery.version,
+        }
+        cmd_res = self.client.post('/api/v1/commands', cmd_payload, format='json')
+        self.assertEqual(cmd_res.status_code, 201)
+        command_id = cmd_res.json()['command_id']
+
+        confirm_body = {'installation_id': INSTALLATION, 'hardware_id': hardware, 'boot_nonce': '7' * 32, 'kind': 'COMMAND_RESULT', 'command_id': command_id, 'node_id': 'TAG-RESOLVED', 'state': 'DEVICE_CONFIRMED'}
+        confirm_packet = {'hardware_id': hardware, **sign(confirm_body, key)}
+        confirm_res = self.client.post('/api/v1/provision/confirm', confirm_packet, format='json', **self.headers)
+        self.assertEqual(confirm_res.status_code, 200)
+
+        node = Node.objects.get(node_id='TAG-RESOLVED')
+        self.assertTrue(node.commissioned)
+        self.assertEqual(node.status, 'ONLINE')
+
+        self.assertFalse(DeviceDiscovery.objects.filter(gateway=self.gateway, hardware_id=hardware).exists())
+        self.assertFalse(QuarantinedEvent.objects.filter(site=self.site, sender_id=hardware).exists())
+        self.assertFalse(QuarantinedEvent.objects.filter(site=self.site, sender_id=f'PROV-{hardware}').exists())
+        self.assertFalse(QuarantinedEvent.objects.filter(site=self.site, sender_id='TAG-RESOLVED').exists())
+
+    def test_gateways_view_exposes_payload_and_excludes_commissioned_hardware(self):
+        hardware = 'DISC-PAYLOAD'
+        packet = {'installation_id': INSTALLATION, 'ver': 1, 'type': 'PROV_REQ', 'seq': 1, 'sender': f'PROV-{hardware}', 'role': 'UNASSIGNED', 'zone': 'UNASSIGNED', 'uptime': 1,
+                  'payload': {'chip_id': hardware, 'batt': 3.84, 'bme_healthy': True, 'mq_healthy': False, 'chip_mac': 'AA:BB:CC:DD:EE:FF'}}
+        self.client.post('/api/v1/provision/request', packet, format='json', **self.headers)
+
+        res = self.client.get(f'/api/v1/gateways?site={self.site.pk}')
+        self.assertEqual(res.status_code, 200)
+        discoveries = res.json()['discoveries']
+        match = next((d for d in discoveries if d['hardware_id'] == hardware), None)
+        self.assertIsNotNone(match)
+        self.assertIn('payload', match)
+        self.assertEqual(match['payload']['payload']['batt'], 3.84)
+        self.assertTrue(match['payload']['payload']['bme_healthy'])
+
+        Node.objects.create(node_id='TAG-COMMISSIONED', hardware_id=hardware, site=self.site, organisation=self.org, role='WEARABLE', commissioned=True)
+        res2 = self.client.get(f'/api/v1/gateways?site={self.site.pk}')
+        discoveries2 = res2.json()['discoveries']
+        self.assertFalse(any(d['hardware_id'] == hardware for d in discoveries2))
+
+    def test_rejected_command_preserves_discovery_and_quarantine(self):
+        hardware = 'REJECT01'
+        key = KEY
+        Path(self.directory.name, f'{hardware}.json').write_text(json.dumps({
+            'installation_id': INSTALLATION, 'site_id': self.site.pk, 'hardware_id': hardware, 'key': key.hex()
+        }))
+        request_frame = {'kind': 'TIME_REQUEST', 'installation_id': INSTALLATION, 'hardware_id': hardware, 'boot_nonce': '9' * 32, 'sync_nonce': '0' * 32}
+        prov_packet = {'installation_id': INSTALLATION, 'ver': 1, 'type': 'PROV_REQ', 'seq': 1, 'sender': f'PROV-{hardware}', 'role': 'UNASSIGNED', 'zone': 'UNASSIGNED', 'uptime': 1,
+                       'payload': {'chip_id': hardware, 'clock_request': sign(request_frame, key)}}
+        self.client.post('/api/v1/provision/request', prov_packet, format='json', **self.headers)
+        discovery = DeviceDiscovery.objects.get(hardware_id=hardware)
+
+        cmd_payload = {
+            'operation_id': str(uuid.uuid4()),
+            'gateway_id': self.gateway.pk,
+            'node_id': 'TAG-REJECTED',
+            'kind': 'PROVISION',
+            'discovery_id': discovery.pk,
+            'role': 'WEARABLE',
+            'expected_version': discovery.version,
+        }
+        cmd_res = self.client.post('/api/v1/commands', cmd_payload, format='json')
+        command_id = cmd_res.json()['command_id']
+
+        confirm_body = {'installation_id': INSTALLATION, 'hardware_id': hardware, 'boot_nonce': '9' * 32, 'kind': 'COMMAND_RESULT', 'command_id': command_id, 'node_id': 'TAG-REJECTED', 'state': 'REJECTED'}
+        confirm_packet = {'hardware_id': hardware, **sign(confirm_body, key)}
+        res = self.client.post('/api/v1/provision/confirm', confirm_packet, format='json', **self.headers)
+        self.assertEqual(res.status_code, 200)
+
+        node = Node.objects.get(node_id='TAG-REJECTED')
+        self.assertFalse(node.commissioned)
+        self.assertTrue(DeviceDiscovery.objects.filter(hardware_id=hardware).exists())
+        self.assertTrue(QuarantinedEvent.objects.filter(site=self.site, sender_id=f'PROV-{hardware}').exists())
+
+    def test_confirmation_hardware_mismatch_fails_and_preserves_records(self):
+        hardware_a = 'HW-DEV-A'
+        hardware_b = 'HW-DEV-B'
+        key_a = KEY
+        key_b = bytes.fromhex('ba' * 32)
+        Path(self.directory.name, f'{hardware_a}.json').write_text(json.dumps({
+            'installation_id': INSTALLATION, 'site_id': self.site.pk, 'hardware_id': hardware_a, 'key': key_a.hex()
+        }))
+        Path(self.directory.name, f'{hardware_b}.json').write_text(json.dumps({
+            'installation_id': INSTALLATION, 'site_id': self.site.pk, 'hardware_id': hardware_b, 'key': key_b.hex()
+        }))
+
+        request_frame = {'kind': 'TIME_REQUEST', 'installation_id': INSTALLATION, 'hardware_id': hardware_a, 'boot_nonce': 'a' * 32, 'sync_nonce': 'b' * 32}
+        prov_packet = {'installation_id': INSTALLATION, 'ver': 1, 'type': 'PROV_REQ', 'seq': 1, 'sender': f'PROV-{hardware_a}', 'role': 'UNASSIGNED', 'zone': 'UNASSIGNED', 'uptime': 1,
+                       'payload': {'chip_id': hardware_a, 'clock_request': sign(request_frame, key_a)}}
+        self.client.post('/api/v1/provision/request', prov_packet, format='json', **self.headers)
+        discovery = DeviceDiscovery.objects.get(hardware_id=hardware_a)
+
+        cmd_payload = {
+            'operation_id': str(uuid.uuid4()),
+            'gateway_id': self.gateway.pk,
+            'node_id': 'NODE-TARGET-A',
+            'kind': 'PROVISION',
+            'discovery_id': discovery.pk,
+            'role': 'WEARABLE',
+            'expected_version': discovery.version,
+        }
+        cmd_res = self.client.post('/api/v1/commands', cmd_payload, format='json')
+        command_id = cmd_res.json()['command_id']
+
+        tampered_body = {'installation_id': INSTALLATION, 'hardware_id': hardware_b, 'boot_nonce': 'a' * 32, 'kind': 'COMMAND_RESULT', 'command_id': command_id, 'node_id': 'NODE-TARGET-A', 'state': 'DEVICE_CONFIRMED'}
+        tampered_packet = {'hardware_id': hardware_b, **sign(tampered_body, key_b)}
+        res = self.client.post('/api/v1/provision/confirm', tampered_packet, format='json', **self.headers)
+        self.assertEqual(res.status_code, 400)
+        self.assertFalse(Node.objects.get(node_id='NODE-TARGET-A').commissioned)
+        self.assertTrue(DeviceDiscovery.objects.filter(hardware_id=hardware_a).exists())

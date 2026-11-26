@@ -18,8 +18,14 @@ class GatewaysView(APIView):
     def get(self, request):
         site = get_object_or_404(permitted_sites(request.user), pk=request.query_params.get('site'))
         enforce(request.user, 'manage_devices', site)
+        commissioned_hw = Node.objects.filter(site=site, commissioned=True, archived=False).values_list('hardware_id', flat=True)
+        discoveries = list(
+            DeviceDiscovery.objects.filter(gateway__site=site)
+            .exclude(hardware_id__in=commissioned_hw)
+            .values('id', 'gateway_id', 'hardware_id', 'sender_id', 'last_seen', 'version', 'payload')
+        )
         return Response({'gateways': list(GatewayRegistration.objects.filter(site=site).values('id', 'node_id', 'site_id', 'active', 'credential_version', 'credentials_installed')),
-            'discoveries': list(DeviceDiscovery.objects.filter(gateway__site=site).values('id', 'gateway_id', 'hardware_id', 'sender_id', 'last_seen', 'version')),
+            'discoveries': discoveries,
             'devices': list(Node.objects.filter(site=site, archived=False, commissioned=True).values('node_id', 'hardware_id', 'version', 'role')),
             'commands': list(DeviceCommand.objects.filter(gateway__site=site).order_by('-created_at').values()[:100])})
 

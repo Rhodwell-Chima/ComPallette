@@ -38,7 +38,14 @@ def command_result(gateway, message):
         command.result = message
         if state == 'DEVICE_CONFIRMED':
             if command.kind == 'PROVISION':
-                Node.objects.filter(pk=command.node_id).update(commissioned=True)
+                Node.objects.filter(pk=command.node_id).update(commissioned=True, status='ONLINE')
+                from .models import QuarantinedEvent, DeviceDiscovery
+                hardware = command.node.hardware_id
+                DeviceDiscovery.objects.filter(gateway=gateway, hardware_id=hardware).delete()
+                QuarantinedEvent.objects.filter(site=gateway.site, sender_id=hardware).delete()
+                QuarantinedEvent.objects.filter(site=gateway.site, sender_id=command.node_id).delete()
+                if hardware:
+                    QuarantinedEvent.objects.filter(site=gateway.site, sender_id=f'PROV-{hardware}').delete()
     command.save(update_fields=['state', 'result'])
     record_result(command, message)
     return {'command_id': str(command.pk), 'state': command.state, 'received_state': state}
