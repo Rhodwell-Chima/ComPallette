@@ -1,15 +1,38 @@
 """Transport-independent ingestion. A returned receipt means the transaction committed."""
+import logging
 import time
 from django.contrib.auth.hashers import check_password
 from django.db import transaction
 from django.shortcuts import get_object_or_404
+from django.utils import timezone
 from rest_framework.exceptions import AuthenticationFailed, PermissionDenied, ValidationError
 from .models import (GatewayRegistration, DeviceDiscovery, Node, IngestedEvent,
     DeviceAssignment, LocationObservation, TelemetryRecord, MeasurementReading,
-    DeviceCapability, SafetyAlert, AuditEntry, Zone, QuarantinedEvent, LocationEvidence)
+    DeviceCapability, SafetyAlert, AuditEntry, Zone, QuarantinedEvent, LocationEvidence,
+    DeviceCommand)
 from .wire_validation import (validate_envelope, validate_payload, TelemetryPayloadSerializer,
                              HeartbeatPayloadSerializer, AlertPayloadSerializer, ProvisionPayloadSerializer,
                              LocalAckPayloadSerializer)
+from .commands import command_frame
+
+
+logger = logging.getLogger(__name__)
+
+
+def attach_downlink_control(gateway, receipt):
+    if 'control' in receipt:
+        return
+    pending_cmd = DeviceCommand.objects.select_for_update().filter(
+        gateway=gateway, state='QUEUED', expires_at__gt=timezone.now()
+    ).order_by('created_at').first()
+    if pending_cmd:
+        try:
+            receipt['control'] = command_frame(pending_cmd)
+            pending_cmd.state = 'SENT'
+            pending_cmd.save(update_fields=['state'])
+            receipt['command_id'] = str(pending_cmd.pk)
+        except Exception as e:
+            logger.warning("Failed to prepare command_frame for command %s: %s", pending_cmd.pk, e)
 
 
 def authenticate_gateway(gateway_id, key):
@@ -62,6 +85,7 @@ def ingest(gateway, data):
         if control:
             receipt['control'] = control
         quarantined, created = QuarantinedEvent.objects.get_or_create(gateway=gateway, installation_id=deployment, sender_id=sender, event_type=kind, sequence=seq, defaults={'site': gateway.site, 'payload': data})
+        attach_downlink_control(gateway, receipt)
         return {**receipt, 'recorded': False, 'discovered': True, 'quarantined': True, 'quarantine_id': quarantined.pk, 'deduplicated': not created}
     if node.site_id != gateway.site_id or node.organisation_id != gateway.site.organisation_id:
         raise PermissionDenied('Sender is not registered in this gateway site.')
@@ -73,6 +97,7 @@ def ingest(gateway, data):
     if existing:
         if kind == 'ALERT':
             receipt['alert_id'] = SafetyAlert.objects.get(source_event=existing).pk
+        attach_downlink_control(gateway, receipt)
         return {**receipt, 'recorded': False, 'deduplicated': True}
     assignment = DeviceAssignment.objects.filter(node=node, ended_at__isnull=True).first()
     event = IngestedEvent.objects.create(node=node, site=gateway.site, gateway=gateway,
@@ -260,4 +285,5 @@ def ingest(gateway, data):
         elif kind == 'HEARTBEAT':
             changed += ['battery_v', 'free_heap']
         node.save(update_fields=changed)
+    attach_downlink_control(gateway, receipt)
     return {**receipt, 'recorded': True, 'event_id': event.pk}

@@ -74,6 +74,34 @@ class ContractIntegrationTests(TestCase):
         self.client.post('/api/v1/provision/confirm', self.result(command), format='json', **self.headers)
         self.assertEqual(AuditEntry.objects.filter(action='COMMAND_RESULT').count(), 1)
 
+    def test_queued_command_delivered_in_gateway_uplink_receipt(self):
+        command, payload = self.queue()
+        self.assertEqual(command.state, 'QUEUED')
+
+        # Gateway sends a routine heartbeat
+        hb_packet = {
+            'installation_id': INSTALLATION,
+            'ver': 1,
+            'type': 'HEARTBEAT',
+            'seq': 200,
+            'sender': 'GW-TEST',
+            'role': 'GATEWAY',
+            'zone': 'SURFACE-PORTAL',
+            'uptime': 5000,
+            'payload': {'heap': 200000, 'batt': 3.9, 'peers': 2}
+        }
+        response = self.client.post('/api/v1/heartbeat', hb_packet, format='json', **self.headers)
+        self.assertEqual(response.status_code, 200)
+        data = response.json()
+        self.assertIn('control', data)
+        control = verify(data['control'], KEY)
+        self.assertEqual(control['command_id'], str(command.pk))
+        self.assertEqual(control['kind'], 'PROVISION')
+        self.assertEqual(control['node_id'], 'TRACK-TEST')
+
+        command.refresh_from_db()
+        self.assertEqual(command.state, 'SENT')
+
     def test_forged_confirmation_cannot_commission_device(self):
         command, _ = self.queue()
         response = self.client.post('/api/v1/provision/confirm', self.result(command, bytes(32)), format='json', **self.headers)
