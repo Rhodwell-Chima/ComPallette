@@ -1,4 +1,5 @@
 import { FormEvent, useEffect, useState } from 'react';
+import { useSearchParams } from 'react-router-dom';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import {
   AlertTriangle,
@@ -968,6 +969,8 @@ const DEMO_MINING_GEOMETRY = {
 };
 
 export function SitesZonesPage() {
+  const [searchParams] = useSearchParams();
+  const targetedZoneId = Number(searchParams.get('zone'));
   const { selectedSite, selectedSiteId, can } = usePlatform();
   const [showZoneForm, setShowZoneForm] = useState(false);
   const [zoneForm, setZoneForm] = useState({ code: '', name: '', zone_type: 'OPERATIONAL', description: '', is_restricted: false, is_hazardous: false });
@@ -979,6 +982,15 @@ export function SitesZonesPage() {
   const createZone = useMutation({ mutationFn: () => platformApi.createZone(selectedSiteId!, zoneForm), onSuccess: () => { setZoneForm({ code: '', name: '', zone_type: 'OPERATIONAL', description: '', is_restricted: false, is_hazardous: false }); setShowZoneForm(false); void queryClient.invalidateQueries({ queryKey: ['zones'] }); } });
   const saveLayout = useMutation({ mutationFn: (geometry: Record<string, unknown>) => platformApi.updateLayout(selectedSiteId!, geometry, layout.data!.version), onSuccess: () => { void queryClient.invalidateQueries({ queryKey: ['layout'] }); void queryClient.invalidateQueries({ queryKey: ['twin'] }); } });
   useEffect(() => { if (layout.data) setLayoutText(JSON.stringify(layout.data.geometry, null, 2)); }, [layout.data]);
+
+  useEffect(() => {
+    if (targetedZoneId && zones.data) {
+      const el = document.getElementById(`zone-card-${targetedZoneId}`);
+      if (el) {
+        el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      }
+    }
+  }, [targetedZoneId, zones.data]);
 
   const handleLoadDemoGeometry = () => {
     const formatted = JSON.stringify(DEMO_MINING_GEOMETRY, null, 2);
@@ -993,7 +1005,17 @@ export function SitesZonesPage() {
   return <>
     <PageHeader eyebrow="INFRASTRUCTURE" title="Sites & zones" description="Industry-neutral facility configuration: structures may be shafts, tunnels, buildings or warehouses, while zones hold restrictions, hazards and optional persisted geometry." actions={can('manage_sites') ? <button className="button primary" onClick={() => setShowZoneForm(value => !value)}><Plus size={16} /> Add zone</button> : undefined} />
     <section className="site-config-grid"><article className="panel"><div className="panel-heading"><div><p className="eyebrow">SITE HIERARCHY</p><h2>{selectedSite.name}</h2></div><Building2 size={19} /></div><dl className="metadata-list"><div><dt>Organisation</dt><dd>{selectedSite.organisation_name}</dd></div><div><dt>Industry</dt><dd>{selectedSite.industry}</dd></div><div><dt>Timezone</dt><dd>{selectedSite.timezone}</dd></div><div><dt>Structures</dt><dd>{structures.data.structures.length}</dd></div></dl></article>
-      <article className="panel zone-list"><div className="panel-heading"><div><p className="eyebrow">MANAGED ZONES</p><h2>{zones.data.zones.length} configured</h2></div></div>{zones.data.zones.length ? zones.data.zones.map(zone => <div className="zone-row" key={zone.id}><div><strong>{zone.name}</strong><small>{zone.code} · {zone.zone_type}</small></div><div>{zone.is_restricted && <StatusPill value="Restricted" tone="warning" />}{zone.is_hazardous && <StatusPill value="Hazard" tone="critical" />}</div></div>) : <EmptyState title="No zones yet" detail="Create meaningful operational zones before positioning entities in the Twin." />}</article></section>
+      <article className="panel zone-list"><div className="panel-heading"><div><p className="eyebrow">MANAGED ZONES</p><h2>{zones.data.zones.length} configured</h2></div></div>{zones.data.zones.length ? zones.data.zones.map(zone => (
+        <div
+          id={`zone-card-${zone.id}`}
+          className={`zone-row ${zone.id === targetedZoneId ? 'is-targeted-zone' : ''}`}
+          key={zone.id}
+          style={zone.id === targetedZoneId ? { border: '2px solid var(--primary)', borderRadius: '8px', padding: '8px' } : undefined}
+        >
+          <div><strong>{zone.name}</strong><small>{zone.code} · {zone.zone_type}</small></div>
+          <div>{zone.is_restricted && <StatusPill value="Restricted" tone="warning" />}{zone.is_hazardous && <StatusPill value="Hazard" tone="critical" />}</div>
+        </div>
+      )) : <EmptyState title="No zones yet" detail="Create meaningful operational zones before positioning entities in the Twin." />}</article></section>
       {/* Add Zone Pop-up Modal */}
       <Modal
         isOpen={showZoneForm}
