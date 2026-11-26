@@ -19,6 +19,11 @@ from .views import check_and_update_watchdog
 @override_settings(COMPALLETTE_INSTALLATION_ID='00000000-0000-4000-8000-000000000001')
 class MiningApiTests(TestCase):
     def setUp(self):
+        self.directory = tempfile.TemporaryDirectory()
+        self.addCleanup(self.directory.cleanup)
+        config = override_settings(COMPALLETTE_DEVICE_KEY_DIR=self.directory.name)
+        config.enable()
+        self.addCleanup(config.disable)
         self.client = APIClient()
         self.api_key = 'isolated-test-gateway-key-at-least-32-characters'
         self.auth_headers = {'HTTP_X_API_KEY': self.api_key}

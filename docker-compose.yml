@@ -47,7 +47,7 @@ services:
       - COMPALLETTE_BUILD_REVISION=${COMPALLETTE_BUILD_REVISION:-development}
       - CORS_ALLOW_ALL=0
     volumes:
-      - ${COMPALLETTE_DEVICE_KEY_DIR:?Set protected device key directory}:/run/device-keys:ro
+      - ${COMPALLETTE_DEVICE_KEY_DIR:?Set protected device key directory}:/run/device-keys
     depends_on:
       db:
         condition: service_healthy
@@ -100,7 +100,7 @@ services:
       - COMPALLETTE_BUILD_REVISION=${COMPALLETTE_BUILD_REVISION:-development}
       - COMPALLETTE_WATCHDOG_INTERVAL=5
     volumes:
-      - ${COMPALLETTE_DEVICE_KEY_DIR:?Set protected device key directory}:/run/device-keys:ro
+      - ${COMPALLETTE_DEVICE_KEY_DIR:?Set protected device key directory}:/run/device-keys
     depends_on:
       backend:
         condition: service_healthy

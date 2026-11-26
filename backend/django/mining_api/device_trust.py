@@ -8,6 +8,7 @@ import hashlib
 import hmac
 import json
 import re
+import secrets
 import time
 from pathlib import Path
 from django.conf import settings
@@ -31,6 +32,69 @@ def device_key(hardware, site_id):
         return key
     except (OSError, ValueError, KeyError, TypeError):
         raise PermissionDenied('Install a valid local enrollment key for this hardware and site.')
+
+
+def ensure_device_key(hardware, site_id, secret_hex=None):
+    """Ensure an enrollment key JSON file exists on disk for this hardware and site.
+    Generates a cryptographically secure 256-bit random key if none exists.
+    Supports supplying a 64-character hex pre-shared secret.
+    """
+    if not isinstance(hardware, str) or not re.fullmatch(r'[A-Za-z0-9_-]{1,32}', hardware):
+        raise ValidationError('Invalid hardware identity.')
+    if not settings.COMPALLETTE_DEVICE_KEY_DIR:
+        raise PermissionDenied('Local enrollment keys are not configured.')
+
+    key_dir = Path(settings.COMPALLETTE_DEVICE_KEY_DIR)
+    key_dir.mkdir(parents=True, exist_ok=True)
+    key_path = key_dir / f'{hardware}.json'
+
+    # If a custom secret is provided, validate it strictly
+    custom_bytes = None
+    if secret_hex is not None and isinstance(secret_hex, str) and secret_hex.strip():
+        clean_hex = secret_hex.strip()
+        if not re.fullmatch(r'[0-9a-fA-F]{64}', clean_hex):
+            raise ValidationError('Device key must be exactly 256 bits (64 hexadecimal characters).')
+        try:
+            custom_bytes = bytes.fromhex(clean_hex)
+        except ValueError:
+            raise ValidationError('Device key contains invalid hexadecimal characters.')
+    elif secret_hex is not None and not isinstance(secret_hex, str):
+        raise ValidationError('Device key must be a 64-character hexadecimal string.')
+
+    # Check existing key file on disk
+    if key_path.exists():
+        try:
+            data = json.loads(key_path.read_text(encoding='utf-8'))
+            if (
+                data.get('installation_id') == installation_id()
+                and data.get('site_id') == site_id
+                and data.get('hardware_id') == hardware
+            ):
+                existing_key = bytes.fromhex(data['key'])
+                if len(existing_key) == 32:
+                    if custom_bytes is None or existing_key == custom_bytes:
+                        return existing_key
+        except (OSError, ValueError, KeyError, TypeError):
+            pass
+
+    key_bytes = custom_bytes if custom_bytes is not None else secrets.token_bytes(32)
+    data = {
+        'installation_id': installation_id(),
+        'site_id': site_id,
+        'hardware_id': hardware,
+        'key': key_bytes.hex(),
+    }
+
+    tmp_path = key_dir / f'.{hardware}.tmp.{secrets.token_hex(4)}'
+    try:
+        tmp_path.write_text(json.dumps(data, indent=2), encoding='utf-8')
+        tmp_path.replace(key_path)
+    except OSError as e:
+        if tmp_path.exists():
+            tmp_path.unlink(missing_ok=True)
+        raise PermissionDenied(f'Failed to persist device enrollment key: {e}')
+
+    return key_bytes
 
 
 def sign(body, key):

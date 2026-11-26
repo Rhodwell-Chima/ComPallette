@@ -269,3 +269,162 @@ class ContractIntegrationTests(TestCase):
         self.assertEqual(self.client.post('/api/v1/gateways', rotation, format='json').status_code, 201)
         self.assertEqual(self.client.post('/api/v1/gateways', rotation, format='json').status_code, 200)
         self.assertEqual(self.client.post('/api/v1/gateways', {**rotation, 'operation_id': str(uuid.uuid4())}, format='json').status_code, 409)
+
+
+class DeviceKeyManagementEdgeCaseTests(TestCase):
+    def setUp(self):
+        self.directory = tempfile.TemporaryDirectory()
+        self.addCleanup(self.directory.cleanup)
+        config = override_settings(
+            COMPALLETTE_INSTALLATION_ID=INSTALLATION,
+            COMPALLETTE_DEVICE_KEY_DIR=self.directory.name,
+        )
+        config.enable()
+        self.addCleanup(config.disable)
+        self.org = Organisation.objects.create(name='Key Org', slug='key-org')
+        self.site = Site.objects.create(organisation=self.org, name='Key Site', code='KEY')
+        self.operator = get_user_model().objects.create_superuser(username='key-admin', password='test-only')
+        self.client = APIClient()
+        self.client.force_authenticate(self.operator)
+        gateway_node = Node.objects.create(node_id='GW-KEY', hardware_id='GWKEY01', role='GATEWAY', organisation=self.org, site=self.site, commissioned=True)
+        self.gateway = GatewayRegistration.objects.create(node=gateway_node, site=self.site, credentials_installed=True, credential_hash=make_password('test-gw-key'))
+        self.headers = {'HTTP_X_GATEWAY_ID': gateway_node.pk, 'HTTP_X_API_KEY': 'test-gw-key'}
+
+    def test_ensure_device_key_auto_generates_valid_256bit_key(self):
+        from .device_trust import ensure_device_key, device_key
+        key_bytes = ensure_device_key('AUTO01', self.site.pk)
+        self.assertEqual(len(key_bytes), 32)
+        key_file = Path(self.directory.name, 'AUTO01.json')
+        self.assertTrue(key_file.exists())
+        data = json.loads(key_file.read_text(encoding='utf-8'))
+        self.assertEqual(data['installation_id'], INSTALLATION)
+        self.assertEqual(data['site_id'], self.site.pk)
+        self.assertEqual(data['hardware_id'], 'AUTO01')
+        self.assertEqual(bytes.fromhex(data['key']), key_bytes)
+        self.assertEqual(device_key('AUTO01', self.site.pk), key_bytes)
+
+    def test_ensure_device_key_with_explicit_preshared_hex_key(self):
+        from .device_trust import ensure_device_key, device_key
+        custom_hex = 'ef' * 32
+        key_bytes = ensure_device_key('CUSTOM01', self.site.pk, secret_hex=custom_hex)
+        self.assertEqual(key_bytes, bytes.fromhex(custom_hex))
+        data = json.loads(Path(self.directory.name, 'CUSTOM01.json').read_text(encoding='utf-8'))
+        self.assertEqual(data['key'], custom_hex)
+        self.assertEqual(device_key('CUSTOM01', self.site.pk), bytes.fromhex(custom_hex))
+
+    def test_ensure_device_key_idempotence_preserves_existing_key(self):
+        from .device_trust import ensure_device_key
+        first_key = ensure_device_key('IDEMP01', self.site.pk)
+        second_key = ensure_device_key('IDEMP01', self.site.pk)
+        self.assertEqual(first_key, second_key)
+
+    def test_ensure_device_key_rejects_invalid_hardware_ids(self):
+        from .device_trust import ensure_device_key
+        from rest_framework.exceptions import ValidationError
+        with self.assertRaises(ValidationError):
+            ensure_device_key('../traversal', self.site.pk)
+        with self.assertRaises(ValidationError):
+            ensure_device_key('bad/slash', self.site.pk)
+        with self.assertRaises(ValidationError):
+            ensure_device_key('spaces not allowed', self.site.pk)
+        with self.assertRaises(ValidationError):
+            ensure_device_key('x' * 33, self.site.pk)
+        with self.assertRaises(ValidationError):
+            ensure_device_key('', self.site.pk)
+
+    def test_ensure_device_key_rejects_invalid_hex_keys(self):
+        from .device_trust import ensure_device_key
+        from rest_framework.exceptions import ValidationError
+        with self.assertRaises(ValidationError):
+            ensure_device_key('BADKEY01', self.site.pk, secret_hex='tooshort')
+        with self.assertRaises(ValidationError):
+            ensure_device_key('BADKEY01', self.site.pk, secret_hex='ab' * 16)
+        with self.assertRaises(ValidationError):
+            ensure_device_key('BADKEY01', self.site.pk, secret_hex='ab' * 33)
+        with self.assertRaises(ValidationError):
+            ensure_device_key('BADKEY01', self.site.pk, secret_hex='zz' * 32)
+
+    def test_ensure_device_key_recovers_from_corrupted_key_file(self):
+        from .device_trust import ensure_device_key
+        corrupt_file = Path(self.directory.name, 'CORRUPT01.json')
+        corrupt_file.write_text('{invalid_json:', encoding='utf-8')
+        key_bytes = ensure_device_key('CORRUPT01', self.site.pk)
+        self.assertEqual(len(key_bytes), 32)
+        data = json.loads(corrupt_file.read_text(encoding='utf-8'))
+        self.assertEqual(bytes.fromhex(data['key']), key_bytes)
+
+    def test_ensure_device_key_missing_key_dir_raises_permission_denied(self):
+        from .device_trust import ensure_device_key
+        from rest_framework.exceptions import PermissionDenied
+        with override_settings(COMPALLETTE_DEVICE_KEY_DIR=''):
+            with self.assertRaises(PermissionDenied):
+                ensure_device_key('NODIR', self.site.pk)
+
+    def test_commands_view_provisioning_auto_generates_key_and_queues_command(self):
+        request_frame = {'kind': 'TIME_REQUEST', 'installation_id': INSTALLATION, 'hardware_id': 'AUTO-DISC', 'boot_nonce': 'c' * 32, 'sync_nonce': 'd' * 32}
+        packet = {'installation_id': INSTALLATION, 'ver': 1, 'type': 'PROV_REQ', 'seq': 1, 'sender': 'PROV-AUTODISC', 'role': 'UNASSIGNED', 'zone': 'UNASSIGNED', 'uptime': 1,
+                  'payload': {'chip_id': 'AUTO-DISC', 'clock_request': request_frame}}
+        self.client.post('/api/v1/provision/request', packet, format='json', **self.headers)
+        discovery = DeviceDiscovery.objects.get(hardware_id='AUTO-DISC')
+
+        cmd_payload = {
+            'operation_id': str(uuid.uuid4()),
+            'gateway_id': self.gateway.pk,
+            'node_id': 'NODE-AUTODISC',
+            'kind': 'PROVISION',
+            'discovery_id': discovery.pk,
+            'role': 'WEARABLE',
+            'expected_version': discovery.version,
+        }
+        res = self.client.post('/api/v1/commands', cmd_payload, format='json')
+        self.assertEqual(res.status_code, 201)
+        self.assertTrue(Path(self.directory.name, 'AUTO-DISC.json').exists())
+
+        node = Node.objects.get(node_id='NODE-AUTODISC')
+        self.assertEqual(node.hardware_id, 'AUTO-DISC')
+        self.assertFalse(node.commissioned)
+        command = DeviceCommand.objects.get(pk=res.json()['command_id'])
+        self.assertEqual(command.state, 'QUEUED')
+
+    def test_commands_view_provisioning_with_custom_device_key(self):
+        custom_key_hex = '12' * 32
+        request_frame = {'kind': 'TIME_REQUEST', 'installation_id': INSTALLATION, 'hardware_id': 'CUSTOM-DISC', 'boot_nonce': 'e' * 32, 'sync_nonce': 'f' * 32}
+        packet = {'installation_id': INSTALLATION, 'ver': 1, 'type': 'PROV_REQ', 'seq': 1, 'sender': 'PROV-CUSTOM', 'role': 'UNASSIGNED', 'zone': 'UNASSIGNED', 'uptime': 1,
+                  'payload': {'chip_id': 'CUSTOM-DISC', 'clock_request': request_frame}}
+        self.client.post('/api/v1/provision/request', packet, format='json', **self.headers)
+        discovery = DeviceDiscovery.objects.get(hardware_id='CUSTOM-DISC')
+
+        cmd_payload = {
+            'operation_id': str(uuid.uuid4()),
+            'gateway_id': self.gateway.pk,
+            'node_id': 'NODE-CUSTOM',
+            'kind': 'PROVISION',
+            'discovery_id': discovery.pk,
+            'role': 'WEARABLE',
+            'device_key': custom_key_hex,
+            'expected_version': discovery.version,
+        }
+        res = self.client.post('/api/v1/commands', cmd_payload, format='json')
+        self.assertEqual(res.status_code, 201)
+        data = json.loads(Path(self.directory.name, 'CUSTOM-DISC.json').read_text(encoding='utf-8'))
+        self.assertEqual(data['key'], custom_key_hex)
+
+    def test_commands_view_provisioning_rejects_invalid_custom_device_key(self):
+        request_frame = {'kind': 'TIME_REQUEST', 'installation_id': INSTALLATION, 'hardware_id': 'BAD-HEX', 'boot_nonce': '1' * 32, 'sync_nonce': '2' * 32}
+        packet = {'installation_id': INSTALLATION, 'ver': 1, 'type': 'PROV_REQ', 'seq': 1, 'sender': 'PROV-BADHEX', 'role': 'UNASSIGNED', 'zone': 'UNASSIGNED', 'uptime': 1,
+                  'payload': {'chip_id': 'BAD-HEX', 'clock_request': request_frame}}
+        self.client.post('/api/v1/provision/request', packet, format='json', **self.headers)
+        discovery = DeviceDiscovery.objects.get(hardware_id='BAD-HEX')
+
+        cmd_payload = {
+            'operation_id': str(uuid.uuid4()),
+            'gateway_id': self.gateway.pk,
+            'node_id': 'NODE-BADHEX',
+            'kind': 'PROVISION',
+            'discovery_id': discovery.pk,
+            'role': 'WEARABLE',
+            'device_key': 'not-a-valid-hex-string',
+            'expected_version': discovery.version,
+        }
+        res = self.client.post('/api/v1/commands', cmd_payload, format='json')
+        self.assertEqual(res.status_code, 400)

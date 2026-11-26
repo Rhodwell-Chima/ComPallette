@@ -119,6 +119,9 @@ class CommandsView(APIView):
             if role == 'ANCHOR' and zone is None:
                 raise ValidationError({'zone_id': 'An installation zone is required for an anchor.'})
             if zone and len(zone.code) > 23: raise ValidationError('Zone code exceeds current firmware capacity.')
+            from .device_trust import ensure_device_key
+            provided_key = request.data.get('device_key')
+            ensure_device_key(discovery.hardware_id, gateway.site_id, secret_hex=provided_key)
             node = Node.objects.create(node_id=node_id, hardware_id=discovery.hardware_id,
                 site=gateway.site, organisation=gateway.site.organisation, role=role,
                 status='OFFLINE', is_simulated=False, installation_zone=zone if role == 'ANCHOR' else None)

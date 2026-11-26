@@ -76,7 +76,13 @@ def ingest(gateway, data):
     if kind == 'PROV_REQ' or node is None:
         hardware = payload.get('chip_id') or payload.get('chip_mac') or sender
         from .device_trust import clock_reply
-        control = clock_reply(gateway, hardware, payload['clock_request']) if payload.get('clock_request') else None
+        control = None
+        if payload.get('clock_request'):
+            try:
+                control = clock_reply(gateway, hardware, payload['clock_request'])
+            except (PermissionDenied, ValidationError) as e:
+                logger.info("Clock reply deferred for uncommissioned hardware %s: %s", hardware, e)
+                control = None
         discovery, created = DeviceDiscovery.objects.get_or_create(gateway=gateway, hardware_id=hardware, defaults={'sender_id': sender, 'payload': data})
         if not created and (control or not discovery.payload.get('payload', {}).get('clock_request')):
             discovery.sender_id = sender
