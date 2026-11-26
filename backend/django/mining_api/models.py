@@ -221,6 +221,8 @@ class Node(models.Model):
     latest_co = models.FloatField(default=0.0)
     latest_temp = models.FloatField(default=0.0)
     latest_hum = models.FloatField(default=0.0)
+    latest_pressure = models.FloatField(null=True, blank=True, help_text="Atmospheric pressure in Pa")
+    latest_gas_resistance = models.BigIntegerField(null=True, blank=True, help_text="Gas resistance in Ohms from BME688")
     organisation = models.ForeignKey(Organisation, null=True, blank=True, on_delete=models.SET_NULL, related_name='nodes')
     site = models.ForeignKey(Site, null=True, blank=True, on_delete=models.SET_NULL, related_name='nodes')
     zone_ref = models.ForeignKey(Zone, null=True, blank=True, on_delete=models.SET_NULL, related_name='nodes')

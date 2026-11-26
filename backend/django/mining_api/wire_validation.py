@@ -43,13 +43,16 @@ class TelemetryPayloadSerializer(serializers.Serializer):
     temp_c = serializers.FloatField(min_value=-50, max_value=100, required=False)
     hum = serializers.FloatField(min_value=0, max_value=100, required=False)
     humidity_pct = serializers.FloatField(min_value=0, max_value=100, required=False)
+    press = serializers.FloatField(min_value=0, max_value=200000, required=False)
     pressure_pa = serializers.FloatField(min_value=0, max_value=200000, required=False)
+    gas_res = serializers.FloatField(min_value=0, max_value=100000000, required=False)
     gas_resistance_ohm = serializers.FloatField(min_value=0, max_value=100000000, required=False)
     fall = serializers.BooleanField(required=False)
     fall_detected = serializers.BooleanField(required=False)
     batt = serializers.FloatField(min_value=0, max_value=10, required=False)
     battery_v = serializers.FloatField(min_value=0, max_value=10, required=False)
     battery_pct = serializers.FloatField(min_value=0, max_value=100, required=False)
+    gas_valid = serializers.BooleanField(required=False)
     bme_gas_valid = serializers.BooleanField(required=False)
     warming = serializers.BooleanField(required=False)
     sim = serializers.BooleanField(required=False)
@@ -62,7 +65,8 @@ class TelemetryPayloadSerializer(serializers.Serializer):
 
     def validate(self, attrs):
         candidates = ('co', 'co_ppm', 'temp', 'temp_c', 'hum', 'humidity_pct',
-                      'pressure_pa', 'gas_resistance_ohm', 'batt', 'battery_v', 'battery_pct')
+                      'press', 'pressure_pa', 'gas_res', 'gas_resistance_ohm',
+                      'batt', 'battery_v', 'battery_pct')
         if not any(k in attrs for k in candidates):
             raise serializers.ValidationError('At least one measurement metric is required in telemetry payload')
         return attrs

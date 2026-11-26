@@ -188,8 +188,8 @@ def ingest(gateway, data):
         co = payload.get('co', payload.get('co_ppm'))
         temp = payload.get('temp', payload.get('temp_c'))
         hum = payload.get('hum', payload.get('humidity_pct'))
-        pressure = payload.get('pressure_pa')
-        gas_res = payload.get('gas_resistance_ohm')
+        pressure = payload.get('press', payload.get('pressure_pa'))
+        gas_res = payload.get('gas_res', payload.get('gas_resistance_ohm'))
         batt = payload.get('batt', payload.get('battery_v', 0.0))
         batt_pct = payload.get('battery_pct')
         healthy = payload.get('ok', payload.get('sensor_ok', False))
@@ -232,6 +232,10 @@ def ingest(gateway, data):
                 node.latest_temp = temp
             if hum is not None:
                 node.latest_hum = hum
+            if pressure is not None:
+                node.latest_pressure = float(pressure)
+            if gas_res is not None:
+                node.latest_gas_resistance = int(gas_res)
             node.battery_v = batt or 0.0
             node.sensor_ok = healthy
             node.is_simulated = simulated
@@ -287,7 +291,7 @@ def ingest(gateway, data):
         changed = ['last_seq', 'last_seen_ts', 'status', 'current_zone', 'zone_ref',
                    'location_evidence', 'location_observed_at']
         if kind == 'TELEMETRY':
-            changed += ['latest_co', 'latest_temp', 'latest_hum', 'battery_v', 'sensor_ok', 'is_simulated']
+            changed += ['latest_co', 'latest_temp', 'latest_hum', 'latest_pressure', 'latest_gas_resistance', 'battery_v', 'sensor_ok', 'is_simulated']
         elif kind == 'HEARTBEAT':
             changed += ['battery_v', 'free_heap']
         node.save(update_fields=changed)

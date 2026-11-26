@@ -13,7 +13,11 @@ from django.contrib.auth.hashers import make_password
 from django.utils import timezone
 from django.core.management import call_command, CommandError
 from rest_framework.test import APIClient
-from .models import Organisation, Site, SiteMembership, Node, GatewayRegistration, DeviceDiscovery, DeviceCommand, QuarantinedEvent, AuditEntry
+from .models import (
+    Organisation, Site, SiteMembership, Node, GatewayRegistration, DeviceDiscovery,
+    DeviceCommand, QuarantinedEvent, AuditEntry, DeviceCapability, MeasurementReading,
+)
+from .serializers import NodeSerializer
 from .device_trust import sign, verify
 from .commands import command_frame
 
@@ -590,3 +594,146 @@ class DiscoveryAndQuarantineResolutionTests(TestCase):
         self.assertEqual(res.status_code, 400)
         self.assertFalse(Node.objects.get(node_id='NODE-TARGET-A').commissioned)
         self.assertTrue(DeviceDiscovery.objects.filter(hardware_id=hardware_a).exists())
+
+
+class BME688AtmosphericTelemetryTests(TestCase):
+    def setUp(self):
+        self.directory = tempfile.TemporaryDirectory()
+        self.addCleanup(self.directory.cleanup)
+        config = override_settings(
+            COMPALLETTE_INSTALLATION_ID=INSTALLATION,
+            COMPALLETTE_DEVICE_KEY_DIR=self.directory.name,
+        )
+        config.enable()
+        self.addCleanup(config.disable)
+        self.org = Organisation.objects.create(name='BME Org', slug='bme-org')
+        self.site = Site.objects.create(organisation=self.org, name='BME Site', code='BMESITE')
+        self.operator = get_user_model().objects.create_superuser(username='bme-admin', password='test-only')
+        self.client = APIClient()
+        self.client.force_authenticate(self.operator)
+        gw_node = Node.objects.create(node_id='GW-BME', hardware_id='GWBME01', role='GATEWAY', organisation=self.org, site=self.site, commissioned=True)
+        self.gateway = GatewayRegistration.objects.create(node=gw_node, site=self.site, credentials_installed=True, credential_hash=make_password('test-gw-bme-key'))
+        self.headers = {'HTTP_X_GATEWAY_ID': gw_node.pk, 'HTTP_X_API_KEY': 'test-gw-bme-key'}
+        self.node = Node.objects.create(
+            node_id='NODE-BME-1', hardware_id='BMEHW01', role='WEARABLE',
+            organisation=self.org, site=self.site, commissioned=True,
+            last_seq=10
+        )
+
+    def test_bme688_telemetry_updates_node_and_capabilities_short_keys(self):
+        packet = {
+            'installation_id': INSTALLATION, 'ver': 1, 'type': 'TELEMETRY', 'seq': 11,
+            'sender': self.node.node_id, 'role': 'WEARABLE', 'zone': 'UNASSIGNED', 'uptime': 1000,
+            'payload': {
+                'press': 101325.0,
+                'gas_res': 45000,
+                'temp': 24.5,
+                'hum': 55.0,
+                'batt': 3.82,
+                'ok': True,
+            }
+        }
+        res = self.client.post('/api/v1/telemetry', packet, format='json', **self.headers)
+        self.assertEqual(res.status_code, 200)
+
+        self.node.refresh_from_db()
+        self.assertEqual(self.node.latest_pressure, 101325.0)
+        self.assertEqual(self.node.latest_gas_resistance, 45000)
+        self.assertEqual(self.node.latest_temp, 24.5)
+        self.assertEqual(self.node.latest_hum, 55.0)
+        self.assertEqual(self.node.last_seq, 11)
+
+        press_cap = DeviceCapability.objects.filter(node=self.node, measurement_key='pressure_pa').first()
+        gas_cap = DeviceCapability.objects.filter(node=self.node, measurement_key='gas_resistance_ohm').first()
+        self.assertIsNotNone(press_cap)
+        self.assertIsNotNone(gas_cap)
+        self.assertTrue(MeasurementReading.objects.filter(node=self.node, capability=press_cap, value=101325.0).exists())
+        self.assertTrue(MeasurementReading.objects.filter(node=self.node, capability=gas_cap, value=45000).exists())
+
+    def test_bme688_telemetry_updates_node_descriptive_keys(self):
+        packet = {
+            'installation_id': INSTALLATION, 'ver': 1, 'type': 'TELEMETRY', 'seq': 12,
+            'sender': self.node.node_id, 'role': 'WEARABLE', 'zone': 'UNASSIGNED', 'uptime': 1200,
+            'payload': {
+                'pressure_pa': 98500.0,
+                'gas_resistance_ohm': 120000,
+                'temp_c': 26.0,
+                'humidity_pct': 60.0,
+                'battery_v': 3.9,
+            }
+        }
+        res = self.client.post('/api/v1/telemetry', packet, format='json', **self.headers)
+        self.assertEqual(res.status_code, 200)
+
+        self.node.refresh_from_db()
+        self.assertEqual(self.node.latest_pressure, 98500.0)
+        self.assertEqual(self.node.latest_gas_resistance, 120000)
+
+    def test_out_of_order_telemetry_does_not_overwrite_latest_atmospheric_values(self):
+        self.node.latest_pressure = 101325.0
+        self.node.latest_gas_resistance = 45000
+        self.node.last_seq = 20
+        self.node.save()
+
+        packet = {
+            'installation_id': INSTALLATION, 'ver': 1, 'type': 'TELEMETRY', 'seq': 15,
+            'sender': self.node.node_id, 'role': 'WEARABLE', 'zone': 'UNASSIGNED', 'uptime': 500,
+            'payload': {
+                'press': 95000.0,
+                'gas_res': 20000,
+                'temp': 20.0,
+                'batt': 3.7,
+            }
+        }
+        res = self.client.post('/api/v1/telemetry', packet, format='json', **self.headers)
+        self.assertEqual(res.status_code, 200)
+
+        self.node.refresh_from_db()
+        self.assertEqual(self.node.latest_pressure, 101325.0)
+        self.assertEqual(self.node.latest_gas_resistance, 45000)
+        self.assertEqual(self.node.last_seq, 20)
+
+    def test_telemetry_omitting_pressure_preserves_existing_atmospheric_values(self):
+        self.node.latest_pressure = 101325.0
+        self.node.latest_gas_resistance = 45000
+        self.node.last_seq = 10
+        self.node.save()
+
+        packet = {
+            'installation_id': INSTALLATION, 'ver': 1, 'type': 'TELEMETRY', 'seq': 11,
+            'sender': self.node.node_id, 'role': 'WEARABLE', 'zone': 'UNASSIGNED', 'uptime': 1100,
+            'payload': {
+                'temp': 28.0,
+                'hum': 62.0,
+                'batt': 3.75,
+            }
+        }
+        res = self.client.post('/api/v1/telemetry', packet, format='json', **self.headers)
+        self.assertEqual(res.status_code, 200)
+
+        self.node.refresh_from_db()
+        self.assertEqual(self.node.latest_pressure, 101325.0)
+        self.assertEqual(self.node.latest_gas_resistance, 45000)
+        self.assertEqual(self.node.latest_temp, 28.0)
+        self.assertEqual(self.node.last_seq, 11)
+
+    def test_node_serializer_and_api_expose_atmospheric_telemetry(self):
+        self.node.latest_pressure = 101500.0
+        self.node.latest_gas_resistance = 52000
+        self.node.save()
+
+        serializer = NodeSerializer(self.node)
+        self.assertEqual(serializer.data['latest_pressure'], 101500.0)
+        self.assertEqual(serializer.data['latest_gas_resistance'], 52000)
+
+        res_list = self.client.get(f'/api/v1/nodes?site={self.site.pk}')
+        self.assertEqual(res_list.status_code, 200)
+        nodes = res_list.json()['nodes']
+        node_item = next(n for n in nodes if n['node_id'] == self.node.node_id)
+        self.assertEqual(node_item['latest_pressure'], 101500.0)
+        self.assertEqual(node_item['latest_gas_resistance'], 52000)
+
+        res_detail = self.client.get(f'/api/v1/nodes/{self.node.node_id}')
+        self.assertEqual(res_detail.status_code, 200)
+        self.assertEqual(res_detail.json()['node']['latest_pressure'], 101500.0)
+        self.assertEqual(res_detail.json()['node']['latest_gas_resistance'], 52000)
