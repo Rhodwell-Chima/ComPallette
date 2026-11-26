@@ -15,6 +15,7 @@ import {
   Menu,
   Network,
   PlugZap,
+  Radio,
   Search,
   Settings,
   SunMoon,
@@ -304,7 +305,14 @@ export function Navbar({ transparent = false, className = '' }: NavbarProps) {
                       <div className="dropdown-icon-badge"><Network size={14} /></div>
                       <div className="dropdown-item-content">
                         <strong>Devices &amp; Mesh</strong>
-                        <small>Hardware nodes &amp; gateways</small>
+                        <small>Hardware nodes &amp; live telemetry</small>
+                      </div>
+                    </Link>
+                    <Link to="/gateways" className="mega-menu-link" role="menuitem">
+                      <div className="dropdown-icon-badge"><Radio size={14} /></div>
+                      <div className="dropdown-item-content">
+                        <strong>Gateways &amp; Commissioning</strong>
+                        <small>Uplink bridges &amp; discovered hardware</small>
                       </div>
                     </Link>
                     {can('manage_sites') && (
@@ -660,6 +668,9 @@ export function Navbar({ transparent = false, className = '' }: NavbarProps) {
               </NavLink>
               <NavLink to="/devices" className="navbar-mobile-link" onClick={() => setMobileOpen(false)}>
                 <Network size={18} /> Devices &amp; Mesh
+              </NavLink>
+              <NavLink to="/gateways" className="navbar-mobile-link" onClick={() => setMobileOpen(false)}>
+                <Radio size={18} /> Gateways &amp; Commissioning
               </NavLink>
               {can('manage_sites') && (
                 <NavLink to="/sites-zones" className="navbar-mobile-link" onClick={() => setMobileOpen(false)}>
