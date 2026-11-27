@@ -1,944 +1,460 @@
-import { useMemo, useState } from 'react';
-import { Link } from 'react-router-dom';
-import { Canvas } from '@react-three/fiber';
-import { Html, OrbitControls } from '@react-three/drei';
-import * as THREE from 'three';
-import {
-  ArrowLeft,
-  ArrowRight,
-  Box,
-  Eye,
-  Layers3,
-  Map,
-  MonitorCog,
-  Moon,
-  Radio,
-  Search,
-  Sun,
-  Users,
-  Wifi,
-  X,
-} from 'lucide-react';
+import { Component, lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { useQuery } from '@tanstack/react-query';
-import { platformApi } from '../services/api';
-import { TwinData, TwinEntity } from '../types';
+import { Link } from 'react-router-dom';
+import {
+  ArrowDown, ArrowLeft, ArrowRight, ArrowUp, Box, ChevronDown, Focus, Layers3, LocateFixed,
+  Map as MapIcon, Minus, Network, Plus, Radio, RefreshCw, RotateCcw, RotateCw, Search, Users, X,
+} from 'lucide-react';
 import { usePlatform } from '../platform/PlatformContext';
-import { EmptyState, ErrorState, LoadingState, LocationLabel, NodeStatusPill, StatusPill, formatTimestamp } from '../platform/ui';
+import { Pagination } from '../platform/pagination';
+import { EmptyState, ErrorState, LoadingState, LocationLabel, NodeStatusPill, formatTimestamp } from '../platform/ui';
+import { ApiError, platformApi } from '../services/api';
+import type { TwinData, TwinEntity, Zone } from '../types';
+import { PlanMap } from './twin/PlanMap';
+import {
+  entityName, hasZoneEvidence, indexPlan, mapFeatures, matchesCategory, normalizeQuery,
+  type Category, type MapAction, type MapCommand, type MapTheme,
+} from './twin/model';
+import './twin/twin.css';
 
-type Point = [number, number];
-type Polygon = { id: string; label: string; zoneCode?: string; points: Point[] };
+const SchematicMap = lazy(() => import('./twin/SchematicMap'));
+const trackersPerPage = 6;
+const layers = [
+  { kind: 'personnel', label: 'Personnel', icon: Users },
+  { kind: 'asset', label: 'Assets', icon: Box },
+  { kind: 'device', label: 'Devices', icon: Radio },
+] as const;
+const categories = [['all', 'All trackers'], ['personnel', 'Personnel'], ['asset', 'Assets'], ['device', 'Devices'], ['anchor', 'Anchors (devices)']] as const;
+const panControls = [[ 'left', 'Pan left', ArrowLeft ], ['up', 'Pan up', ArrowUp], ['down', 'Pan down', ArrowDown], ['right', 'Pan right', ArrowRight]] as const;
+type Selection = { type: 'entity'; id: string } | { type: 'zone'; id: number };
+type Kind = TwinEntity['kind'];
+type Mode = '2d' | '3d';
 
-function toPoint(value: unknown): Point | undefined {
-  if (Array.isArray(value) && typeof value[0] === 'number' && typeof value[1] === 'number') return [value[0], value[1]];
-  if (value && typeof value === 'object') {
-    const item = value as Record<string, unknown>;
-    if (typeof item.x === 'number' && typeof item.y === 'number') return [item.x, item.y];
-  }
-  return undefined;
+class SchematicBoundary extends Component<{ fallback: ReactNode; onFailure: () => void; children: ReactNode }, { failed: boolean }> {
+  state = { failed: false };
+  static getDerivedStateFromError() { return { failed: true }; }
+  componentDidCatch() { this.props.onFailure(); }
+  render() { return this.state.failed ? this.props.fallback : this.props.children; }
 }
 
-function polygons(data: TwinData): Polygon[] {
-  const geometry = data.layout?.geometry;
-  const features = Array.isArray(geometry?.features) ? geometry.features : [];
-  return features.flatMap((raw, index) => {
-    if (!raw || typeof raw !== 'object') return [];
-    const feature = raw as Record<string, unknown>;
-    const properties = feature.properties && typeof feature.properties === 'object' ? feature.properties as Record<string, unknown> : {};
-    const candidate = feature.geometry && typeof feature.geometry === 'object' ? feature.geometry as Record<string, unknown> : feature;
-    const coordinates = candidate.coordinates ?? feature.points;
-    const ring = Array.isArray(coordinates) && Array.isArray(coordinates[0]) && Array.isArray(coordinates[0][0]) ? coordinates[0] : coordinates;
-    if (!Array.isArray(ring)) return [];
-    const points = ring.map(toPoint).filter((point): point is Point => Boolean(point));
-    if (points.length < 3) return [];
-    const linkedZone = data.zones.find(zone => zone.id === properties.zone_id);
-    return [{ id: String(feature.id ?? properties.id ?? `feature-${index}`), label: String(properties.label ?? feature.label ?? properties.name ?? `Layout feature ${index + 1}`), zoneCode: linkedZone?.code, points }];
-  });
+function observedTime(value?: number | null) {
+  return typeof value === 'number' && value > 0 && Number.isFinite(new Date(value).valueOf()) ? value : undefined;
 }
 
-function bounds(features: Polygon[]) {
-  const points = features.flatMap(feature => feature.points);
-  const xs = points.map(point => point[0]); const ys = points.map(point => point[1]);
-  const minX = Math.min(...xs); const maxX = Math.max(...xs); const minY = Math.min(...ys); const maxY = Math.max(...ys);
-  const pad = Math.max(maxX - minX, maxY - minY) * 0.08 || 1;
-  return { minX: minX - pad, minY: minY - pad, width: Math.max(maxX - minX + pad * 2, 1), height: Math.max(maxY - minY + pad * 2, 1) };
-}
-
-function centre(points: Point[]): Point {
-  const total = points.reduce((sum, point) => [sum[0] + point[0], sum[1] + point[1]] as Point, [0, 0]);
-  return [total[0] / points.length, total[1] / points.length];
-}
-
-interface HoveredInfo {
-  sectionId: string;
-  sectionLabel: string;
-  zoneCode?: string;
-  anchor?: TwinEntity;
-  entities: TwinEntity[];
-  x: number;
-  y: number;
-}
-
-function Twin2D({
-  data,
-  visible,
-  selected,
-  onSelect,
-  theme,
-  onHover,
-  onLeave,
-  hoveredSectionId,
-}: {
-  data: TwinData;
-  visible: Set<TwinEntity['kind']>;
-  selected?: string;
-  onSelect: (entityId: string) => void;
-  theme: 'light' | 'dark';
-  onHover: (info: HoveredInfo) => void;
-  onLeave: () => void;
-  hoveredSectionId?: string;
-}) {
-  const features = useMemo(() => polygons(data), [data]);
-  if (!features.length) return <EmptyState title="Facility geometry has not been configured" detail="Add a persisted layout with polygon features before the 2D Twin can render this site. No decorative facility map is shown." />;
-  const frame = bounds(features);
-  const isLight = theme === 'light';
-
-  return (
-    <div className="twin-canvas">
-      <svg
-        viewBox={`${frame.minX} ${frame.minY} ${frame.width} ${frame.height}`}
-        role="img"
-        aria-label="Data-backed facility layout"
-      >
-        <defs>
-          <pattern id="twinGrid" width="16" height="16" patternUnits="userSpaceOnUse">
-            <path
-              d="M 16 0 L 0 0 0 16"
-              fill="none"
-              stroke={isLight ? 'rgba(0, 0, 0, 0.04)' : 'rgba(255, 255, 255, 0.03)'}
-              strokeWidth="0.8"
-            />
-          </pattern>
-        </defs>
-
-        {/* CAD Blueprint Background */}
-        <rect
-          x={frame.minX}
-          y={frame.minY}
-          width={frame.width}
-          height={frame.height}
-          className="twin-background"
-        />
-        <rect
-          x={frame.minX}
-          y={frame.minY}
-          width={frame.width}
-          height={frame.height}
-          fill="url(#twinGrid)"
-        />
-
-        {/* Render Chamber Zones & Corridors */}
-        {features.map(feature => {
-          const isOperational = Boolean(feature.zoneCode);
-          const isHovered = hoveredSectionId === feature.id;
-          const anchor = data.entities.find(e => e.role === 'ANCHOR' && e.zone_code === feature.zoneCode);
-          const sectionEntities = data.entities.filter(
-            e => visible.has(e.kind) && e.evidence !== 'UNKNOWN' && e.zone_code === feature.zoneCode
-          );
-          const isSelected = selected && (selected === anchor?.id || sectionEntities.some(e => e.id === selected));
-
-          return (
-            <g key={feature.id}>
-              <polygon
-                className={`twin-zone ${isOperational ? 'operational' : 'corridor'} ${isHovered ? 'hovered' : ''} ${isSelected ? 'selected' : ''}`}
-                points={feature.points.map(point => point.join(',')).join(' ')}
-                onMouseMove={(e) => {
-                  onHover({
-                    sectionId: feature.id,
-                    sectionLabel: feature.label,
-                    zoneCode: feature.zoneCode,
-                    anchor,
-                    entities: sectionEntities,
-                    x: e.clientX,
-                    y: e.clientY,
-                  });
-                }}
-                onMouseLeave={onLeave}
-                onClick={() => {
-                  const target = anchor ?? (sectionEntities.length ? sectionEntities[0] : undefined);
-                  if (target) onSelect(target.id);
-                }}
-              >
-                <title>{`${feature.label}${feature.zoneCode ? ` (${feature.zoneCode})` : ''}`}</title>
-              </polygon>
-              <text
-                x={centre(feature.points)[0]}
-                y={centre(feature.points)[1]}
-                className={`twin-zone-label ${isOperational ? 'operational' : 'corridor'}`}
-              >
-                {feature.label}
-              </text>
-            </g>
-          );
-        })}
-
-        {/* Render Interactive Anchor Pins on Operational Horizons */}
-        {features
-          .filter(feature => Boolean(feature.zoneCode))
-          .map(feature => {
-            const [x, y] = centre(feature.points);
-            const anchor = data.entities.find(e => e.role === 'ANCHOR' && e.zone_code === feature.zoneCode);
-            const sectionEntities = data.entities.filter(
-              e => visible.has(e.kind) && e.evidence !== 'UNKNOWN' && e.zone_code === feature.zoneCode
-            );
-            const isSelected = selected && (selected === anchor?.id || sectionEntities.some(e => e.id === selected));
-            const isHovered = hoveredSectionId === feature.id;
-            const radius = Math.max(frame.width, frame.height) * 0.024;
-            const target = anchor ?? (sectionEntities.length ? sectionEntities[0] : undefined);
-
-            return (
-              <g
-                className={`twin-anchor-pin ${isSelected ? 'selected' : ''}`}
-                key={`pin-${feature.id}`}
-                onClick={(e) => {
-                  e.stopPropagation();
-                  if (target) onSelect(target.id);
-                }}
-                onMouseMove={(e) => {
-                  e.stopPropagation();
-                  onHover({
-                    sectionId: feature.id,
-                    sectionLabel: feature.label,
-                    zoneCode: feature.zoneCode,
-                    anchor,
-                    entities: sectionEntities,
-                    x: e.clientX,
-                    y: e.clientY,
-                  });
-                }}
-                onMouseLeave={onLeave}
-                role="button"
-                tabIndex={0}
-                onKeyDown={(e) => {
-                  if ((e.key === 'Enter' || e.key === ' ') && target) onSelect(target.id);
-                }}
-              >
-                {/* Glowing beacon concentric pulse ring */}
-                <circle
-                  className="twin-anchor-pulse"
-                  cx={x}
-                  cy={y}
-                  r={radius * 1.45}
-                  fill={isHovered ? 'rgba(56, 189, 248, 0.35)' : 'rgba(16, 185, 129, 0.25)'}
-                />
-                {/* Solid Anchor Beacon Center */}
-                <circle
-                  cx={x}
-                  cy={y}
-                  r={radius}
-                  fill={isSelected ? '#f59e0b' : (isHovered ? '#38bdf8' : '#10b981')}
-                  stroke="#ffffff"
-                  strokeWidth="1.5"
-                />
-                {/* Detected occupants counter or beacon center */}
-                {sectionEntities.length > 0 ? (
-                  <text x={x} y={y} className="zone-entity-count">
-                    {sectionEntities.length}
-                  </text>
-                ) : (
-                  <circle cx={x} cy={y} r={radius * 0.32} fill="#ffffff" />
-                )}
-                {/* Anchor tag text below */}
-                <text x={x} y={y + radius * 2.2} className="zone-entity-label">
-                  {anchor ? `⚓ ${anchor.node_id.replace('ANCHOR-', '')}` : 'Station'}
-                </text>
-              </g>
-            );
-          })}
-      </svg>
-      <p className="twin-caption">Hover on any chamber or beacon to inspect occupants; click to view real-time telemetry in the inspector.</p>
-    </div>
-  );
-}
-
-function getFeatureDepth(feature: Polygon): number {
-  if (feature.id === 'headframe-hoist') return 1.4;
-  if (feature.id === 'surface-vent-substation') return 0.95;
-  if (feature.id === 'surface-portal') return 0.95;
-  if (feature.id === 'level-3-active-stope') return 1.05;
-  if (feature.zoneCode) return 0.9;
-  if (feature.id === 'main-shaft-barrel') return 0.45;
-  return 0.32;
-}
-
-function NormalizedZone({
-  polygon,
-  frame,
-  onClick,
-  onHover,
-  onLeave,
-  theme,
-  isHovered,
-  isSelected,
-  anchor,
-  entities,
-}: {
-  polygon: Polygon;
-  frame: ReturnType<typeof bounds>;
-  onClick: () => void;
-  onHover: (info: HoveredInfo) => void;
-  onLeave: () => void;
-  theme: 'light' | 'dark';
-  isHovered: boolean;
-  isSelected: boolean;
-  anchor?: TwinEntity;
-  entities: TwinEntity[];
-}) {
-  const scale = 12 / Math.max(frame.width, frame.height);
-  const shape = useMemo(
-    () =>
-      new THREE.Shape(
-        polygon.points.map(([x, y]) =>
-          new THREE.Vector2(
-            (x - (frame.minX + frame.width / 2)) * scale,
-            -(y - (frame.minY + frame.height / 2)) * scale
-          )
-        )
-      ),
-    [frame.height, frame.minX, frame.minY, frame.width, polygon.points, scale]
-  );
-  const isLight = theme === 'light';
-  const isOperational = Boolean(polygon.zoneCode);
-  const depth = getFeatureDepth(polygon);
-
-  return (
-    <mesh
-      rotation={[-Math.PI / 2, 0, 0]}
-      onClick={(e) => {
-        e.stopPropagation();
-        onClick();
-      }}
-      onPointerOver={(e) => {
-        e.stopPropagation();
-        onHover({
-          sectionId: polygon.id,
-          sectionLabel: polygon.label,
-          zoneCode: polygon.zoneCode,
-          anchor,
-          entities,
-          x: e.nativeEvent.clientX,
-          y: e.nativeEvent.clientY,
-        });
-      }}
-      onPointerOut={(e) => {
-        e.stopPropagation();
-        onLeave();
-      }}
-    >
-      <extrudeGeometry args={[shape, { depth, bevelEnabled: false }]} />
-      <meshStandardMaterial
-        color={
-          isSelected
-            ? '#f59e0b'
-            : isHovered
-            ? (isLight ? '#0284c7' : '#38bdf8')
-            : isLight
-            ? (isOperational ? '#2563eb' : '#94a3b8')
-            : (isOperational ? '#38bdf8' : '#1e3352')
-        }
-        emissive={isSelected ? '#d97706' : (isHovered ? (isLight ? '#0284c7' : '#0369a1') : '#000000')}
-        emissiveIntensity={isSelected || isHovered ? 0.35 : 0}
-        transparent
-        opacity={isLight ? (isOperational ? 0.9 : 0.6) : (isOperational ? 0.88 : 0.52)}
-        roughness={isOperational ? 0.35 : 0.6}
-        metalness={isOperational ? 0.25 : 0.05}
-      />
-    </mesh>
-  );
-}
-
-function Anchor3D({
-  feature,
-  frame,
-  scale,
-  anchor,
-  entities,
-  isSelected,
-  isHovered,
-  onHover,
-  onLeave,
-  onSelect,
-  theme,
-}: {
-  feature: Polygon;
-  frame: ReturnType<typeof bounds>;
-  scale: number;
-  anchor?: TwinEntity;
-  entities: TwinEntity[];
-  isSelected: boolean;
-  isHovered: boolean;
-  onHover: (info: HoveredInfo) => void;
-  onLeave: () => void;
-  onSelect: (entityId: string) => void;
-  theme: 'light' | 'dark';
-}) {
-  const [cx, cy] = centre(feature.points);
-  const x3d = (cx - (frame.minX + frame.width / 2)) * scale;
-  const z3d = (cy - (frame.minY + frame.height / 2)) * scale;
-  const isLight = theme === 'light';
-  const target = anchor ?? (entities.length ? entities[0] : undefined);
-  const depth = getFeatureDepth(feature);
-
-  return (
-    <group position={[x3d, depth, z3d]}>
-      {/* Anchor Physical Mast */}
-      <mesh position={[0, 0.25, 0]}>
-        <cylinderGeometry args={[0.04, 0.07, 0.5, 16]} />
-        <meshStandardMaterial
-          color={isLight ? '#64748b' : '#94a3b8'}
-          metalness={0.6}
-          roughness={0.2}
-        />
-      </mesh>
-
-      {/* Anchor Beacon Glowing Head */}
-      <mesh
-        position={[0, 0.52, 0]}
-        onClick={(e) => {
-          e.stopPropagation();
-          if (target) onSelect(target.id);
-        }}
-        onPointerOver={(e) => {
-          e.stopPropagation();
-          onHover({
-            sectionId: feature.id,
-            sectionLabel: feature.label,
-            zoneCode: feature.zoneCode,
-            anchor,
-            entities,
-            x: e.nativeEvent.clientX,
-            y: e.nativeEvent.clientY,
-          });
-        }}
-        onPointerOut={(e) => {
-          e.stopPropagation();
-          onLeave();
-        }}
-      >
-        <sphereGeometry args={[0.14, 24, 24]} />
-        <meshStandardMaterial
-          color={isSelected ? '#f59e0b' : (isHovered ? '#38bdf8' : '#10b981')}
-          emissive={isSelected ? '#d97706' : (isHovered ? '#0284c7' : '#059669')}
-          emissiveIntensity={0.8}
-          roughness={0.1}
-        />
-      </mesh>
-
-      {/* Floating 3D Anchor HTML Tag */}
-      <Html position={[0, 0.85, 0]} center distanceFactor={14}>
-        <div
-          className={`twin-3d-anchor-tag ${isSelected ? 'selected' : ''} ${isHovered ? 'hovered' : ''}`}
-          onClick={(e) => {
-            e.stopPropagation();
-            if (target) onSelect(target.id);
-          }}
-          onPointerEnter={(e) => {
-            onHover({
-              sectionId: feature.id,
-              sectionLabel: feature.label,
-              zoneCode: feature.zoneCode,
-              anchor,
-              entities,
-              x: e.clientX,
-              y: e.clientY,
-            });
-          }}
-          onPointerLeave={onLeave}
-        >
-          <Radio size={12} className="anchor-tag-icon" />
-          <span>{anchor?.node_id ?? feature.label.split(' ')[0]}</span>
-          {entities.length > 0 && <span className="anchor-tag-badge">{entities.length}</span>}
-        </div>
-      </Html>
-    </group>
-  );
-}
-
-function Twin3D({
-  data,
-  visible,
-  selected,
-  onSelect,
-  theme,
-  onHover,
-  onLeave,
-  hoveredSectionId,
-}: {
-  data: TwinData;
-  visible: Set<TwinEntity['kind']>;
-  selected?: string;
-  onSelect: (entityId: string) => void;
-  theme: 'light' | 'dark';
-  onHover: (info: HoveredInfo) => void;
-  onLeave: () => void;
-  hoveredSectionId?: string;
-}) {
-  const features = useMemo(() => polygons(data), [data]);
-  if (!features.length) return <EmptyState title="No geometry for 3D mode" detail="The 3D workspace uses the same persisted facility geometry as 2D. Configure the layout first." />;
-  const frame = bounds(features);
-  const isLight = theme === 'light';
-  const scale = 12 / Math.max(frame.width, frame.height);
-
-  return (
-    <div className="twin-three">
-      <Canvas camera={{ position: [0, 13, 18], fov: 40 }}>
-        <color attach="background" args={[isLight ? '#f8fafc' : '#08111f']} />
-        <ambientLight intensity={isLight ? 1.1 : 0.8} />
-        <directionalLight position={[6, 12, 9]} intensity={isLight ? 1.6 : 1.4} />
-        <directionalLight position={[-6, -4, -5]} intensity={isLight ? 0.6 : 0.3} />
-
-        {features.map(feature => {
-          const anchor = data.entities.find(e => e.role === 'ANCHOR' && e.zone_code === feature.zoneCode);
-          const sectionEntities = data.entities.filter(
-            e => visible.has(e.kind) && e.evidence !== 'UNKNOWN' && e.zone_code === feature.zoneCode
-          );
-          const isSelected = selected && (selected === anchor?.id || sectionEntities.some(e => e.id === selected));
-          const target = anchor ?? (sectionEntities.length ? sectionEntities[0] : undefined);
-
-          return (
-            <NormalizedZone
-              key={feature.id}
-              polygon={feature}
-              frame={frame}
-              theme={theme}
-              isHovered={hoveredSectionId === feature.id}
-              isSelected={Boolean(isSelected)}
-              anchor={anchor}
-              entities={sectionEntities}
-              onHover={onHover}
-              onLeave={onLeave}
-              onClick={() => {
-                if (target) onSelect(target.id);
-              }}
-            />
-          );
-        })}
-
-        {/* 3D Anchor Beacons */}
-        {features
-          .filter(feature => Boolean(feature.zoneCode))
-          .map(feature => {
-            const anchor = data.entities.find(e => e.role === 'ANCHOR' && e.zone_code === feature.zoneCode);
-            const sectionEntities = data.entities.filter(
-              e => visible.has(e.kind) && e.evidence !== 'UNKNOWN' && e.zone_code === feature.zoneCode
-            );
-            const isSelected = selected && (selected === anchor?.id || sectionEntities.some(e => e.id === selected));
-
-            return (
-              <Anchor3D
-                key={`anchor-3d-${feature.id}`}
-                feature={feature}
-                frame={frame}
-                scale={scale}
-                anchor={anchor}
-                entities={sectionEntities}
-                isSelected={Boolean(isSelected)}
-                isHovered={hoveredSectionId === feature.id}
-                onHover={onHover}
-                onLeave={onLeave}
-                onSelect={onSelect}
-                theme={theme}
-              />
-            );
-          })}
-
-        <OrbitControls makeDefault enableDamping dampingFactor={0.06} maxPolarAngle={Math.PI / 2.05} />
-      </Canvas>
-      <p className="twin-caption">3D spatial mode generated from persisted facility geometry. Drag to rotate, scroll to zoom. Hover on beacons to inspect.</p>
-    </div>
-  );
+function observationAge(value: number) {
+  const elapsed = Date.now() - value;
+  if (elapsed < 0) return;
+  const unit = elapsed >= 86_400_000 ? 'day' : elapsed >= 3_600_000 ? 'hour' : elapsed >= 60_000 ? 'minute' : 'second';
+  const divisor = { day: 86_400_000, hour: 3_600_000, minute: 60_000, second: 1000 }[unit];
+  return new Intl.RelativeTimeFormat(undefined, { numeric: 'auto' }).format(-Math.floor(elapsed / divisor), unit);
 }
 
 export function TwinPage() {
-  const { selectedSiteId, theme, toggleTheme } = usePlatform();
-  const [mode, setMode] = useState<'2d' | '3d'>('2d');
-  const [visible, setVisible] = useState<Set<TwinEntity['kind']>>(new Set(['personnel', 'asset', 'device']));
-  const [selectedId, setSelectedId] = useState<string>();
-  const [hoveredInfo, setHoveredInfo] = useState<HoveredInfo | null>(null);
-  const [searchFilter, setSearchFilter] = useState('');
-  const [activeCategory, setActiveCategory] = useState<'ALL' | 'personnel' | 'asset' | 'ANCHOR'>('ALL');
-
+  const { selectedSiteId, selectedSite, theme } = usePlatform();
   const twin = useQuery({
     queryKey: ['twin', selectedSiteId],
     queryFn: () => platformApi.twin(selectedSiteId),
-    enabled: Boolean(selectedSiteId),
+    enabled: selectedSiteId != null,
     refetchInterval: 15_000,
+    retry: false,
   });
+  const scopeRejected = twin.error instanceof ApiError && [401, 403, 404, 410].includes(twin.error.status);
+  const data = !scopeRejected && selectedSiteId != null && twin.data?.site?.id === selectedSiteId ? twin.data : undefined;
+  const refresh = () => void twin.refetch();
+  return (
+    <div className="dt-workspace">
+      <div className="dt-heading">
+        <div><h1>Digital Twin</h1><p>{selectedSite ? <><strong>{selectedSite.name}</strong><span aria-hidden="true"> · </span>{selectedSite.code}</> : 'Select a site to open its mine plan.'}</p></div>
+        {data && <a className="button secondary dt-jump" href="#dt-trackers" onClick={() => document.getElementById('dt-trackers')?.focus({ preventScroll: true })}>View trackers <ArrowDown size={15} /></a>}
+      </div>
+      {selectedSiteId == null ? <EmptyState title="No site selected" detail="Choose a site to open its Digital Twin." /> :
+        data ? <TwinWorkspace key={selectedSiteId} siteId={selectedSiteId} theme={theme} data={data} fetchedAt={twin.dataUpdatedAt}
+          delayed={twin.isError || twin.fetchStatus === 'paused'} fetching={twin.fetchStatus !== 'idle'} refresh={refresh} /> :
+          twin.isPending ? <LoadingState label="Loading the mine plan and trackers…" /> :
+            <ErrorState message="The Digital Twin could not load data for this site." retry={refresh} />}
+    </div>
+  );
+}
 
-  if (!selectedSiteId) return <EmptyState title="No site selected" detail="Select a site to open its Digital Twin." />;
-  if (twin.isLoading) return <LoadingState label="Loading configured facility layout…" />;
-  if (twin.isError || !twin.data) return <ErrorState message="The Digital Twin could not load the selected site's layout and entity evidence." retry={() => void twin.refetch()} />;
+function TwinWorkspace({ siteId, theme, data, fetchedAt, delayed, fetching, refresh }: {
+  siteId: number; theme: MapTheme; data: TwinData; fetchedAt: number; delayed: boolean; fetching: boolean; refresh: () => void;
+}) {
+  const [mode, setMode] = useState<Mode>('2d');
+  const [stageOverride, setStageOverride] = useState<MapTheme>();
+  const [layersOn, setLayersOn] = useState<ReadonlySet<Kind>>(() => new Set(layers.map(layer => layer.kind)));
+  const [category, setCategory] = useState<Category>('all');
+  const [search, setSearch] = useState('');
+  const [trackerPage, setTrackerPage] = useState(1);
+  const [selection, setSelection] = useState<Selection>();
+  const [level, setLevel] = useState<number>();
+  const [command, setCommand] = useState<MapCommand>();
+  const [schematicFailed, setSchematicFailed] = useState(false);
+  const inspectorTitle = useRef<HTMLHeadingElement>(null);
+  const listTitle = useRef<HTMLHeadingElement>(null);
+  const focusInspector = useRef(false);
+  const restoreFocus = useRef<string>();
+  const stageTheme = stageOverride ?? theme;
 
-  const selected = twin.data.entities.find(entity => entity.id === selectedId);
-  const toggle = (kind: TwinEntity['kind']) => setVisible(current => {
-    const next = new Set(current);
-    next.has(kind) ? next.delete(kind) : next.add(kind);
-    return next;
-  });
+  const zones = useMemo(() => new Map(data.zones.filter(zone => zone.site === siteId).map(zone => [zone.id, zone])), [data.zones, siteId]);
+  const zoneCodes = useMemo(() => new Map([...zones.values()].map(zone => [zone.code, zone])), [zones]);
+  const geometry = data.layout?.site === siteId ? data.layout.geometry : undefined;
+  const features = useMemo(() => mapFeatures(geometry, zones), [geometry, zones]);
+  const plan = useMemo(() => indexPlan(features), [features]);
+  const activeLevel = plan.levels.some(([id]) => id === level) ? level : undefined;
+  const displayed = useMemo(() => activeLevel == null ? features : features.filter(feature => feature.zone?.level === activeLevel), [features, activeLevel]);
+  const activePlan = useMemo(() => displayed === features ? plan : indexPlan(displayed), [displayed, features, plan]);
+  const mappedZones = useMemo(() => [...activePlan.zoneLabels.values()]
+    .flatMap(({ zone }) => zone ? [zone] : [])
+    .sort((a, b) => a.name.localeCompare(b.name, undefined, { numeric: true })), [activePlan.zoneLabels]);
 
-  // Filter entities for the Inspector sidebar
-  const filteredEntities = twin.data.entities.filter((entity) => {
-    if (activeCategory === 'ANCHOR' && entity.role !== 'ANCHOR') return false;
-    if (activeCategory === 'personnel' && entity.kind !== 'personnel') return false;
-    if (activeCategory === 'asset' && entity.kind !== 'asset') return false;
-    if (searchFilter.trim()) {
-      const q = searchFilter.toLowerCase();
-      const matchLabel = entity.label?.toLowerCase().includes(q);
-      const matchNode = entity.node_id.toLowerCase().includes(q);
-      const matchZone = entity.zone_code?.toLowerCase().includes(q);
-      return matchLabel || matchNode || matchZone;
+  const trackers = useMemo(() => {
+    const byId = new Map<string, TwinEntity>();
+    const zoneById = new Map<string, Zone>();
+    const byZone = new Map<number, TwinEntity[]>();
+    for (const entity of data.entities) {
+      if (!entity.id || byId.has(entity.id)) continue;
+      byId.set(entity.id, entity);
+      if (!hasZoneEvidence(entity)) continue;
+      const zone = entity.zone_id != null ? zones.get(entity.zone_id) : zoneCodes.get(entity.zone_code);
+      if (!zone) continue;
+      zoneById.set(entity.id, zone);
+      const inZone = byZone.get(zone.id);
+      if (inZone) inZone.push(entity); else byZone.set(zone.id, [entity]);
     }
-    return true;
-  });
+    return { byId, zoneById, byZone, list: [...byId.values()] };
+  }, [data.entities, zones, zoneCodes]);
+
+  const mapped = useMemo(() => {
+    const byZone = new Map<number, TwinEntity[]>();
+    let count = 0;
+    for (const zoneId of activePlan.zoneLabels.keys()) {
+      const entries = trackers.byZone.get(zoneId)?.filter(entity => layersOn.has(entity.kind));
+      if (entries?.length) {
+        byZone.set(zoneId, entries);
+        count += entries.length;
+      }
+    }
+    return { byZone, count };
+  }, [activePlan.zoneLabels, layersOn, trackers.byZone]);
+
+  const normalized = normalizeQuery(search);
+  const results = useMemo(() => trackers.list.filter(entity =>
+    matchesCategory(entity, category) && (!normalized ||
+      [entity.label, entity.node_id, entity.zone_code, trackers.zoneById.get(entity.id)?.name]
+        .some(value => normalizeQuery(value).includes(normalized)))), [category, normalized, trackers]);
+  const totalTrackerPages = Math.max(1, Math.ceil(results.length / trackersPerPage));
+  const activeTrackerPage = Math.min(trackerPage, totalTrackerPages);
+  const trackerOffset = (activeTrackerPage - 1) * trackersPerPage;
+
+  const selected = selection?.type === 'entity' ? trackers.byId.get(selection.id) : undefined;
+  const zone = selected ? trackers.zoneById.get(selected.id) : selection?.type === 'zone' ? zones.get(selection.id) : undefined;
+  const detailOpen = Boolean(selection);
+  const hasGeometry = zone != null && plan.zoneLabels.has(zone.id);
+  const mapLevelHidden = hasGeometry && !activePlan.zoneLabels.has(zone.id);
+  const mapLayerHidden = selected != null && !layersOn.has(selected.kind);
+  const filterHidden = selected != null && !results.includes(selected);
+  const selectedZone = hasGeometry && !mapLayerHidden && !mapLevelHidden ? zone.id : undefined;
+
+  useEffect(() => {
+    if (focusInspector.current) {
+      inspectorTitle.current?.focus();
+      focusInspector.current = false;
+    }
+  }, [selection]);
+
+  useEffect(() => {
+    if (trackerPage !== activeTrackerPage) setTrackerPage(activeTrackerPage);
+  }, [activeTrackerPage, trackerPage]);
+
+  const inspectZone = useCallback((next: Zone, focus = true) => {
+    restoreFocus.current = 'dt-fit';
+    focusInspector.current = focus;
+    setSelection({ type: 'zone', id: next.id });
+  }, []);
+
+  function inspectEntity(entity: TwinEntity, fromList: boolean) {
+    if (fromList) restoreFocus.current = `dt-entry-${encodeURIComponent(entity.id)}`;
+    focusInspector.current = true;
+    setSelection({ type: 'entity', id: entity.id });
+    const location = trackers.zoneById.get(entity.id);
+    if (location && activePlan.zoneLabels.has(location.id) && layersOn.has(entity.kind)) {
+      setCommand({ action: 'locate', zone: location.id });
+    }
+  }
+
+  function closeDetail() {
+    setSelection(undefined);
+    requestAnimationFrame(() => (restoreFocus.current && document.getElementById(restoreFocus.current) || listTitle.current)?.focus());
+  }
+
+  function clearFilters() {
+    updateSearch('');
+    setCategory('all');
+  }
+
+  function updateSearch(value: string) {
+    setSearch(value);
+    setTrackerPage(1);
+  }
+
+  function toggleLayer(kind: Kind) {
+    setLayersOn(current => {
+      const next = new Set(current);
+      if (!next.delete(kind)) next.add(kind);
+      return next;
+    });
+  }
+
+  function switchMode(next: Mode) {
+    if (next === mode) return;
+    setCommand(undefined);
+    setSchematicFailed(false);
+    setMode(next);
+  }
+
+  function changeLevel(next?: number) {
+    setCommand(undefined);
+    setLevel(next);
+  }
+
+  const onSchematicFailure = useCallback(() => setSchematicFailed(true), []);
+  const returnToPlan = () => {
+    switchMode('2d');
+    requestAnimationFrame(() => document.getElementById('dt-mode-plan')?.focus());
+  };
+  const fallback = <EmptyState title="3D view unavailable" detail="This browser could not render the schematic. Your tracker selection is still available."
+    action={<button type="button" className="button secondary" onClick={returnToPlan}>Return to 2D plan</button>} />;
+  const visual = activePlan.frame && {
+    features: displayed, frame: activePlan.frame, zoneLabels: activePlan.zoneLabels,
+    visibleByZone: mapped.byZone, selectedZone, selectedEvidence: selected?.evidence, onSelectZone: inspectZone,
+  };
+  const members = zone ? trackers.byZone.get(zone.id) ?? [] : [];
+  const timestamp = observedTime(selected?.observed_at);
+
+  function mapControl(action: MapAction, label: string, Icon: typeof ArrowLeft, id?: string) {
+    return <button key={action} type="button" id={id} className="dt-map-button" title={label} aria-label={label}
+      disabled={!visual || (mode === '3d' && schematicFailed)} onClick={() => setCommand({ action })}>
+      <Icon size={17} />{action === 'fit' && <span>{label}</span>}
+    </button>;
+  }
 
   return (
-    <div className="twin-workspace">
-      {/* Polished Executive Header Bar */}
-      <div className="twin-header-bar">
-        <div>
-          <h1 className="twin-title">Digital Twin</h1>
-          <p className="twin-subtitle">
-            Real-time spatial telemetry across subterranean horizons, anchor stations, and personnel tracking.
-          </p>
+    <>
+      <div className="dt-retrieval">
+        <div><span className="dt-retrieved"><Radio size={14} /> Data retrieved <time dateTime={new Date(fetchedAt).toISOString()}>{formatTimestamp(fetchedAt)}</time></span>
+          {delayed && <span className="dt-delay" role="status">Updates delayed · showing the last successful data</span>}
         </div>
-        <div className="twin-header-meta">
-          <span className="twin-meta-badge">
-            <Radio size={13} className="beacon-icon-active" />
-            <span>{twin.data.entities.length} Spatial Trackers</span>
-          </span>
-          {twin.data.topology_status && (
-            <span className="twin-meta-badge">
-              <MonitorCog size={13} />
-              <span>Mesh: {twin.data.topology_status.replace(/_/g, ' ').toLowerCase()}</span>
-            </span>
-          )}
-        </div>
+        <button type="button" className="button secondary dt-refresh" aria-label={delayed ? 'Retry Digital Twin' : 'Refresh Digital Twin'}
+          onClick={refresh} disabled={fetching}><RefreshCw size={15} />{delayed ? 'Retry' : 'Refresh'}</button>
       </div>
-
-      {/* Floating Hover Card */}
-      {hoveredInfo && (
-        <div
-          className="twin-hover-card"
-          style={{
-            left: `${Math.min(hoveredInfo.x + 14, window.innerWidth - 320)}px`,
-            top: `${Math.max(hoveredInfo.y - 45, 75)}px`,
-          }}
-        >
-          <div className="hover-card-header">
-            <Radio size={16} className="hover-radio-icon" />
-            <div>
-              <strong>{hoveredInfo.sectionLabel}</strong>
-              {hoveredInfo.zoneCode && <span className="hover-zone-tag">{hoveredInfo.zoneCode}</span>}
+      <div className="dt-grid">
+        <section className="dt-map-panel panel" aria-labelledby="dt-plan-title">
+          <div className="dt-toolbar">
+            <div className="dt-toolbar-row">
+              <div className="dt-modes" role="group" aria-label="Map view">
+                <button id="dt-mode-plan" type="button" aria-pressed={mode === '2d'} onClick={() => switchMode('2d')}><MapIcon size={16} /> 2D Plan</button>
+                <button type="button" aria-pressed={mode === '3d'} onClick={() => switchMode('3d')}><Layers3 size={16} /> 3D Schematic</button>
+              </div>
+              <label className="dt-select-label">Stage theme
+                <select value={stageOverride ?? 'app'} onChange={event => setStageOverride(event.target.value === 'app' ? undefined : event.target.value as MapTheme)}>
+                  <option value="app">App theme</option><option value="dark">Dark</option><option value="light">Light</option>
+                </select>
+              </label>
+            </div>
+            <div className="dt-toolbar-row dt-layer-row">
+              <div className="dt-layer-controls" role="group" aria-label="Map visibility">
+                <span className="dt-control-label">Map layers</span>
+                {layers.map(({ kind, label, icon: Icon }) => (
+                  <button type="button" key={kind} aria-pressed={layersOn.has(kind)} onClick={() => toggleLayer(kind)}><Icon size={15} /> {label}</button>
+                ))}
+              </div>
+              {plan.levels.length > 0 && <label className="dt-select-label">Map level
+                <select value={activeLevel ?? 'all'} onChange={event => changeLevel(event.target.value === 'all' ? undefined : Number(event.target.value))}>
+                  <option value="all">All plan features</option>
+                  {plan.levels.map(([id, name]) => <option key={id} value={id}>{name}</option>)}
+                </select>
+              </label>}
             </div>
           </div>
-
-          <div className="hover-card-body">
-            <div className="hover-row">
-              <span className="hover-key">Anchor Device:</span>
-              <span className="hover-val">
-                {hoveredInfo.anchor ? (
-                  <span className="anchor-pill-inline">
-                    <Wifi size={12} /> {hoveredInfo.anchor.node_id} ({hoveredInfo.anchor.status})
-                  </span>
-                ) : (
-                  <span className="text-muted">Structural Conduit</span>
-                )}
-              </span>
+          <div className="dt-stage" data-stage-theme={stageTheme} data-mode={mode}>
+            <div className="dt-stage-heading">
+              <div><h2 id="dt-plan-title">{mode === '2d' ? 'Mine plan' : 'Mine schematic'}</h2>
+                <p>{activeLevel != null ? plan.levels.find(([id]) => id === activeLevel)?.[1] : data.layout?.version ? `Layout version ${data.layout.version}` : 'Site layout'}</p>
+              </div>
+              <span className="dt-map-total">{mapped.count} mapped {mapped.count === 1 ? 'tracker' : 'trackers'}</span>
             </div>
-
-            <div className="hover-row">
-              <span className="hover-key">Occupancy:</span>
-              <span className="hover-val">
-                {hoveredInfo.entities.length > 0 ? (
-                  <strong>
-                    {hoveredInfo.entities.filter(e => e.kind === 'personnel').length} Personnel
-                    {hoveredInfo.entities.some(e => e.kind === 'asset') ? `, ${hoveredInfo.entities.filter(e => e.kind === 'asset').length} Assets` : ''}
-                  </strong>
-                ) : (
-                  <span className="text-muted">No mobile personnel detected</span>
-                )}
-              </span>
+            <div className="dt-viewport">
+              {!visual ? <EmptyState title="No usable mine plan" detail="The tracker list still shows this site’s reported location evidence." /> :
+                mode === '2d' ? <PlanMap key={activeLevel ?? 'all'} visual={visual} command={command} /> :
+                schematicFailed ? fallback :
+                  <SchematicBoundary key={activeLevel ?? 'all'} fallback={fallback} onFailure={onSchematicFailure}>
+                    <Suspense fallback={<LoadingState label="Opening the schematic…" />}>
+                      <SchematicMap visual={visual} command={command} theme={stageTheme} onFailure={onSchematicFailure} fallback={fallback} />
+                    </Suspense>
+                  </SchematicBoundary>}
+            </div>
+            <div className="dt-stage-controls" role="group" aria-label="Map navigation">
+              <div className="dt-map-control-group">{mapControl('fit', mode === '2d' ? 'Fit to view' : 'Reset view', Focus, 'dt-fit')}</div>
+              <div className="dt-map-control-group">{mapControl('out', 'Zoom out', Minus)}{mapControl('in', 'Zoom in', Plus)}</div>
+              <div className="dt-map-control-group" role="group" aria-label="Pan map">
+                {panControls.map(([action, label, Icon]) => mapControl(action, label, Icon))}
+              </div>
+              {mode === '3d' && <div className="dt-map-control-group" role="group" aria-label="Orbit schematic">
+                {mapControl('orbit-left', 'Rotate left', RotateCcw)}{mapControl('orbit-right', 'Rotate right', RotateCw)}
+              </div>}
             </div>
           </div>
-        </div>
-      )}
-
-      {/* Floating Cockpit HUD Toolbar */}
-      <div className="twin-toolbar">
-        <div style={{ display: 'flex', alignItems: 'center', gap: '10px', flexWrap: 'wrap' }}>
-          {/* 2D / 3D Segmented Switch */}
-          <div className="segmented" style={{ margin: 0 }}>
-            <button className={mode === '2d' ? 'active' : ''} onClick={() => setMode('2d')}>
-              <Map size={15} /> 2D Layout
-            </button>
-            <button className={mode === '3d' ? 'active' : ''} onClick={() => setMode('3d')}>
-              <Layers3 size={15} /> 3D Extrusion
-            </button>
+          <div className="dt-map-key">
+            <span><i className="dt-key-swatch" /> Mine geometry</span>
+            <span><i className="dt-key-swatch zone" /> Managed zone</span>
+            <span><i className="dt-key-swatch uncertain" /> Last-known or uncertain</span>
+            <span className="dt-map-note">{mode === '3d' ? 'Schematic thickness has no surveyed scale.' : 'Number badges count trackers by zone.'}</span>
+            {mappedZones.length > 0 && <label className="dt-select-label dt-zone-picker">Inspect mapped zone
+              <select id="dt-zone-picker" value={zone && activePlan.zoneLabels.has(zone.id) ? zone.id : ''}
+                onChange={event => {
+                  const next = zones.get(Number(event.target.value));
+                  if (!next) return;
+                  inspectZone(next);
+                  restoreFocus.current = 'dt-zone-picker';
+                  setCommand({ action: 'locate', zone: next.id });
+                }}>
+                <option value="" disabled>Choose zone</option>
+                {mappedZones.map(option => <option key={option.id} value={option.id}>{option.name} · {option.code}</option>)}
+              </select>
+            </label>}
           </div>
-
-          {/* Category Layer Filter Controls */}
-          <div className="layer-controls">
-            <button
-              className={visible.has('personnel') ? 'active' : ''}
-              onClick={() => toggle('personnel')}
-              title="Toggle Personnel visibility"
-            >
-              <Users size={14} />
-              <span>Personnel</span>
-              <span className="layer-count">
-                {twin.data.entities.filter(e => e.kind === 'personnel').length}
-              </span>
-            </button>
-            <button
-              className={visible.has('asset') ? 'active' : ''}
-              onClick={() => toggle('asset')}
-              title="Toggle Heavy Assets visibility"
-            >
-              <Box size={14} />
-              <span>Assets</span>
-              <span className="layer-count">
-                {twin.data.entities.filter(e => e.kind === 'asset').length}
-              </span>
-            </button>
-            <button
-              className={visible.has('device') ? 'active' : ''}
-              onClick={() => toggle('device')}
-              title="Toggle Fixed Nodes & Anchors"
-            >
-              <Wifi size={14} />
-              <span>Nodes</span>
-              <span className="layer-count">
-                {twin.data.entities.filter(e => e.kind === 'device').length}
-              </span>
-            </button>
+          <div className="dt-topology">
+            <Network size={18} />
+            <div><strong>Network topology unavailable</strong><p>{data.topology_status === 'UNAVAILABLE_PENDING_VALIDATED_DIRECT_LINK_EVIDENCE'
+              ? 'Direct wireless links have yet to be validated.' : 'This response has no supported direct wireless link evidence.'}</p></div>
           </div>
-        </div>
+        </section>
 
-        {/* Quick In-Stage Theme Switcher */}
-        <button
-          type="button"
-          onClick={toggleTheme}
-          className="button secondary twin-theme-toggle"
-          title={`Switch to ${theme === 'light' ? 'Dark' : 'Light'} Mode`}
-        >
-          {theme === 'light' ? <Moon size={14} /> : <Sun size={14} />}
-          <span>{theme === 'light' ? 'Dark Stage' : 'Light Stage'}</span>
-        </button>
-      </div>
-
-      <section className="twin-layout">
-        {/* Main Spatial Stage */}
-        <article className="twin-stage">
-          {mode === '2d' ? (
-            <Twin2D
-              data={twin.data}
-              visible={visible}
-              selected={selectedId}
-              onSelect={setSelectedId}
-              theme={theme}
-              onHover={setHoveredInfo}
-              onLeave={() => setHoveredInfo(null)}
-              hoveredSectionId={hoveredInfo?.sectionId}
-            />
-          ) : (
-            <Twin3D
-              data={twin.data}
-              visible={visible}
-              selected={selectedId}
-              onSelect={setSelectedId}
-              theme={theme}
-              onHover={setHoveredInfo}
-              onLeave={() => setHoveredInfo(null)}
-              hoveredSectionId={hoveredInfo?.sectionId}
-            />
-          )}
-          {twin.data.topology_status && (
-            <p className="topology-note">
-              <MonitorCog size={14} /> Network topology: {twin.data.topology_status.replace(/_/g, ' ').toLowerCase()}.
-            </p>
-          )}
-        </article>
-
-        {/* Telemetry Inspector Console */}
-        <aside className="twin-inspector">
-          {selected ? (
+        <aside className="dt-inspector panel" id="dt-trackers" aria-label="Tracker inspector" tabIndex={-1}>
+          {detailOpen ? (
             <>
-              {/* Back to overview button */}
-              <button
-                type="button"
-                className="twin-back-btn"
-                onClick={() => setSelectedId(undefined)}
-              >
-                <ArrowLeft size={13} />
-                <span>All Trackers</span>
-              </button>
-
-              <div className="twin-hero-card">
-                <h2 className="twin-hero-title">{selected.label || selected.node_id}</h2>
-                <div style={{ display: 'flex', gap: '6px', alignItems: 'center', flexWrap: 'wrap' }}>
-                  <StatusPill value={selected.role === 'ANCHOR' ? 'Infrastructure Anchor' : selected.kind} />
-                  <NodeStatusPill status={selected.status} />
-                </div>
+              <div className="dt-detail-bar">
+                <button type="button" className="dt-quiet" onClick={closeDetail}><ArrowLeft size={16} /> All trackers</button>
+                <button type="button" className="dt-square" aria-label="Close details" onClick={closeDetail}><X size={17} /></button>
               </div>
-
-              <div className="twin-specs-table">
-                <div className="twin-spec-row">
-                  <span className="twin-spec-key">Device ID</span>
-                  <span className="twin-spec-val mono">{selected.node_id}</span>
-                </div>
-                <div className="twin-spec-row">
-                  <span className="twin-spec-key">Role</span>
-                  <span className="twin-spec-val">{selected.role}</span>
-                </div>
-                <div className="twin-spec-row">
-                  <span className="twin-spec-key">Reported Zone</span>
-                  <span className="twin-spec-val">
-                    <LocationLabel evidence={selected.evidence} zone={selected.zone_code} />
-                  </span>
-                </div>
-                <div className="twin-spec-row">
-                  <span className="twin-spec-key">Last Observed</span>
-                  <span className="twin-spec-val">{formatTimestamp(selected.observed_at)}</span>
-                </div>
+              <div className="dt-detail">
+                <h2 ref={inspectorTitle} tabIndex={-1}>{selected ? entityName(selected) : zone?.name ?? 'Selection unavailable'}</h2>
+                {selected ? (
+                  <>
+                    <div className="dt-identity"><span>{selected.node_id}</span>{selected.status && <NodeStatusPill status={selected.status} />}</div>
+                    <dl className="dt-fields">
+                      <div><dt>Tracker type</dt><dd>{layers.find(layer => layer.kind === selected.kind)?.label} · {selected.role === 'ANCHOR' ? 'Anchor' : selected.role === 'GATEWAY' ? 'Gateway' : 'Wearable'}</dd></div>
+                      <div><dt>Location evidence</dt><dd><LocationLabel evidence={selected.evidence} zone={zone?.code ?? (hasZoneEvidence(selected) ? selected.zone_code : undefined)} /></dd></div>
+                      {zone && <div><dt>Managed zone</dt><dd>{zone.name}{zone.level_name ? ` · ${zone.level_name}` : ''}</dd></div>}
+                      <div><dt>Location observed</dt><dd>{timestamp ? <><time dateTime={new Date(timestamp).toISOString()}>{formatTimestamp(timestamp)}</time><small>{observationAge(timestamp)}</small></> : 'Timestamp unavailable'}</dd></div>
+                    </dl>
+                    {!hasZoneEvidence(selected) ? <p className="dt-context">Location unknown. This tracker has no zone to highlight.</p> :
+                      !hasGeometry ? <p className="dt-context">The reported zone has no matching geometry in this plan.</p> : null}
+                    {filterHidden && <div className="dt-reveal">This tracker is outside the current list filters. <button type="button" className="dt-quiet" onClick={clearFilters}>Clear list filters</button></div>}
+                    <div className="dt-detail-actions">
+                      {hasGeometry && (mapLevelHidden || mapLayerHidden) && <button type="button" className="button secondary"
+                        onClick={() => {
+                          if (mapLayerHidden) setLayersOn(current => new Set([...current, selected.kind]));
+                          if (mapLevelHidden) changeLevel(zone.level ?? undefined);
+                          else setCommand({ action: 'locate', zone: zone.id });
+                        }}><LocateFixed size={16} /> Reveal on map</button>}
+                      {selectedZone != null && <button type="button" className="button secondary"
+                        onClick={() => { setCommand({ action: 'locate', zone: selectedZone }); document.getElementById('dt-fit')?.focus(); }}><LocateFixed size={16} /> Locate zone</button>}
+                      <Link className="button secondary" to={`/devices/${encodeURIComponent(selected.node_id)}`}>Device diagnostics <ArrowRight size={16} /></Link>
+                    </div>
+                  </>
+                ) : zone ? (
+                  <>
+                    <p className="dt-context">{zone.code}{zone.level_name ? ` · ${zone.level_name}` : ''}</p>
+                    <p>Map evidence is shown at zone level.</p>
+                    {mapLevelHidden && <button type="button" className="button secondary" onClick={() => changeLevel(zone.level ?? undefined)}>Reveal zone on map</button>}
+                  </>
+                ) : <p className="dt-context">The latest site data no longer includes this selection.</p>}
+                {zone && (!selected || selected.role === 'ANCHOR') && <ZoneTrackers key={selected?.id ?? zone.id}
+                  members={members.filter(entity => entity.id !== selected?.id)}
+                  onSelect={entity => inspectEntity(entity, false)} />}
               </div>
-
-              <div style={{ marginTop: '12px' }}>
-                <Link to={`/devices/${encodeURIComponent(selected.node_id)}`} className="button secondary" style={{ width: '100%', justifyContent: 'center' }}>
-                  Inspect Diagnostics &amp; History <ArrowRight size={13} />
-                </Link>
-              </div>
-
-              {/* If Anchor, display all occupants currently detected at this anchor */}
-              {selected.role === 'ANCHOR' && (
-                <div style={{ marginTop: '16px', borderTop: '1px solid var(--border)', paddingTop: '12px' }}>
-                  <p className="eyebrow" style={{ marginBottom: '8px' }}>
-                    OCCUPANTS AT THIS ANCHOR ({twin.data.entities.filter(e => e.zone_code === selected.zone_code && e.id !== selected.id).length})
-                  </p>
-                  <div className="twin-entity-list" style={{ maxHeight: '220px' }}>
-                    {twin.data.entities
-                      .filter(e => e.zone_code === selected.zone_code && e.id !== selected.id)
-                      .map(entity => (
-                        <button
-                          key={entity.id}
-                          className={selectedId === entity.id ? 'selected' : ''}
-                          onClick={() => setSelectedId(entity.id)}
-                        >
-                          <span style={{ fontWeight: 600 }}>{entity.label}</span>
-                          <StatusPill value={entity.kind} />
-                        </button>
-                      ))}
-                    {!twin.data.entities.some(e => e.zone_code === selected.zone_code && e.id !== selected.id) && (
-                      <p className="text-muted" style={{ fontSize: '0.78rem', margin: '4px 0' }}>
-                        No personnel or assets currently reporting at this anchor station.
-                      </p>
-                    )}
-                  </div>
-                </div>
-              )}
             </>
           ) : (
             <>
-              {/* Telemetry Inspector Overview */}
-              <div className="twin-inspector-header">
-                <h3 className="twin-inspector-title">
-                  <Radio size={15} style={{ color: 'var(--primary)' }} />
-                  <span>Spatial Trackers</span>
-                </h3>
-                <span className="layer-count">{twin.data.entities.length}</span>
+              <div className="dt-inspector-title">
+                <h2 ref={listTitle} tabIndex={-1}>Trackers</h2>
+                <span>{trackers.list.length} at this site</span>
               </div>
-
-              {/* Live Search Input */}
-              <div className="twin-inspector-search">
-                <Search size={14} style={{ color: 'var(--muted)', flexShrink: 0 }} />
-                <input
-                  type="text"
-                  placeholder="Filter name, node ID, zone..."
-                  value={searchFilter}
-                  onChange={(e) => setSearchFilter(e.target.value)}
-                  aria-label="Filter trackers"
-                />
-                {searchFilter && (
-                  <button
-                    type="button"
-                    onClick={() => setSearchFilter('')}
-                    style={{ background: 'transparent', border: 0, padding: 0, cursor: 'pointer', color: 'var(--muted)' }}
-                    aria-label="Clear filter"
-                  >
-                    <X size={12} />
-                  </button>
-                )}
+              <div className="dt-list-controls">
+                <label htmlFor="dt-search">Search trackers</label>
+                <div className="dt-search">
+                  <Search size={16} />
+                  <input id="dt-search" type="search" placeholder="Name, node ID, or zone" value={search} onChange={event => updateSearch(event.target.value)} />
+                  {search && <button type="button" className="dt-square" aria-label="Clear tracker search" onClick={() => { updateSearch(''); document.getElementById('dt-search')?.focus(); }}><X size={16} /></button>}
+                </div>
+                <label className="dt-list-category"><span>Tracker type</span><span className="dt-select-wrap"><select value={category} onChange={e => { setCategory(e.target.value as Category); setTrackerPage(1); }}>
+                  {categories.map(([value, label]) => <option key={value} value={value}>{label}</option>)}
+                </select><ChevronDown size={15} /></span></label>
               </div>
-
-              {/* Filter Tabs */}
-              <div className="twin-filter-tabs">
-                <button
-                  type="button"
-                  className={`twin-filter-tab ${activeCategory === 'ALL' ? 'active' : ''}`}
-                  onClick={() => setActiveCategory('ALL')}
-                >
-                  All ({twin.data.entities.length})
-                </button>
-                <button
-                  type="button"
-                  className={`twin-filter-tab ${activeCategory === 'personnel' ? 'active' : ''}`}
-                  onClick={() => setActiveCategory('personnel')}
-                >
-                  Personnel ({twin.data.entities.filter(e => e.kind === 'personnel').length})
-                </button>
-                <button
-                  type="button"
-                  className={`twin-filter-tab ${activeCategory === 'asset' ? 'active' : ''}`}
-                  onClick={() => setActiveCategory('asset')}
-                >
-                  Assets ({twin.data.entities.filter(e => e.kind === 'asset').length})
-                </button>
-                <button
-                  type="button"
-                  className={`twin-filter-tab ${activeCategory === 'ANCHOR' ? 'active' : ''}`}
-                  onClick={() => setActiveCategory('ANCHOR')}
-                >
-                  Anchors ({twin.data.entities.filter(e => e.role === 'ANCHOR').length})
-                </button>
-              </div>
-
-              {/* Scrollable Entity List */}
-              <div className="twin-entity-list">
-                {filteredEntities.length > 0 ? (
-                  filteredEntities.map((entity) => (
-                    <button
-                      type="button"
-                      className={selectedId === entity.id ? 'selected' : ''}
-                      onClick={() => setSelectedId(entity.id)}
-                      key={entity.id}
-                    >
-                      <div style={{ display: 'flex', flexDirection: 'column' }}>
-                        <span style={{ fontWeight: 650, fontSize: '0.82rem' }}>{entity.label}</span>
-                        <small style={{ color: 'var(--muted)', fontSize: '0.68rem', marginTop: '2px' }}>
-                          {entity.role === 'ANCHOR' ? '⚓ Anchor Station' : entity.node_id}
-                        </small>
-                      </div>
-                      <LocationLabel evidence={entity.evidence} zone={entity.zone_code} />
-                    </button>
-                  ))
-                ) : (
-                  <p className="text-muted" style={{ fontSize: '0.78rem', textAlign: 'center', padding: '20px 0' }}>
-                    No entities match the current filter.
-                  </p>
-                )}
+              <div className="dt-results">
+                <p role={totalTrackerPages > 1 ? 'status' : undefined}>
+                  {totalTrackerPages > 1 ? `${trackerOffset + 1}–${Math.min(trackerOffset + trackersPerPage, results.length)} of ` : ''}
+                  {results.length} {results.length === 1 ? 'result' : 'results'}
+                </p>
+                {results.length > 0 ? <ul className="dt-tracker-list">{results.slice(trackerOffset, trackerOffset + trackersPerPage).map(entity => (
+                  <li key={entity.id}><TrackerRow entity={entity} id={`dt-entry-${encodeURIComponent(entity.id)}`} onSelect={() => inspectEntity(entity, true)} /></li>
+                ))}</ul> : trackers.list.length === 0 ? <p className="dt-list-empty">No trackers are reported for this site.</p> :
+                  <div className="dt-list-empty"><strong>No trackers match your filters.</strong><button type="button" className="dt-quiet" onClick={clearFilters}>Clear list filters</button></div>}
+                <TrackerPagination label="Tracker pages" page={activeTrackerPage} totalPages={totalTrackerPages} onPageChange={setTrackerPage} />
               </div>
             </>
           )}
         </aside>
-      </section>
+      </div>
+    </>
+  );
+}
+
+function TrackerPagination({ label, page, totalPages, onPageChange }: {
+  label: string; page: number; totalPages: number; onPageChange: (page: number) => void;
+}) {
+  if (totalPages <= 1) return null;
+  return (
+    <nav className="dt-pagination" aria-label={label}>
+      <Pagination variant="compact" currentPage={page} totalPages={totalPages}
+        onPageChange={onPageChange} enableKeyboardNavigation={false} />
+    </nav>
+  );
+}
+
+function ZoneTrackers({ members, onSelect }: { members: TwinEntity[]; onSelect: (entity: TwinEntity) => void }) {
+  const [page, setPage] = useState(1);
+  const totalPages = Math.max(1, Math.ceil(members.length / trackersPerPage));
+  const activePage = Math.min(page, totalPages);
+  const offset = (activePage - 1) * trackersPerPage;
+  useEffect(() => {
+    if (page !== activePage) setPage(activePage);
+  }, [activePage, page]);
+  return (
+    <div className="dt-related">
+      <h3>Trackers reported in this zone</h3>
+      {members.length ? <ul className="dt-tracker-list">
+        {members.slice(offset, offset + trackersPerPage).map(entity => (
+          <li key={entity.id}><TrackerRow entity={entity} onSelect={() => onSelect(entity)} /></li>
+        ))}
+      </ul> : <p className="dt-context">No other trackers are reported in this zone.</p>}
+      <TrackerPagination label="Trackers in zone pages" page={activePage} totalPages={totalPages} onPageChange={setPage} />
     </div>
+  );
+}
+
+function TrackerRow({ entity, id, onSelect }: { entity: TwinEntity; id?: string; onSelect: () => void }) {
+  const Icon = layers.find(layer => layer.kind === entity.kind)?.icon ?? Radio;
+  return (
+    <button type="button" className="dt-tracker" id={id} onClick={onSelect}>
+      <span className="dt-tracker-icon"><Icon size={18} /></span>
+      <span className="dt-tracker-copy">
+        <strong>{entityName(entity)}</strong>
+        <span>{entity.node_id}{entity.kind === 'device' && entity.role === 'ANCHOR' ? ' · Anchor' : ''}</span>
+        <LocationLabel evidence={entity.evidence} zone={hasZoneEvidence(entity) ? entity.zone_code : undefined} />
+      </span>
+      <ArrowRight size={15} className="dt-tracker-arrow" />
+    </button>
   );
 }

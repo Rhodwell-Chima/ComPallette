@@ -8,6 +8,7 @@ import { PlatformProvider } from '../src/platform/PlatformContext';
 import { AlertSessionProvider } from '../src/platform/AlertSessionContext';
 import { App } from '../src/App';
 import '../src/index.css';
+import { twinFixture } from './twin/fixture';
 
 const now = 1794902400000;
 const navigationTest = import.meta.env.MODE === 'navigation-test';
@@ -27,6 +28,7 @@ let healthRequests = 0;
 let newAlertRequests = 0;
 let dashboardRequests = 0;
 let bootstrapRequests = 0;
+let twinRequests = 0;
 const olderIncident = { ...alerts[0], id: 77, alert_code: 'TEST-OLDER-CRITICAL', status: 'ACKNOWLEDGED', created_at: now - 7_200_000 };
 const response = (data: unknown, status = 200) => Promise.resolve(new Response(JSON.stringify(data), { status, headers: { 'Content-Type': 'application/json' } }));
 window.fetch = async (input, init) => {
@@ -112,11 +114,20 @@ window.fetch = async (input, init) => {
       ? { site, snapshot_at: snapshotAt, metrics: { online_devices: 0 }, alerts: [] }
       : body);
   }
-  if (path === '/api/v1/digital-twin') return response({
-    site: sites[0],
-    layout: { site: 1, version: 1, geometry: { features: [{ id: 'test-zone', label: 'TEST-ZONE', points: [[0, 0], [40, 0], [40, 20], [0, 20]] }] } },
-    zones: [], entities: [], topology: [],
-  });
+  if (path === '/api/v1/digital-twin') {
+    const site = sites.find(candidate => String(candidate.id) === url.searchParams.get('site_id'));
+    if (!site) return response({ error: 'Site not found' }, 404);
+    const attempt = ++twinRequests;
+    document.documentElement.dataset.fixtureTwinRequests = String(attempt);
+    if (testCase === 'twin-race' && site.id === 1) {
+      await new Promise(resolve => window.setTimeout(resolve, 1200));
+      document.documentElement.dataset.fixtureTwinSiteOneCompleted = 'true';
+    }
+    if (testCase === 'twin-unavailable' || (testCase === 'twin-refresh' && attempt === 2)) {
+      return response({ error: 'Synthetic Digital Twin failure' }, 503);
+    }
+    return response(twinFixture(site, testCase));
+  }
   const entityMatch = path.match(/^\/api\/v1\/entities\/(personnel|assets|devices)\/([^/]+)$/);
   if (entityMatch) return response({ id: entityMatch[2], site: 1, organisation: 1, identifier: 'TEST-001', display_name: 'Isolated test person', version: 1, archived: false, location_evidence: 'UNKNOWN', current_assignments: [], current_custody: [], assignment_history: [], custody_history: [], location_observations: [], device_alerts: [], measurements: [], audit: [] });
   if (path === '/api/v1/devices/eligible') return response({ nodes: [{ node_id: 'TEST-DEVICE-1' }] });
