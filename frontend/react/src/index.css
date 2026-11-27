@@ -1,4 +1,5 @@
 @import "./platform/navigation/navigation.css";
+@import "./pages/dashboard/dashboard.css";
 
 :root {
   --surface: #ffffff;

@@ -1,12 +1,14 @@
 import uuid
+from unittest.mock import patch
 from django.test import TestCase, override_settings
 from django.conf import settings
 from django.contrib.auth import get_user_model
 from django.contrib.auth.hashers import make_password
-from django.db import IntegrityError, transaction
+from django.db import IntegrityError, connection, transaction
+from django.test.utils import CaptureQueriesContext
 from rest_framework.test import APIClient
 from .models import (Organisation, Site, SiteMembership, Node, Personnel, Asset,
-    SafetyAlert, GatewayRegistration, IngestedEvent, DeviceAssignment, LocationObservation)
+    AuditEntry, MeasurementReading, SafetyAlert, GatewayRegistration, IngestedEvent, DeviceAssignment, LocationObservation)
 from .operations import mutate, Conflict
 from .ingestion import ingest
 
@@ -46,6 +48,59 @@ class PlatformIntegrityTests(TestCase):
         from .access import permitted_sites, operator_capabilities
         self.assertFalse(permitted_sites(staff).exists())
         self.assertEqual(operator_capabilities(staff, self.a), [])
+
+    def test_dashboard_prioritizes_unresolved_critical_incidents_and_limits_audit_by_site_role(self):
+        old_critical = SafetyAlert.objects.create(node=self.node, site=self.a, seq=1, severity='CRITICAL',
+            status='ACKNOWLEDGED', alert_code='OLDER_CRITICAL', created_at=1)
+        SafetyAlert.objects.bulk_create([
+            SafetyAlert(node=self.node, site=self.a, seq=index, severity='WARNING',
+                alert_code='NEWER_WARNING', created_at=index)
+            for index in range(2, 12)
+        ])
+        AuditEntry.objects.create(site=self.a, action='TEST_OPERATOR', actor='operator', timestamp=1)
+        AuditEntry.objects.create(site=self.b, action='RESTRICTED_EVENT', actor='operator', timestamp=2)
+
+        authorized = self.client.get('/api/v1/dashboard', {'site': self.a.pk}).json()
+        self.assertEqual(authorized['metrics']['active_alerts'], 11)
+        self.assertEqual(authorized['metrics']['critical_alerts'], 1)
+        self.assertEqual(len(authorized['alerts']), 8)
+        self.assertEqual(authorized['alerts'][0]['id'], old_critical.pk)
+        self.assertIn('Unresolved', next(item['title'] for item in authorized['system_notifications'] if item['severity'] == 'CRITICAL'))
+        self.assertEqual([item['action'] for item in authorized['activity']], ['TEST_OPERATOR'])
+
+        viewer = self.client.get('/api/v1/dashboard', {'site_id': self.b.pk}).json()
+        self.assertEqual(viewer['site']['id'], self.b.pk)
+        self.assertEqual(viewer['activity'], [])
+        self.assertEqual(viewer['alerts'], [])
+        self.assertEqual(self.client.get('/api/v1/dashboard', {'site_id': 99999}).status_code, 404)
+        self.assertEqual(self.client.get(f'/api/v1/alerts/{old_critical.pk}', {'site_id': self.b.pk}).status_code, 404)
+        self.assertEqual(self.client.get(f'/api/v1/alerts/{old_critical.pk}', {'site': self.a.pk}).status_code, 200)
+
+    def test_dashboard_history_keeps_zero_and_missing_buckets_distinct(self):
+        now = 1_794_902_400_000
+        hour = 3_600_000
+        for seq, value, simulated, unit in [(1, 0, False, 'ppm'), (2, 99, True, 'ppm'), (3, 80, False, 'ppb')]:
+            event = IngestedEvent.objects.create(node=self.node, site=self.a, gateway=self.gateway,
+                event_type='TELEMETRY', sequence=seq, payload={})
+            LocationObservation.objects.create(node=self.node, site=self.a, event=event, simulated=simulated)
+            MeasurementReading.objects.create(node=self.node, site=self.a, source_event=event,
+                measurement_key='co_ppm', received_at=now - 1000, source_seq=seq, unit=unit, value=value)
+        SafetyAlert.objects.create(node=self.node, site=self.a, seq=10, status='RESOLVED',
+            alert_code='CLEARED', created_at=now - 2 * hour, resolved_at=now)
+        with patch('mining_api.views.time.time', return_value=now / 1000):
+            with CaptureQueriesContext(connection) as queries:
+                response = self.client.get('/api/v1/dashboard', {'site': self.a.pk}).json()
+        self.assertEqual(response['history_window'], {'start_at': now - 12 * hour, 'end_at': now, 'bucket_ms': hour})
+        timeline = response['charts']['primary_timeline']
+        self.assertEqual(len(timeline), 12)
+        self.assertIsNone(timeline[-2]['gas_ppm'])
+        self.assertEqual(timeline[-2]['active_alerts'], 1)
+        self.assertEqual(timeline[-1]['gas_ppm'], 0)
+        self.assertEqual(timeline[-1]['active_alerts'], 0)
+        self.assertEqual(len(response['environment']), 1)
+        self.assertNotEqual(response['environment'][0]['value'], 99)
+        measurement_queries = [query for query in queries if 'mining_api_measurementreading' in query['sql']]
+        self.assertEqual(len(measurement_queries), 2)
 
     def test_assignment_exclusivity_and_retry(self):
         payload = self.operation('assign', node_id=self.node.pk)
@@ -213,7 +268,7 @@ class PlatformIntegrityTests(TestCase):
 
 
 from django.test import TransactionTestCase
-from django.db import connection, close_old_connections
+from django.db import close_old_connections
 from unittest import skipUnless
 from concurrent.futures import ThreadPoolExecutor
 from threading import Barrier

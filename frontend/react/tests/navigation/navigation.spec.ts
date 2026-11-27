@@ -93,7 +93,10 @@ test('traps focus in the mobile drawer and restores it on Escape and outside cli
   await expect(menuButton(page)).toHaveAttribute('aria-expanded', 'false');
   await expect(menuButton(page)).toHaveCSS('outline-style', 'solid');
   await menuButton(page).click();
-  await page.mouse.click(384, 325);
+  await expect(close).toBeFocused();
+  const backdrop = page.locator('.nav-overlay[data-state="open"]');
+  const bounds = (await backdrop.boundingBox())!;
+  await backdrop.click({ position: { x: bounds.width - 12, y: bounds.height / 2 } });
   await expect(drawer(page)).toHaveCount(0);
   await expect(menuButton(page)).toBeFocused();
   await menuButton(page).click();

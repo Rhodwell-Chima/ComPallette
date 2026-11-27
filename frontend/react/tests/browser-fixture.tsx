@@ -14,6 +14,7 @@ const navigationTest = import.meta.env.MODE === 'navigation-test';
 const testCase = navigationTest ? new URLSearchParams(location.search).get('fixture') : null;
 const username = testCase === 'long-account' ? 'TEST-OPERATOR-WITH-AN-UNUSUALLY-LONG-LOCAL-NAME-FOR-REFLOW' : testCase === 'missing-account' ? undefined : 'TEST-OPERATOR';
 const sites = [1, 2].map(id => ({ id, organisation: 1, organisation_name: 'TEST ORGANISATION', name: `TEST SITE ${id}`, code: `TEST-${id}`, industry: 'Mining test fixture', timezone: 'Africa/Lusaka', active: true }));
+const permittedSites = testCase === 'dashboard-no-site' ? [] : sites;
 const capabilities = ['view', 'operate_alerts', 'manage_users', 'manage_sites', 'manage_settings', 'view_audit', 'manage_personnel', 'manage_assets', 'manage_devices'];
 const alerts = Array.from({ length: testCase === 'long-account' ? 100 : 2 }, (_, index) => {
   const id = index + 1;
@@ -24,13 +25,19 @@ let scenario = testCase === 'offline' ? 'offline' : 'healthy';
 let signedIn = true;
 let healthRequests = 0;
 let newAlertRequests = 0;
+let dashboardRequests = 0;
+let bootstrapRequests = 0;
+const olderIncident = { ...alerts[0], id: 77, alert_code: 'TEST-OLDER-CRITICAL', status: 'ACKNOWLEDGED', created_at: now - 7_200_000 };
 const response = (data: unknown, status = 200) => Promise.resolve(new Response(JSON.stringify(data), { status, headers: { 'Content-Type': 'application/json' } }));
 window.fetch = async (input, init) => {
   const url = new URL(String(input), window.location.origin); const path = url.pathname;
   if (scenario === 'offline' && !path.includes('/auth/') && !path.includes('/bootstrap')) throw new TypeError('Simulated disconnected backend');
   if (path === '/api/v1/auth/csrf') return response({});
-  if (path === '/api/v1/auth/session') { if (init?.method === 'DELETE') signedIn = false; if (init?.method === 'POST') signedIn = true; return response({ authenticated: signedIn, username, is_staff: true, capabilities, sites }); }
-  if (path === '/api/v1/platform/bootstrap') return response({ contract_version: 2, build_revision: 'ISOLATED FIXTURE', sites, organisations: [], capabilities, site_capabilities: { 1: capabilities, 2: navigationTest ? ['view'] : capabilities } });
+  if (path === '/api/v1/auth/session') { if (init?.method === 'DELETE') signedIn = false; if (init?.method === 'POST') signedIn = true; return response({ authenticated: signedIn, username, is_staff: true, capabilities, sites: permittedSites }); }
+  if (path === '/api/v1/platform/bootstrap') {
+    if (testCase === 'dashboard-bootstrap-failure' && bootstrapRequests++ > 0) return response({ error: 'Synthetic bootstrap failure' }, 503);
+    return response({ contract_version: 2, build_revision: 'ISOLATED FIXTURE', sites: permittedSites, organisations: [], capabilities, site_capabilities: { 1: capabilities, 2: navigationTest ? ['view'] : capabilities } });
+  }
   if (path === '/health/') {
     if (testCase === 'stale' && healthRequests++ > 0) throw new TypeError('Simulated health refresh failure');
     return response({ status: 'healthy', build_revision: 'ISOLATED FIXTURE' });
@@ -53,13 +60,58 @@ window.fetch = async (input, init) => {
     if (scenario === 'lost-response') throw new TypeError('Simulated lost mutation response');
     return response({ status: 'ok' });
   }
+  if (path === '/api/v1/alerts/77' && testCase === 'dashboard-overload') {
+    return url.searchParams.get('site_id') === '1' ? response(olderIncident) : response({ error: 'Not found' }, 404);
+  }
   if (path === '/api/v1/environment/overview') return response({ channels, readings: [] });
   if (path === '/api/v1/environment/readings') {
     if (scenario === 'readings-error') return response({ error: 'Synthetic reading failure' }, 500);
     const readings = scenario === 'empty' ? [] : [8, 11, 7].map((value, id) => ({ id, value, unit: 'ppm', received_at: now - id * 60000, node_id: 'TEST-NODE-1', zone: 'TEST-ZONE' }));
     return response({ readings, total: readings.length, page: 1, page_size: 25, total_pages: 1 });
   }
-  if (path === '/api/v1/dashboard') return response({ metrics: { active_alerts: 2, critical_alerts: 2, online_personnel: 0, tracked_assets: 0, online_devices: 1, stale_or_offline_devices: 1 }, alerts, activity: [], environment: channels, charts: { primary_timeline: [0, 60000, 600000].map((offset, i) => ({ timestamp: now + offset, gas_ppm: [8, 11, 7][i], dust_ugm3: [15, 25, 20][i], active_alerts: [1, 2, 2][i] })), severity_breakdown: [], zone_occupancy: [] } });
+  if (path === '/api/v1/dashboard') {
+    const attempt = ++dashboardRequests;
+    document.documentElement.dataset.fixtureDashboardRequests = String(attempt);
+    if (testCase === 'dashboard-delay') await new Promise(resolve => window.setTimeout(resolve, 700));
+    if (testCase === 'dashboard-flaky' && [2, 3].includes(attempt)) return response({ error: 'Synthetic snapshot failure' }, 503);
+    if (testCase === 'dashboard-unavailable') return response({ error: 'Synthetic initial failure' }, 503);
+    const site = sites.find(candidate => String(candidate.id) === url.searchParams.get('site_id'));
+    if (!site) return response({ error: 'Site not found' }, 404);
+    const snapshotAt = Date.now() - (testCase === 'dashboard-stale-generated' ? 3_600_000 : 0);
+    const hour = 3_600_000;
+    const siteOne = site.id === 1;
+    const preview = testCase === 'dashboard-overload' && siteOne ? [olderIncident, ...alerts, ...Array.from({ length: 5 }, (_, index) =>
+      ({ ...alerts[0], id: 80 + index, alert_code: `TEST-WARNING-${index + 1}`, severity: 'WARNING' })),
+    ] : siteOne ? alerts : [];
+    const body = {
+      site: testCase === 'dashboard-mismatched-site' ? sites[1] : site,
+      snapshot_at: snapshotAt,
+      history_window: { start_at: snapshotAt - 12 * hour, end_at: snapshotAt, bucket_ms: hour },
+      metrics: { active_alerts: testCase === 'dashboard-overload' ? 10 : preview.length, critical_alerts: preview.filter(alert => alert.severity === 'CRITICAL').length,
+        online_personnel: 0, tracked_assets: siteOne ? 3 : 0, online_devices: siteOne ? 7 : 2, stale_or_offline_devices: siteOne ? 1 : 0 },
+      alerts: preview,
+      activity: siteOne ? [
+        { id: 1, actor: 'TEST-OPERATOR', action: 'ALERT_ASSIGNED', details: 'Test incident review', timestamp: snapshotAt - 6_000 },
+        { id: 2, actor: 'TEST-OPERATOR', action: 'GATEWAY_REGISTERED', details: 'Test gateway entry', timestamp: snapshotAt - 3_000 },
+      ] : [],
+      environment: siteOne ? [
+        { id: 1, measurement_key: 'co_ppm', unit: 'ppm', value: 0, received_at: snapshotAt - 60_000, node_id: 'TEST-NODE-1', zone: 'NORTH ACCESS' },
+        { id: 2, measurement_key: 'dust_ugm3', unit: 'µg/m³', value: 21.4, received_at: snapshotAt - 120_000, node_id: 'TEST-NODE-2', zone: 'SERVICE BAY' },
+      ] : [],
+      charts: {
+        primary_timeline: Array.from({ length: 12 }, (_, index) => ({
+          timestamp: snapshotAt - (11 - index) * hour,
+          gas_ppm: [1, 0, 3, 4, null, 7, 5, 7, 3, 5, 4, 1][index],
+          dust_ugm3: [15, 25, 24, 20, 22, 23, 30, 22, 18, 20, 22, 21.4][index],
+          active_alerts: index < 4 ? 0 : 2,
+        })),
+        zone_occupancy: siteOne ? [{ zone: 'North access', personnel_count: 4, asset_count: 2 }, { zone: 'Service bay', personnel_count: 0, asset_count: 1 }] : [],
+      },
+    };
+    return response(testCase === 'dashboard-partial'
+      ? { site, snapshot_at: snapshotAt, metrics: { online_devices: 0 }, alerts: [] }
+      : body);
+  }
   if (path === '/api/v1/digital-twin') return response({
     site: sites[0],
     layout: { site: 1, version: 1, geometry: { features: [{ id: 'test-zone', label: 'TEST-ZONE', points: [[0, 0], [40, 0], [40, 20], [0, 20]] }] } },

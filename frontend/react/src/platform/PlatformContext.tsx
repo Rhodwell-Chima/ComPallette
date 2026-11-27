@@ -1,7 +1,7 @@
 import { createContext, ReactNode, useContext, useEffect, useMemo, useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { useOperatorSession } from '../components/AuthGate';
-import { platformApi } from '../services/api';
+import { ApiError, platformApi } from '../services/api';
 import { Site } from '../types';
 import { ErrorState, LoadingState } from './ui';
 import { API_CONTRACT_VERSION } from '../services/api';
@@ -16,6 +16,7 @@ interface PlatformContextValue {
   theme: 'light' | 'dark';
   toggleTheme: () => void;
   isLoading: boolean;
+  scopeUnverified?: boolean;
 }
 
 const PlatformContext = createContext<PlatformContextValue | null>(null);
@@ -33,6 +34,8 @@ export function PlatformProvider({ children }: { children: ReactNode }) {
   const [theme, setTheme] = useState<'light' | 'dark'>(() => window.localStorage.getItem(THEME_STORAGE_KEY) === 'dark' ? 'dark' : 'light');
   const sites = bootstrap.data?.sites ?? session.sites ?? [];
   const selectedSiteId = sites.some((site: Site) => site.id === requestedSiteId) ? requestedSiteId : sites[0]?.id;
+  const scopeUnverified = Boolean(bootstrap.data && bootstrap.isError && bootstrap.error instanceof ApiError
+    && (bootstrap.error.kind === 'unavailable' || bootstrap.error.kind === 'server'));
 
   useEffect(() => {
     document.documentElement.dataset.theme = theme;
@@ -53,10 +56,11 @@ export function PlatformProvider({ children }: { children: ReactNode }) {
     theme,
     toggleTheme: () => setTheme(current => current === 'light' ? 'dark' : 'light'),
     isLoading: bootstrap.isLoading,
-  }), [bootstrap.data, bootstrap.isLoading, selectedSiteId, siteStorageKey, sites, theme]);
+    scopeUnverified,
+  }), [bootstrap.data, bootstrap.isLoading, scopeUnverified, selectedSiteId, siteStorageKey, sites, theme]);
 
   if (bootstrap.isLoading) return <LoadingState label="Checking platform compatibility…" />;
-  if (bootstrap.isError) return <ErrorState message="Platform configuration could not be loaded." retry={() => void bootstrap.refetch()} />;
+  if (bootstrap.isError && !scopeUnverified) return <ErrorState message="Platform configuration could not be loaded." retry={() => void bootstrap.refetch()} />;
   if (bootstrap.data?.contract_version !== API_CONTRACT_VERSION) return <ErrorState message={`Incompatible backend contract. This frontend requires contract ${API_CONTRACT_VERSION}; deploy matching frontend and backend releases.`} retry={() => void bootstrap.refetch()} />;
   return <PlatformContext.Provider value={value}>{children}</PlatformContext.Provider>;
 }

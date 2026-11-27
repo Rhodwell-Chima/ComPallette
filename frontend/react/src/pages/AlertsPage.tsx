@@ -8,6 +8,7 @@ import { usePlatform } from '../platform/PlatformContext';
 import { useAlertSession } from '../platform/AlertSessionContext';
 import { Modal } from '../platform/Modal';
 import { EmptyState, ErrorState, LoadingState, PageHeader, StatusPill, formatTimestamp, severityClass } from '../platform/ui';
+import { POLL_TRACKING_MS, queryKeys } from '../platform/queryKeys';
 
 const filters: Array<'ALL' | AlertStatus> = ['ALL', 'NEW', 'ACKNOWLEDGED', 'INVESTIGATING', 'RESOLVED'];
 
@@ -20,24 +21,33 @@ export function AlertsPage() {
   const cancelRef = useRef<HTMLButtonElement>(null);
   const requestedParam = params.get('alert');
   const requestedId = requestedParam ? Number(requestedParam) : null;
-  const initialRequestedIdRef = useRef<number | null>(requestedId);
+  const review = params.get('review') === '1';
+  const initialRequestedIdRef = useRef<number | null>(review ? null : requestedId);
   const autoOpenedRef = useRef(false);
 
   const alerts = useQuery({
-    queryKey: ['alerts', selectedSiteId, filter],
+    queryKey: queryKeys.alerts(selectedSiteId, filter),
     queryFn: () => platformApi.alerts(selectedSiteId, filter === 'ALL' ? undefined : filter),
     enabled: Boolean(selectedSiteId),
-    refetchInterval: 5_000,
+    refetchInterval: POLL_TRACKING_MS,
   });
 
-  const selected = alerts.data?.alerts.find(alert => alert.id === requestedId) ?? alerts.data?.alerts[0];
+  const listed = alerts.data?.alerts.find(alert => alert.id === requestedId);
+  const directReview = review && requestedId !== null && Number.isSafeInteger(requestedId) && requestedId > 0;
+  const detail = useQuery({
+    queryKey: queryKeys.alertDetail(selectedSiteId, requestedId ?? undefined),
+    queryFn: ({ signal }) => platformApi.alertDetail(selectedSiteId!, requestedId!, signal),
+    enabled: Boolean(selectedSiteId && directReview && !listed && !alerts.isPending),
+    refetchInterval: POLL_TRACKING_MS,
+  });
+  const selected = directReview ? listed ?? detail.data : listed ?? alerts.data?.alerts[0];
   useEffect(() => {
-    if (!alerts.isSuccess) return;
+    if (!alerts.isSuccess || directReview) return;
     if (selected?.id === requestedId || (!selected && !params.has('alert'))) return;
     const next = new URLSearchParams(params);
     if (selected) next.set('alert', String(selected.id)); else next.delete('alert');
     setParams(next, { replace: true });
-  }, [alerts.isSuccess, selected?.id, requestedId, params, setParams]);
+  }, [alerts.isSuccess, directReview, selected?.id, requestedId, params, setParams]);
 
   useEffect(() => {
     if (
@@ -67,7 +77,7 @@ export function AlertsPage() {
   const draft = session.drafts[key];
   const notes = draft?.text ?? (selected?.investigation_notes || selected?.resolution_notes || '');
   const pending = session.pending[key];
-  const blocked = Boolean(pending || session.feedback[key]?.uncertain || alerts.isError);
+  const blocked = Boolean(pending || session.feedback[key]?.uncertain || alerts.isError || (directReview && !listed && detail.isError));
   const action = async (kind: 'acknowledge' | 'assign' | 'resolve') => {
     if (!selected || blocked || !can('operate_alerts') || (kind === 'resolve' && !notes.trim())) return;
     const ok = await session.run(selectedSiteId, selected.id, kind, notes);
@@ -103,7 +113,9 @@ export function AlertsPage() {
             <div className="incident-actions"><button type="button" className="button secondary" ref={cancelRef} onClick={() => setConfirming(false)}>Cancel</button><button className="button danger" disabled={blocked || !notes.trim() || selected.status === 'RESOLVED'}>{pending === 'resolve' ? 'Resolving…' : 'Confirm resolution'}</button></div>
           </form>
         </Modal>
-      </> : <EmptyState title="Select an alert" detail="Choose an alert from the queue to inspect its evidence and workflow history." />}</article>
+      </> : directReview && detail.isFetching ? <LoadingState label="Loading selected alert…" />
+        : directReview && detail.isError ? <ErrorState message="The requested alert could not be loaded for this site." retry={() => void detail.refetch()} />
+        : <EmptyState title="Select an alert" detail="Choose an alert from the queue to inspect its evidence and workflow history." />}</article>
     </section>
   </>;
 }

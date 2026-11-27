@@ -3,8 +3,9 @@ import { defineConfig } from '@playwright/test';
 const baseURL = 'http://127.0.0.1:3111';
 
 export default defineConfig({
-  testDir: './tests/navigation',
-  outputDir: './test-results/navigation',
+  testDir: './tests',
+  testMatch: '**/*.spec.ts',
+  outputDir: './test-results/playwright',
   workers: 2,
   projects: [
     { name: 'chromium', use: { browserName: 'chromium', channel: process.env.COMPALLETTE_PLAYWRIGHT_CHANNEL || undefined } },

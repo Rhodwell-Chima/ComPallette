@@ -65,7 +65,7 @@ describe('native-unit timeline', () => {
     const { container } = render(<PrimaryTimelineChart points={points} />);
     const circles = container.querySelectorAll('figure:first-of-type circle');
     expect(Number(circles[1].getAttribute('cx')) - Number(circles[0].getAttribute('cx'))).toBeCloseTo(53.5);
-    await userEvent.click(screen.getByRole('button', { name: 'Gas (ppm)' })); expect(screen.getAllByRole('img')).toHaveLength(1);
+    await userEvent.click(screen.getByRole('button', { name: 'CO (ppm)' })); expect(screen.getAllByRole('img')).toHaveLength(1);
     await userEvent.click(screen.getByText('View chart data')); expect(screen.getByRole('table')).toBeVisible();
   });
 });

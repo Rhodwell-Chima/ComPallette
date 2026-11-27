@@ -249,8 +249,8 @@ export const platformApi = {
       }),
     ),
   bootstrap: () => json<{ contract_version: number; build_revision: string; organisations: Organisation[]; sites: Site[]; capabilities: string[]; site_capabilities?: Record<string, string[]> }>('/api/v1/platform/bootstrap'),
-  dashboard: (siteId?: number, params: { start_date?: string; end_date?: string; range?: string } = {}) =>
-    json<EnhancedDashboardData>(`/api/v1/dashboard${siteQuery(siteId, params)}`),
+  dashboard: (siteId?: number, signal?: AbortSignal) =>
+    json<EnhancedDashboardData>(`/api/v1/dashboard${siteQuery(siteId)}`, { signal }),
   sites: () => json<{ sites: Site[] }>('/api/v1/sites'),
   createSite: (input: Pick<Site, 'organisation' | 'name' | 'code' | 'industry' | 'timezone'>) => json<Site>('/api/v1/sites', jsonRequest('POST', input)),
   updateSite: (siteId: number, input: Partial<Site>) => json<Site>(`/api/v1/sites/${siteId}`, jsonRequest('PATCH', input)),
@@ -285,6 +285,8 @@ export const platformApi = {
     ),
   twin: (siteId?: number) => json<TwinData>(`/api/v1/digital-twin${siteQuery(siteId)}`),
   alerts: (siteId?: number, status?: string, limit = 100) => json<{ alerts: AlertItem[]; count: number }>(`/api/v1/alerts${siteQuery(siteId, { status, limit })}`),
+  alertDetail: (siteId: number, alertId: number, signal?: AbortSignal) =>
+    json<AlertItem>(`/api/v1/alerts/${alertId}${siteQuery(siteId)}`, { signal }),
   acknowledgeAlert: (id: number) => json<void>(`/api/v1/alerts/${id}/ack`, jsonRequest('POST')),
   assignAlert: (id: number, notes: string) => json<void>(`/api/v1/alerts/${id}/assign`, jsonRequest('POST', { notes })),
   resolveAlert: (id: number, notes: string) => json<void>(`/api/v1/alerts/${id}/resolve`, jsonRequest('POST', { notes })),

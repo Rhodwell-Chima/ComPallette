@@ -312,11 +312,11 @@ export interface MetricTrend {
 
 export interface ChartTimeSeriesPoint {
   timestamp: number;
-  label: string;
-  environmental_index: number;
-  gas_ppm: number;
-  dust_ugm3: number;
-  active_alerts: number;
+  label?: string;
+  environmental_index?: number;
+  gas_ppm: number | null;
+  dust_ugm3: number | null;
+  active_alerts: number | null;
 }
 
 export interface ChartSeverityBreakdown {
@@ -344,6 +344,9 @@ export interface SystemNotification {
 }
 
 export interface EnhancedDashboardData extends DashboardData {
+  snapshot_at?: number;
+  history_window?: { start_at: number; end_at: number; bucket_ms: number };
+  aggregation?: string;
   trends?: {
     active_alerts: MetricTrend;
     critical_alerts: MetricTrend;

@@ -7,7 +7,8 @@ from django.middleware.csrf import get_token
 from django.utils.decorators import method_decorator
 from django.views.decorators.csrf import csrf_protect, ensure_csrf_cookie
 from django.db import transaction, IntegrityError
-from django.db.models import Q, Max
+from django.db.models import Avg, Case, Count, F, IntegerField, Max, Q, Value, When, Window
+from django.db.models.functions import RowNumber
 from django.shortcuts import get_object_or_404
 from rest_framework import status, permissions
 from rest_framework.views import APIView
@@ -74,7 +75,7 @@ def require_capability(request, capability):
 
 
 def resolve_site(request):
-    raw_site = request.query_params.get('site')
+    raw_site = request.query_params.get('site') or request.query_params.get('site_id')
     if not raw_site and isinstance(request.data, dict):
         raw_site = request.data.get('site')
     queryset = permitted_sites(request.user)
@@ -372,7 +373,10 @@ class AlertListView(APIView):
 
 class AlertDetailView(APIView):
     def get(self, request, alert_id):
-        alert = get_object_or_404(SafetyAlert.objects.filter(site__in=permitted_sites(request.user)), id=alert_id)
+        alerts = SafetyAlert.objects.filter(site__in=permitted_sites(request.user))
+        if request.query_params.get('site') or request.query_params.get('site_id'):
+            alerts = alerts.filter(site=resolve_site(request))
+        alert = get_object_or_404(alerts, id=alert_id)
         serializer = SafetyAlertSerializer(alert)
         return Response(serializer.data)
 
@@ -748,39 +752,46 @@ class DashboardView(APIView):
         online_device_count = nodes.filter(status=NodeStatus.ONLINE).count()
         stale_device_count = nodes.filter(status__in=[NodeStatus.STALE, NodeStatus.OFFLINE]).count()
 
-        # Fast channel snapshot: order_by() clears model Meta ordering to avoid PostgreSQL scanning all 15k rows for distinct
-        distinct_keys = list(
-            MeasurementReading.objects.filter(site=site, source_event__locationobservation__simulated=False)
-            .order_by()
-            .values_list('node_id', 'measurement_key')
-            .distinct()
-        )
-        latest_by_key = []
-        for stream_node, key in distinct_keys:
-            item = (
-                MeasurementReading.objects.filter(site=site, node_id=stream_node, measurement_key=key, source_event__locationobservation__simulated=False)
-                .select_related('node')
-                .order_by('-received_at')
-                .first()
+        physical_readings = MeasurementReading.objects.filter(site=site, source_event__locationobservation__simulated=False)
+        latest_by_key = physical_readings.annotate(
+            stream_rank=Window(
+                expression=RowNumber(),
+                partition_by=[F('node_id'), F('measurement_key')],
+                order_by=[F('received_at').desc(), F('pk').desc()],
             )
-            if item:
-                latest_by_key.append(item)
+        ).filter(stream_rank=1).select_related('node').order_by('-received_at', '-pk')
 
-        from django.db.models import Avg
         now = int(time.time() * 1000)
         hour_ms = 3600 * 1000
-        primary_timeline = []
-        physical = MeasurementReading.objects.filter(site=site, source_event__locationobservation__simulated=False)
-        for h in range(11, -1, -1):
-            start = now - ((h + 1) * hour_ms)
-            end = start + hour_ms
-            readings = physical.filter(received_at__gte=start, received_at__lt=end)
-            gas = readings.filter(measurement_key='co_ppm').aggregate(value=Avg('value'))['value']
-            dust = readings.filter(measurement_key='dust_ugm3').aggregate(value=Avg('value'))['value']
-            count = SafetyAlert.objects.filter(site=site, created_at__lte=end).filter(Q(resolved_at__isnull=True) | Q(resolved_at__gt=end)).count()
-            if gas is not None or dust is not None or count:
-                primary_timeline.append({'timestamp': end, 'label': '', 'gas_ppm': gas,
-                    'dust_ugm3': dust, 'active_alerts': count})
+        history_start = now - 12 * hour_ms
+        bucket_ends = range(history_start + hour_ms, now + 1, hour_ms)
+        measurement_fields = {
+            'gas_ppm': Q(measurement_key='co_ppm', unit__iexact='ppm'),
+            'dust_ugm3': Q(measurement_key='dust_ugm3', unit__in=('µg/m³', 'μg/m³', 'ug/m3', 'µg/m3')),
+        }
+        readings = physical_readings.filter(received_at__gte=history_start, received_at__lt=now).filter(
+            measurement_fields['gas_ppm'] | measurement_fields['dust_ugm3']
+        ).aggregate(**{
+            f'{field}_{end}': Avg('value', filter=measurement & Q(
+                received_at__gte=end - hour_ms, received_at__lt=end,
+            ))
+            for field, measurement in measurement_fields.items() for end in bucket_ends
+        })
+        history_alerts = SafetyAlert.objects.filter(site=site, created_at__lte=now).filter(
+            Q(resolved_at__isnull=True) | Q(resolved_at__gt=history_start)
+        ).aggregate(**{
+            f'alerts_{end}': Count('pk', filter=Q(created_at__lte=end) & (
+                Q(resolved_at__isnull=True) | Q(resolved_at__gt=end)
+            ))
+            for end in bucket_ends
+        })
+        primary_timeline = [{
+            'timestamp': end,
+            'label': '',
+            'gas_ppm': readings[f'gas_ppm_{end}'],
+            'dust_ugm3': readings[f'dust_ugm3_{end}'],
+            'active_alerts': history_alerts[f'alerts_{end}'],
+        } for end in bucket_ends]
 
         # Severity breakdown
         info_count = alerts.filter(severity=AlertSeverity.INFO).count()
@@ -793,7 +804,7 @@ class DashboardView(APIView):
 
         # Zone occupancy
         zone_occupancy = []
-        for z in Zone.objects.filter(site=site)[:6]:
+        for z in Zone.objects.filter(site=site).order_by('name', 'pk')[:6]:
             person_count = Personnel.objects.filter(site=site, assigned_node__zone_ref=z).count()
             asset_z_count = Asset.objects.filter(site=site, assigned_node__zone_ref=z).count()
             zone_occupancy.append({
@@ -819,7 +830,7 @@ class DashboardView(APIView):
             system_notifications.append({
                 'id': 'notif-critical-alarms',
                 'severity': 'CRITICAL',
-                'title': f'{critical_alert_count} Unacknowledged Critical Alarm(s)',
+                'title': f'{critical_alert_count} Unresolved Critical Alarm(s)',
                 'message': 'Immediate investigation required under site procedures.',
                 'timestamp': now,
                 'action_required': True,
@@ -827,8 +838,19 @@ class DashboardView(APIView):
                 'action_route': '/alerts',
             })
 
+        priority_alerts = alerts.alias(priority=Case(
+            When(severity=AlertSeverity.CRITICAL, then=Value(0)),
+            When(severity=AlertSeverity.WARNING, then=Value(1)),
+            default=Value(2), output_field=IntegerField(),
+        )).select_related('node', 'assigned_to').order_by('priority', '-created_at', '-pk')[:8]
+        activity = AuditEntry.objects.none()
+        if 'view_audit' in operator_capabilities(request.user, site):
+            activity = AuditEntry.objects.filter(site=site).order_by('-timestamp', '-pk')[:12]
+
         return Response({
             'site': SiteSerializer(site).data,
+            'snapshot_at': now,
+            'history_window': {'start_at': history_start, 'end_at': now, 'bucket_ms': hour_ms},
             'metrics': {
                 'online_personnel': online_personnel_count,
                 'tracked_assets': tracked_asset_count,
@@ -845,9 +867,9 @@ class DashboardView(APIView):
                 'zone_occupancy': zone_occupancy,
             },
             'system_notifications': system_notifications,
-            'alerts': SafetyAlertSerializer(alerts.order_by('-created_at')[:8], many=True).data,
+            'alerts': SafetyAlertSerializer(priority_alerts, many=True).data,
             'environment': MeasurementReadingSerializer(latest_by_key, many=True).data,
-            'activity': AuditEntrySerializer(AuditEntry.objects.filter(site=site).order_by('-timestamp')[:12], many=True).data,
+            'activity': AuditEntrySerializer(activity, many=True).data,
         })
 
 

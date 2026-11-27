@@ -1,58 +1,104 @@
-import { useEffect, useRef, useState } from 'react';
-import { ChartTimeSeriesPoint } from '../types';
-import { formatTimestamp } from '../platform/ui';
+import { useEffect, useMemo, useRef, useState } from 'react';
+import type { ChartTimeSeriesPoint } from '../types';
 
 const metrics = [
-  { key: 'gas_ppm', label: 'Gas (ppm)', color: 'var(--primary)' },
+  { key: 'gas_ppm', label: 'CO (ppm)', color: 'var(--primary-strong)' },
   { key: 'dust_ugm3', label: 'Dust (µg/m³)', color: 'var(--warning)' },
-  { key: 'active_alerts', label: 'Active alarms (count)', color: 'var(--danger)' },
+  { key: 'active_alerts', label: 'Unresolved incidents', color: 'var(--danger)' },
+  { key: 'all', label: 'All' },
 ] as const;
-type MetricKey = typeof metrics[number]['key'];
 
-export function PrimaryTimelineChart({ points }: { points: ChartTimeSeriesPoint[] }) {
+type MetricKey = typeof metrics[number]['key'];
+type Sample = { timestamp: number; value: number };
+
+function groupSamples(points: ChartTimeSeriesPoint[], key: Exclude<MetricKey, 'all'>, bucketMs?: number) {
+  const segments: Sample[][] = [];
+  let segment: Sample[] = [];
+  for (const point of points) {
+    const value = point[key];
+    const last = segment[segment.length - 1];
+    if ((value === null || !Number.isFinite(value) || (last && bucketMs && point.timestamp - last.timestamp > bucketMs)) && segment.length) {
+      segments.push(segment);
+      segment = [];
+    }
+    if (value !== null && Number.isFinite(value)) segment.push({ timestamp: point.timestamp, value });
+  }
+  if (segment.length) segments.push(segment);
+  return segments;
+}
+
+export function PrimaryTimelineChart({ points, initialMetric = 'all', timeZone, window: historyWindow }: {
+  points: ChartTimeSeriesPoint[];
+  initialMetric?: MetricKey;
+  timeZone?: string;
+  window?: { start_at: number; end_at: number; bucket_ms: number };
+}) {
   const containerRef = useRef<HTMLDivElement>(null);
   const [width, setWidth] = useState(640);
+  const [active, setActive] = useState<MetricKey>(initialMetric);
+  const [showTable, setShowTable] = useState(false);
+  const ordered = useMemo(() => points.filter(point => Number.isFinite(point.timestamp) && point.timestamp > 0 && point.timestamp <= 8.64e15)
+    .sort((a, b) => a.timestamp - b.timestamp), [points]);
+  const hasPoints = ordered.length > 0;
   useEffect(() => {
-    if (!containerRef.current || typeof ResizeObserver === 'undefined') return;
-    const observer = new ResizeObserver(([entry]) => setWidth(Math.max(200, entry.contentRect.width)));
+    if (!hasPoints || !containerRef.current || typeof ResizeObserver === 'undefined') return;
+    const observer = new ResizeObserver(([entry]) => setWidth(Math.max(200, Math.round(entry.contentRect.width))));
     observer.observe(containerRef.current);
     return () => observer.disconnect();
-  }, [points.length]);
-  const left = Math.min(65, width * 0.15);
+  }, [hasPoints]);
+
+  const time = useMemo(() => new Intl.DateTimeFormat(undefined, { hour: '2-digit', minute: '2-digit', hourCycle: 'h23', timeZone }), [timeZone]);
+  const fullTime = useMemo(() => new Intl.DateTimeFormat(undefined, { dateStyle: 'medium', timeStyle: 'short', timeZone }), [timeZone]);
+  if (!hasPoints) return <p className="dashboard-empty">No historical readings in this range.</p>;
+
+  const left = Math.min(65, width * 0.22);
   const right = width - 40;
-  const timeLabel = (timestamp: number) => new Intl.DateTimeFormat(undefined, { hour: '2-digit', minute: '2-digit' }).format(timestamp);
-  const [active, setActive] = useState<MetricKey | 'all'>('all');
-  const ordered = [...points].filter(point => Number.isFinite(point.timestamp)).sort((a, b) => a.timestamp - b.timestamp);
-  if (!ordered.length) return <p className="muted">No historical readings in this range.</p>;
-  const first = ordered[0].timestamp;
-  const last = ordered[ordered.length - 1].timestamp;
+  const first = historyWindow?.start_at ?? ordered[0].timestamp;
+  const last = historyWindow?.end_at ?? ordered[ordered.length - 1].timestamp;
   const x = (timestamp: number) => last === first ? (left + right) / 2 : left + (timestamp - first) / (last - first) * (right - left);
-  return <div className="timeline-charts" ref={containerRef}>
-    <div className="segmented" aria-label="Chart metric">
-      <button aria-pressed={active === 'all'} className={active === 'all' ? 'active' : ''} onClick={() => setActive('all')}>All</button>
-      {metrics.map(metric => <button key={metric.key} aria-pressed={active === metric.key} className={active === metric.key ? 'active' : ''} onClick={() => setActive(metric.key)}>{metric.label}</button>)}
+  const chartMetrics = metrics.filter(metric => metric.key !== 'all');
+  const shownMetrics = chartMetrics.filter(metric => active === 'all' || metric.key === active);
+
+  return <div className="dashboard-timeline timeline-charts" ref={containerRef}>
+    <div className="dashboard-chart-options flex flex-wrap" role="group" aria-label="Historical series">
+      {metrics.map(metric => <button type="button" className="dashboard-control" key={metric.key}
+        aria-pressed={active === metric.key} onClick={() => setActive(metric.key)}>{metric.label}</button>)}
     </div>
-    {metrics.filter(metric => active === 'all' || metric.key === active).map(metric => {
-      const values = ordered.filter(point => Number.isFinite(point[metric.key]));
-      if (!values.length) return <figure className="timeline-chart" key={metric.key}><figcaption>{metric.label}</figcaption><p className="muted">No measurements available.</p></figure>;
-      const min = Math.min(0, ...values.map(point => point[metric.key]));
-      const max = Math.max(1, ...values.map(point => point[metric.key]));
-      const y = (value: number) => 130 - (value - min) / (max - min) * 110;
-      const ticks = metric.key === 'active_alerts' ? Array.from(new Set([min, Math.round((max + min) / 2), max])) : [min, (max + min) / 2, max];
+    {shownMetrics.map(metric => {
+      const segments = groupSamples(ordered, metric.key, historyWindow?.bucket_ms);
+      const values = segments.flat();
+      if (!values.length) return <figure className="timeline-chart" key={metric.key}><figcaption>{metric.label}</figcaption><p className="dashboard-empty">No measurements available.</p></figure>;
+      const min = Math.min(0, ...values.map(sample => sample.value));
+      const max = Math.max(1, ...values.map(sample => sample.value));
+      const y = (value: number) => 124 - (value - min) / (max - min) * 106;
+      const midpoint = (min + max) / 2;
+      const ticks = [...new Set([min, metric.key === 'active_alerts' ? Math.round(midpoint) : midpoint, max])];
       return <figure className="timeline-chart" key={metric.key}>
         <figcaption>{metric.label}</figcaption>
-        <svg viewBox={`0 0 ${width} 165`} role="img" aria-label={`${metric.label}; ${values.length} readings. Exact values in the data table below.`}>
-          {ticks.map(value => <g key={value}><line x1={left} x2={right} y1={y(value)} y2={y(value)} stroke="var(--border)" /><text x={left - 8} y={y(value) + 4} textAnchor="end" fontSize="12" fill="var(--muted)">{Number(value.toFixed(2))}</text></g>)}
-          <polyline fill="none" stroke={metric.color} strokeWidth="2" points={values.map(point => `${x(point.timestamp)},${y(point[metric.key])}`).join(' ')} />
-          {values.map((point, index) => <circle key={`${point.timestamp}:${index}`} cx={x(point.timestamp)} cy={y(point[metric.key])} r="3" fill={metric.color}><title>{formatTimestamp(point.timestamp)}: {point[metric.key]} {metric.label}</title></circle>)}
-          <text x={left} y="155" fontSize="11" fill="var(--muted)">{timeLabel(first)}</text>
-          {last !== first && <text x={right} y="155" textAnchor="end" fontSize="11" fill="var(--muted)">{timeLabel(last)}</text>}
+        <svg viewBox={`0 0 ${width} 154`} role="img" aria-label={`${metric.label}. ${values.length} available buckets. Values are available in the chart table.`}>
+          {ticks.map(value => <g key={value}>
+            <line x1={left} x2={right} y1={y(value)} y2={y(value)} stroke="var(--border)" />
+            <text x={left - 7} y={y(value) + 4} textAnchor="end" fontSize="11" fill="var(--dashboard-muted, var(--muted))">{Number(value.toPrecision(4))}</text>
+          </g>)}
+          {segments.filter(segment => segment.length > 1).map(segment => <polyline
+            key={segment[0].timestamp} fill="none" stroke={metric.color} strokeWidth="2"
+            points={segment.map(point => `${x(point.timestamp)},${y(point.value)}`).join(' ')} />)}
+          {values.map((point, index) => <circle key={`${point.timestamp}:${index}`} cx={x(point.timestamp)} cy={y(point.value)} r="3" fill={metric.color}>
+            <title>{fullTime.format(point.timestamp)} · {point.value} · {metric.label}</title>
+          </circle>)}
+          <text x={left} y="145" fontSize="11" fill="var(--dashboard-muted, var(--muted))">{time.format(first)}</text>
+          {last !== first && <text x={right} y="145" textAnchor="end" fontSize="11" fill="var(--dashboard-muted, var(--muted))">{time.format(last)}</text>}
         </svg>
       </figure>;
     })}
-    <details><summary>View chart data</summary><div className="table-scroll"><table>
-      <caption>Original readings in native units</caption><thead><tr><th scope="col">Timestamp</th>{metrics.map(metric => <th scope="col" key={metric.key}>{metric.label}</th>)}</tr></thead>
-      <tbody>{ordered.map((point, index) => <tr key={`${point.timestamp}:${index}`}><th scope="row">{formatTimestamp(point.timestamp)}</th>{metrics.map(metric => <td key={metric.key}>{Number.isFinite(point[metric.key]) ? point[metric.key] : 'Unavailable'}</td>)}</tr>)}</tbody>
-    </table></div></details>
+    <details onToggle={event => setShowTable(event.currentTarget.open)}>
+      <summary className="dashboard-control" tabIndex={0}>View chart data</summary>
+      {showTable && <div className="dashboard-table-wrap table-scroll"><table>
+        <caption>Hourly values in native units</caption><thead><tr><th scope="col">Bucket end</th>{shownMetrics.map(metric => <th scope="col" key={metric.key}>{metric.label}</th>)}</tr></thead>
+        <tbody>{ordered.map((point, index) => <tr key={`${point.timestamp}:${index}`}><th scope="row">{fullTime.format(point.timestamp)}</th>
+          {shownMetrics.map(metric => <td key={metric.key}>{Number.isFinite(point[metric.key]) ? point[metric.key] : 'Unavailable'}</td>)}
+        </tr>)}</tbody>
+      </table></div>}
+    </details>
   </div>;
 }
