@@ -71,8 +71,8 @@ public:
   const String& getUplinkSsid() const { return m_ssid; }
   
   // mDNS resolution query (returns resolved IPAddress, or INADDR_NONE on error)
-  IPAddress resolveMdns(const String& hostname);
-  bool resolveMdnsHost(const String& rawUrl, String& outResolvedUrl);
+  IPAddress resolveMdns(const String& hostname, bool localReport = false);
+  bool resolveMdnsHost(const String& rawUrl, String& outResolvedUrl, bool localReport = false);
 
   // Send an immediate test packet over HTTP
   bool sendDirectTestPacket(const String& jsonPayload, MessageType type = MSG_HEARTBEAT);
@@ -117,7 +117,7 @@ private:
 #endif
 
   void checkConnection();
-  bool forwardPacket(const BufferedItem& item);
+  bool forwardPacket(const BufferedItem& item, bool localReport = false);
   String resolveEndpoint(MessageType type);
   void triggerBackoff();
   void resetBackoff();

@@ -2,6 +2,9 @@
 #include <FS.h>
 #include <LittleFS.h>
 #include "DeviceTrust.h"
+#include "Logging.h"
+
+static const char* const BUFFER_TAG = "CP_BUFFER";
 
 OfflineBuffer::OfflineBuffer()
   : m_maxRamItems(BUFFER_MAX_RAM_ITEMS),
@@ -28,20 +31,26 @@ bool OfflineBuffer::begin(size_t maxRamItems, size_t maxFlashItems) {
   // Attempt to mount LittleFS for persistent crash-resilient storage
   if (LittleFS.begin(false) || LittleFS.begin(true)) {
     m_flashAvailable = true;
-    Serial.println("[BUFFER] LittleFS mounted successfully. Restoring persistent queue...");
+    ESP_LOGI(BUFFER_TAG, "LittleFS mounted; checking for queue snapshot");
     loadFromFlash();
   } else {
     m_flashAvailable = false;
-    Serial.println("[BUFFER WARNING] LittleFS mount failed! Durable ingestion disabled; local sensing and alarms remain active.");
+    ESP_LOGE(BUFFER_TAG, "LittleFS mount failed; durable ingestion disabled");
   }
 
-  Serial.printf("[BUFFER INIT] Max RAM: %u | Max Flash: %u | Restored Items: %u\n",
-                m_maxRamItems, m_maxFlashItems, count());
+  ESP_LOGD(BUFFER_TAG, "Queue capacity configured; max_ram=%zu max_flash=%zu queued=%zu",
+           m_maxRamItems, m_maxFlashItems, count());
   return true;
 }
 
 bool OfflineBuffer::push(const String& packetJson, MessageType type, bool isPriority) {
   if (!m_flashAvailable || m_cutoverBlocked || packetJson.length() == 0) {
+    if (isPriority) {
+      static DiagnosticInterval<ARDUHAL_LOG_LEVEL_ERROR> blockedLog;
+      if (blockedLog.ready()) ESP_LOGE(BUFFER_TAG, "Priority packet retention blocked; storage=%u cutover_blocked=%u bytes=%zu",
+                                     static_cast<unsigned>(m_flashAvailable), static_cast<unsigned>(m_cutoverBlocked),
+                                     packetJson.length());
+    }
     return false;
   }
 
@@ -50,7 +59,13 @@ bool OfflineBuffer::push(const String& packetJson, MessageType type, bool isPrio
   if (maxItems == 0) return false;
   if (count() >= maxItems) {
     ++m_totalDropped;
-    Serial.println("[BUFFER FULL] Cannot retain new packet; existing unacknowledged events preserved.");
+    if (isPriority) {
+      static DiagnosticInterval<ARDUHAL_LOG_LEVEL_ERROR> fullPriorityLog;
+      if (fullPriorityLog.ready()) ESP_LOGE(BUFFER_TAG, "Queue full; priority packet could not be retained; dropped=%zu", m_totalDropped);
+    } else {
+      static DiagnosticInterval<ARDUHAL_LOG_LEVEL_WARN> fullLog;
+      if (fullLog.ready()) ESP_LOGW(BUFFER_TAG, "Queue full; routine packet rejected; dropped=%zu", m_totalDropped);
+    }
     return false;
   }
 
@@ -62,8 +77,6 @@ bool OfflineBuffer::push(const String& packetJson, MessageType type, bool isPrio
 
   if (isPriority) {
     m_priorityQueue.push_back(item);
-    Serial.printf("[BUFFER PRIORITY] Enqueued CRITICAL alert (Priority Count: %u)\n",
-                  m_priorityQueue.size());
   } else {
     m_standardQueue.push_back(item);
   }
@@ -163,8 +176,8 @@ void OfflineBuffer::evictOldestStandard() {
   if (!m_standardQueue.empty()) {
     m_standardQueue.erase(m_standardQueue.begin());
     m_totalDropped++;
-    Serial.printf("[BUFFER EVICT] Dropped oldest routine telemetry packet to preserve capacity (Total Dropped: %u)\n",
-                  m_totalDropped);
+    static DiagnosticInterval<ARDUHAL_LOG_LEVEL_WARN> evictionLog;
+    if (evictionLog.ready()) ESP_LOGW(BUFFER_TAG, "Oldest routine packet evicted; dropped=%zu", m_totalDropped);
   }
 }
 
@@ -187,7 +200,8 @@ bool OfflineBuffer::syncToFlash() {
   const char* backupPath = "/compallette_queue.bak";
   File f = LittleFS.open(tempPath, "w");
   if (!f) {
-    Serial.println("[BUFFER ERROR] Failed to open flash file for writing!");
+    static DiagnosticInterval<ARDUHAL_LOG_LEVEL_ERROR> openLog;
+    if (openLog.ready()) ESP_LOGE(BUFFER_TAG, "Could not open temporary queue snapshot");
     return false;
   }
 
@@ -208,19 +222,22 @@ bool OfflineBuffer::syncToFlash() {
   f.close();
   if (!writeOk) {
     LittleFS.remove(tempPath);
-    Serial.println("[BUFFER ERROR] Flash queue write was incomplete; retained previous durable snapshot.");
+    static DiagnosticInterval<ARDUHAL_LOG_LEVEL_ERROR> writeLog;
+    if (writeLog.ready()) ESP_LOGE(BUFFER_TAG, "Temporary queue snapshot write incomplete");
     return false;
   }
 
   if (LittleFS.exists(backupPath)) LittleFS.remove(backupPath);
   if (LittleFS.exists(BUFFER_FLASH_FILE) && !LittleFS.rename(BUFFER_FLASH_FILE, backupPath)) {
     LittleFS.remove(tempPath);
-    Serial.println("[BUFFER ERROR] Could not stage previous queue snapshot.");
+    static DiagnosticInterval<ARDUHAL_LOG_LEVEL_ERROR> stageLog;
+    if (stageLog.ready()) ESP_LOGE(BUFFER_TAG, "Could not stage previous queue snapshot");
     return false;
   }
   if (!LittleFS.rename(tempPath, BUFFER_FLASH_FILE)) {
     if (LittleFS.exists(backupPath)) LittleFS.rename(backupPath, BUFFER_FLASH_FILE);
-    Serial.println("[BUFFER ERROR] Could not commit queue snapshot; previous snapshot restored.");
+    static DiagnosticInterval<ARDUHAL_LOG_LEVEL_ERROR> commitLog;
+    if (commitLog.ready()) ESP_LOGE(BUFFER_TAG, "Queue snapshot commit failed; backup recovery unverified");
     return false;
   }
   if (LittleFS.exists(backupPath)) LittleFS.remove(backupPath);
@@ -244,12 +261,15 @@ void OfflineBuffer::loadFromFlash() {
 
   File f = LittleFS.open(BUFFER_FLASH_FILE, "r");
   if (!f) {
-    Serial.println("[BUFFER ERROR] Could not open flash file for reading.");
+    ESP_LOGE(BUFFER_TAG, "Could not open persisted queue snapshot");
     return;
   }
 
   size_t loadedPrio = 0;
   size_t loadedNorm = 0;
+  DiagnosticInterval<ARDUHAL_LOG_LEVEL_ERROR> corruptionLog;
+  DiagnosticInterval<ARDUHAL_LOG_LEVEL_ERROR> ownershipLog;
+  DiagnosticInterval<ARDUHAL_LOG_LEVEL_ERROR> invalidLog;
 
   while (f.available()) {
     String line = f.readStringUntil('\n');
@@ -263,7 +283,7 @@ void OfflineBuffer::loadFromFlash() {
 
     if (firstPipe == -1 || secondPipe == -1 || thirdPipe == -1) {
       m_cutoverBlocked = true;
-      Serial.println("[BUFFER BLOCKED] Corrupted stored record requires local review; snapshot preserved.");
+      if (corruptionLog.ready()) ESP_LOGE(BUFFER_TAG, "Corrupted queue record; snapshot preserved for local review");
       continue;
     }
 
@@ -276,7 +296,7 @@ void OfflineBuffer::loadFromFlash() {
     if (deserializeJson(stored, rawJson) || !DeviceTrust::ready()
         || String(stored["installation_id"] | "") != DeviceTrust::installation()) {
       m_cutoverBlocked = true;
-      Serial.println("[BUFFER BLOCKED] Queue belongs to an old/unknown installation. Explicit archive required.");
+      if (ownershipLog.ready()) ESP_LOGE(BUFFER_TAG, "Queue ownership could not be verified; explicit archive required");
     }
     MessageEnvelope env{};
     TelemetryData telem{};
@@ -287,13 +307,13 @@ void OfflineBuffer::loadFromFlash() {
         !deserializePacket(rawJson, env, telem, alert, heartbeat, legacy) ||
         env.msg_type != (MessageType)typeInt) {
       m_cutoverBlocked = true;
-      Serial.println("[BUFFER BLOCKED] Invalid persisted record requires local review; snapshot preserved.");
+      if (invalidLog.ready()) ESP_LOGE(BUFFER_TAG, "Invalid persisted queue record; snapshot preserved for local review");
       continue;
     }
 
     if (count() >= m_maxRamItems) {
       m_cutoverBlocked = true;
-      Serial.println("[BUFFER BLOCKED] Stored queue exceeds RAM capacity; snapshot preserved for local export.");
+      ESP_LOGE(BUFFER_TAG, "Stored queue exceeds RAM capacity; snapshot preserved for local export");
       break;
     }
     BufferedItem item;
@@ -313,6 +333,7 @@ void OfflineBuffer::loadFromFlash() {
   }
 
   f.close();
-  Serial.printf("[BUFFER RESTORED] Loaded %u priority alerts, %u standard packets from flash.\n",
-                loadedPrio, loadedNorm);
+  if (!m_cutoverBlocked) {
+    ESP_LOGI(BUFFER_TAG, "Queue restored from flash; priority=%zu routine=%zu", loadedPrio, loadedNorm);
+  }
 }

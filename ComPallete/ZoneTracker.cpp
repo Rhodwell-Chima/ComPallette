@@ -1,4 +1,7 @@
 #include "ZoneTracker.h"
+#include "Logging.h"
+
+static const char* const ZONE_TAG = "CP_ZONE";
 
 #define ZONE_DIRECT_EXPIRY_MS       20000   // 20s direct anchor evidence expiry
 #define ZONE_HANDOVER_EVAL_MS        1500   // 1.5s stable candidate observation window
@@ -55,11 +58,7 @@ void ZoneTracker::update() {
     if (now - _lastHeardMs >= ZONE_DIRECT_EXPIRY_MS) {
       _linkState = ZONE_LINK_LAST_KNOWN;
       _movementEvent = true;
-      Serial.println("\n--------------------------------------------------------------");
-      Serial.printf("[ZONE EXPIRED] Direct anchor beacon from %s timed out (> %u s)!\n",
-                    _nearestAnchorId, (unsigned)(ZONE_DIRECT_EXPIRY_MS / 1000));
-      Serial.printf("               Location degraded to LAST_KNOWN: %s\n", _currentZone);
-      Serial.println("--------------------------------------------------------------");
+      ESP_LOGW(ZONE_TAG, "Direct anchor expired; location=LAST_KNOWN");
     }
   } else if (_linkState == ZONE_LINK_TRANSITIONING) {
     // If handover candidate took too long to confirm, evaluate
@@ -77,17 +76,14 @@ void ZoneTracker::update() {
       _candidateNodeId = 0;
       _candidateFirstHeardMs = 0;
 
-      Serial.println("\n==============================================================");
-      Serial.printf("[ZONE HANDOVER COMPLETE] Transitioned into: %s\n", _currentZone);
-      Serial.printf("  |-- Direct Anchor : %s (Node: %u | RSSI: %d dBm)\n",
-                    _nearestAnchorId, _nearestAnchorNodeId, _rssi);
-      Serial.println("==============================================================");
+      ESP_LOGI(ZONE_TAG, "Direct anchor handover confirmed; location=CURRENT rssi_dbm=%d", _rssi);
     }
   } else if (_linkState == ZONE_LINK_LAST_KNOWN) {
     if (_lastHeardMs > 0 && (now - _lastHeardMs >= ZONE_COMPLETE_EXPIRY_MS)) {
       _linkState = ZONE_LINK_UNKNOWN;
       strncpy(_currentZone, "UNASSIGNED", sizeof(_currentZone) - 1);
       _movementEvent = true;
+      ESP_LOGW(ZONE_TAG, "Last-known location expired; location=UNKNOWN");
     }
   }
 }
@@ -122,7 +118,6 @@ void ZoneTracker::handleAnchorBeacon(
 
   // If no anchor currently associated or state is LAST_KNOWN / UNKNOWN:
   if (_linkState == ZONE_LINK_UNKNOWN || _linkState == ZONE_LINK_LAST_KNOWN) {
-    bool zoneChanged = (strncmp(_currentZone, zoneId, sizeof(_currentZone)) != 0);
     strncpy(_currentZone, zoneId, sizeof(_currentZone) - 1);
     _currentZone[sizeof(_currentZone) - 1] = '\0';
     if (anchorId && strlen(anchorId) > 0) {
@@ -136,11 +131,7 @@ void ZoneTracker::handleAnchorBeacon(
     _linkState = ZONE_LINK_CURRENT;
     _movementEvent = true;
 
-    Serial.println("\n==============================================================");
-    Serial.printf("[ZONE ACQUIRED] Direct stationary anchor acquired: %s\n", _nearestAnchorId);
-    Serial.printf("  |-- Physical Zone: %s (Changed: %s)\n", _currentZone, zoneChanged ? "YES" : "NO");
-    Serial.printf("  |-- Signal RSSI  : %d dBm (Direct 1-Hop)\n", _rssi);
-    Serial.println("==============================================================");
+    ESP_LOGI(ZONE_TAG, "Direct anchor acquired; location=CURRENT rssi_dbm=%d", _rssi);
     return;
   }
 
@@ -194,10 +185,7 @@ void ZoneTracker::handleAnchorBeacon(
       _candidateNodeId = 0;
       _candidateFirstHeardMs = 0;
 
-      Serial.println("\n==============================================================");
-      Serial.printf("[ZONE HANDOVER] Direct crossing detected into: %s\n", _currentZone);
-      Serial.printf("  |-- New Anchor : %s (RSSI: %d dBm)\n", _nearestAnchorId, _rssi);
-      Serial.println("==============================================================");
+      ESP_LOGI(ZONE_TAG, "Direct anchor crossing confirmed; location=CURRENT rssi_dbm=%d", _rssi);
     } else {
       // Start transition state
       _linkState = ZONE_LINK_TRANSITIONING;
@@ -233,7 +221,7 @@ void ZoneTracker::handleDirectDisconnect(uint32_t disconnectedNodeId) {
   if (_nearestAnchorNodeId != 0 && disconnectedNodeId == _nearestAnchorNodeId) {
     _linkState = ZONE_LINK_LAST_KNOWN;
     _movementEvent = true;
-    Serial.println("\n[ZONE DISCONNECT] Immediate link disconnection from active anchor!");
+    ESP_LOGW(ZONE_TAG, "Direct anchor disconnected; location=LAST_KNOWN");
   }
   if (_candidateNodeId != 0 && disconnectedNodeId == _candidateNodeId) {
     _candidateNodeId = 0;

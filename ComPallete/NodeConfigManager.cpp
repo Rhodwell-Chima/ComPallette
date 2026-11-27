@@ -2,6 +2,9 @@
 #include <esp_system.h>
 #include <esp_mac.h>
 #include <ArduinoJson.h>
+#include "Logging.h"
+
+static const char* const CONFIG_TAG = "CP_CONFIG";
 
 // Global configuration manager instance
 NodeConfigManager nodeConfigManager;
@@ -32,31 +35,40 @@ bool NodeConfigManager::begin() {
   _sequenceReservedThrough = persistedThrough;
 
   if (!_prefs.begin("compallette", false)) {
-    Serial.println("[NVS] Warning: Failed to open NVS namespace 'compallette'. Using factory defaults.");
+    ESP_LOGE(CONFIG_TAG, "Configuration NVS unavailable; loading defaults");
     load();
     return false;
   }
 
   const bool loaded = load();
-  if (!loaded) { _config.is_provisioned = false; _config.mesh_configured = false; }
+  if (!loaded) {
+    _config.is_provisioned = false;
+    _config.mesh_configured = false;
+    ESP_LOGW(CONFIG_TAG, "Configuration load failed; mesh and commissioning flags cleared");
+  } else {
+    ESP_LOGI(CONFIG_TAG, "Configuration loaded; role=%s", nodeRoleToString(_config.role));
+  }
   printConfig();
   return loaded;
 }
 
 uint32_t NodeConfigManager::nextSequence() {
   if (!_sequenceReady) {
-    Serial.println("[NVS] Sequence namespace unavailable; cannot guarantee unique event IDs.");
+    static DiagnosticInterval<ARDUHAL_LOG_LEVEL_ERROR> sequenceLog;
+    if (sequenceLog.ready()) ESP_LOGE(CONFIG_TAG, "Sequence NVS unavailable; event sequence allocation blocked");
     return 0;
   }
   if (_sequenceNext == 0 || _sequenceNext > _sequenceReservedThrough) {
     const uint32_t persistedThrough = _sequencePrefs.getULong("seq_hi", 0);
     const uint32_t reserveThrough = persistedThrough + 256;
     if (reserveThrough < persistedThrough || reserveThrough > 2147483647UL) {
-      Serial.println("[NVS] Sequence space exhausted; refusing to reuse event IDs.");
+      static DiagnosticInterval<ARDUHAL_LOG_LEVEL_ERROR> exhaustedLog;
+      if (exhaustedLog.ready()) ESP_LOGE(CONFIG_TAG, "Event sequence space exhausted");
       return 0;
     }
     if (_sequencePrefs.putULong("seq_hi", reserveThrough) == 0) {
-      Serial.println("[NVS] Failed to reserve event sequence range.");
+      static DiagnosticInterval<ARDUHAL_LOG_LEVEL_ERROR> reserveLog;
+      if (reserveLog.ready()) ESP_LOGE(CONFIG_TAG, "Event sequence range reservation failed");
       return 0;
     }
     _sequenceNext = persistedThrough + 1;
@@ -181,7 +193,7 @@ bool NodeConfigManager::load() {
   return true;
 }
 
-bool NodeConfigManager::save(const NodeConfig& cfg) {
+bool NodeConfigManager::save(const NodeConfig& cfg, bool localReport) {
   StaticJsonDocument<2048> record;
   record["schema"] = 2;
   record["mesh_ready"] = cfg.mesh_configured;
@@ -201,13 +213,18 @@ bool NodeConfigManager::save(const NodeConfig& cfg) {
   String encoded;
   if (record.overflowed() || !serializeJson(record, encoded)
       || _prefs.putString("config_v2", encoded) != encoded.length()) {
-    Serial.println("[NVS] Configuration write failed; previous settings retained.");
+    if (localReport) Serial.println("[NVS] Configuration write failed; previous settings retained.");
+    else ESP_LOGE(CONFIG_TAG, "Configuration write failed; current settings retained");
     return false;
   }
   _config = cfg;
 
-  Serial.println("\n[NVS] New node configuration committed to persistent flash.");
-  printConfig();
+  if (localReport) {
+    Serial.println("\n[NVS] New node configuration committed to persistent flash.");
+    printConfig();
+  } else {
+    ESP_LOGI(CONFIG_TAG, "Configuration committed to NVS");
+  }
   return true;
 }
 
@@ -231,9 +248,7 @@ bool NodeConfigManager::setAssignment(const char* deviceId, NodeRole role, const
   _config.co_warning_ppm = coWarn;
   _config.co_critical_ppm = coCrit;
 
-  Serial.printf("\n[NVS] Node commissioned successfully: ID=%s, Role=%s, Zone=%s\n",
-                _config.device_id, nodeRoleToString(_config.role),
-                (_config.role == ROLE_WEARABLE) ? "UNKNOWN" : _config.zone_id);
+  ESP_LOGI(CONFIG_TAG, "Commissioning assignment committed; role=%s", nodeRoleToString(_config.role));
   return true;
 }
 
@@ -248,19 +263,21 @@ void NodeConfigManager::clear() {
   Serial.println("\n[NVS] FACTORY RESET: All persistent parameters wiped. Node uncommissioned.");
 }
 
-void NodeConfigManager::enterSetupMode() {
+void NodeConfigManager::enterSetupMode(bool localReport) {
   NodeConfig setup = _config;
   setup.mesh_configured = false; setup.is_provisioned = false;
-  if (!save(setup)) return;
+  if (!save(setup, localReport)) return;
   if (_prefs.isKey("assignment") && !_prefs.remove("assignment")) {
-    Serial.println("[NVS] Cannot clear commissioning; setup mode refused.");
+    if (localReport) Serial.println("[NVS] Cannot clear commissioning; setup mode refused.");
+    else ESP_LOGE(CONFIG_TAG, "Could not clear saved commissioning assignment");
     return;
   }
   _config.is_provisioned = false;
   _config.mesh_configured = false;
   _prefs.putBool("mesh_ready", false);
   _prefs.putBool("prov", false);
-  Serial.println("\n[NVS] SETUP MODE: Node uncommissioned. Preserved current configuration for SoftAP.");
+  if (localReport) Serial.println("\n[NVS] SETUP MODE: Node uncommissioned. Preserved current configuration for SoftAP.");
+  else ESP_LOGI(CONFIG_TAG, "Commissioning cleared for setup mode");
 }
 
 bool NodeConfigManager::loadGatewayCredential(const char* credential) {

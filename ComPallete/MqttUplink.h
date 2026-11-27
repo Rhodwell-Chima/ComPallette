@@ -3,6 +3,7 @@
 #include <mqtt_client.h>
 #include <freertos/FreeRTOS.h>
 #include <freertos/queue.h>
+#include <atomic>
 #include <functional>
 #include "OfflineBuffer.h"
 
@@ -18,6 +19,9 @@ private:
   QueueHandle_t incoming = nullptr;
   String ca, identity, prefix, partialTopic, partialBody;
   volatile bool connected = false;
+  bool reportedConnected = false;
+  std::atomic<uint32_t> droppedIncoming{0};
+  std::atomic<uint32_t> tlsVerifyFlags{0};
   uint32_t lastPublish = 0;
   static void event(void* arg, esp_event_base_t base, int32_t id, void* data);
   void receive(esp_mqtt_event_handle_t event);

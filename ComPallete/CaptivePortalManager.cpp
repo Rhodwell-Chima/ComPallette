@@ -1,5 +1,8 @@
 #include "CaptivePortalManager.h"
+#include "Logging.h"
 #include <esp_system.h>
+
+static const char* const PORTAL_TAG = "CP_PORTAL";
 
 // Global instance
 CaptivePortalManager captivePortal;
@@ -38,18 +41,18 @@ bool CaptivePortalManager::begin() {
   IPAddress gateway(192, 168, 4, 1);
   IPAddress netMsk(255, 255, 255, 0);
   if (!WiFi.softAPConfig(apIP, gateway, netMsk)) {
-    Serial.println("  |-- [WARN] softAPConfig failed; using default AP IP.");
+    ESP_LOGW(PORTAL_TAG, "SoftAP address configuration failed; using framework defaults");
   }
 
   bool ok = WiFi.softAP(_apSsid, _apPassword, 1, 0, 4);
   if (!ok) {
-    Serial.println("  |-- [ERROR] WiFi.softAP() failed to start AP broadcast!");
+    ESP_LOGE(PORTAL_TAG, "SoftAP startup failed");
     return false;
   }
 
   // Start captive DNS server to redirect all requests to 192.168.4.1
   _dnsServer.setErrorReplyCode(DNSReplyCode::NoError);
-  _dnsServer.start(DNS_PORT, "*", apIP);
+  const bool dnsStarted = _dnsServer.start(DNS_PORT, "*", apIP);
 
   // Bind Web Server Routes
   _server.on("/", HTTP_GET, [this]() { handleRoot(); });
@@ -65,6 +68,8 @@ bool CaptivePortalManager::begin() {
   _server.begin();
   _active = true;
 
+  if (!dnsStarted) ESP_LOGW(PORTAL_TAG, "Captive DNS startup failed");
+  ESP_LOGI(PORTAL_TAG, "Captive portal active");
   printCredentials();
   Serial.printf("  |-- SoftAP IP      : %s\n", WiFi.softAPIP().toString().c_str());
   Serial.printf("  |-- SoftAP MAC     : %s\n", WiFi.softAPmacAddress().c_str());
@@ -111,7 +116,7 @@ void CaptivePortalManager::stop() {
   WiFi.softAPdisconnect(true);
   WiFi.mode(WIFI_OFF);
   _active = false;
-  Serial.println("[PORTAL] Captive portal stopped. SoftAP offline.");
+  ESP_LOGI(PORTAL_TAG, "Captive portal stopped");
 }
 
 void CaptivePortalManager::handleRoot() {

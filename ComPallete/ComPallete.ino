@@ -11,6 +11,16 @@
 #include "CaptivePortalManager.h"
 #include "ZoneTracker.h"
 #include "RadioDiagnostics.h"
+#include "Logging.h"
+
+static const char* const BOOT_TAG = "CP_BOOT";
+static const char* const MESH_TAG = "CP_MESH";
+static const char* const WIFI_TAG = "CP_WIFI";
+static const char* const PROTO_TAG = "CP_PROTO";
+static const char* const ALERT_TAG = "CP_ALERT";
+static const char* const PROV_TAG = "CP_PROV";
+static const char* const TRUST_TAG = "CP_TRUST";
+static const char* const ZONE_TAG = "CP_ZONE";
 
 // ============================================================================
 // COMPALLETTE - SUBTERRANEAN MESH MONITORING NODE FIRMWARE (Dynamic Provisioning)
@@ -84,8 +94,9 @@ void sendAlertEvent(AlertSeverity severity, const char* code, const char* detail
   String packet;
   if (serializeAlert(env, alert, packet)) {
     int burstCount = (severity == SEVERITY_CRITICAL) ? ALERT_BURST_COUNT : 1;
+    unsigned accepted = 0;
     for (int i = 0; i < burstCount; i++) {
-      mesh.sendBroadcast(packet);
+      if (mesh.sendBroadcast(packet)) ++accepted;
       if (i < burstCount - 1) {
         delay(20);
       }
@@ -95,14 +106,15 @@ void sendAlertEvent(AlertSeverity severity, const char* code, const char* detail
       gatewayManager.handleIncomingMeshPacket(mesh.getNodeId(), packet);
     }
 
-    Serial.println("\n**************************************************************");
-    Serial.printf("[ALERT TX] Dispatched %s emergency event!\n", alertSeverityToString(severity));
-    Serial.printf("   |-- Origin  : %s (%s) @ %s (Anchor: %s | State: %s)\n",
-                  env.sender_id, env.role, env.zone_id, env.anchor_id, env.link_state);
-    Serial.printf("   |-- Code    : %s\n", alert.alert_code);
-    Serial.printf("   |-- Value   : %.2f\n", alert.trigger_value);
-    Serial.printf("   |-- Details : %s\n", alert.details);
-    Serial.println("**************************************************************");
+    if (accepted == 0) {
+      ESP_LOGE(ALERT_TAG, "Mesh rejected all %d alert submissions; severity=%u",
+               burstCount, static_cast<unsigned>(severity));
+    } else {
+      ESP_LOGW(ALERT_TAG, "Mesh accepted %u of %d alert submissions; severity=%u",
+               accepted, burstCount, static_cast<unsigned>(severity));
+    }
+  } else {
+    ESP_LOGE(ALERT_TAG, "Alert serialization failed");
   }
 }
 
@@ -134,35 +146,35 @@ void sendLocalAckEvent(uint8_t clearedAlarms, uint32_t heldMs) {
 
   String packet;
   if (serializeLocalAck(env, ack, packet)) {
-    mesh.sendBroadcast(packet);
+    const bool submitted = mesh.sendBroadcast(packet);
     if (nodeConfigManager.getRole() == ROLE_GATEWAY) {
       gatewayManager.handleIncomingMeshPacket(mesh.getNodeId(), packet);
     }
-    Serial.println("\n**************************************************************");
-    Serial.printf("[LOCAL ACK TX] Acknowledge hold (%u ms) transmitted (Cleared: 0x%02X)\n", heldMs, clearedAlarms);
-    Serial.println("**************************************************************");
+    if (submitted) {
+      ESP_LOGI(ALERT_TAG, "Local alarm clear submitted; hold_ms=%" PRIu32 " mask=0x%02X",
+               heldMs, static_cast<unsigned>(clearedAlarms));
+    } else {
+      ESP_LOGW(ALERT_TAG, "Mesh rejected local alarm clear submission");
+    }
   }
 }
 
 // ----------------------------------------------------------------------------
 // NETWORK EVENT CALLBACKS
 // ----------------------------------------------------------------------------
-void newConnectionCallback(uint32_t nodeId) {
-  Serial.println("\n==============================================");
-  Serial.printf("[ALERT] New device joined the mesh network! Node ID: %u\n", nodeId);
-  Serial.println("==============================================");
+void newConnectionCallback(uint32_t) {
+  static DiagnosticInterval<ARDUHAL_LOG_LEVEL_INFO> peerLog;
+  if (peerLog.ready()) ESP_LOGI(MESH_TAG, "Peer connected");
 }
 
 void changedConnectionCallback() {
   SimpleList<uint32_t> nodeList = mesh.getNodeList();
   int currentNodeCount = nodeList.size();
 
-  Serial.println("\n----------------------------------------------");
-  Serial.println("[NETWORK UPDATE] Mesh layout/topology changed!");
-  Serial.printf("--> Total active nodes in tunnel network: %d\n", currentNodeCount + 1);
+  static DiagnosticInterval<ARDUHAL_LOG_LEVEL_DEBUG> topologyLog;
+  if (topologyLog.ready()) ESP_LOGD(MESH_TAG, "Topology callback; peers=%d", currentNodeCount);
 
   if (currentNodeCount < lastNodeCount) {
-    Serial.println("[ALERT] A node has DISCONNECTED or dropped out of range!");
     if (nodeConfigManager.getRole() == ROLE_WEARABLE && zoneTracker.hasAnchor()) {
       uint32_t anchorNode = zoneTracker.getNearestAnchorNodeId();
       bool anchorStillPresent = false;
@@ -176,8 +188,6 @@ void changedConnectionCallback() {
         zoneTracker.handleDirectDisconnect(anchorNode);
       }
     }
-  } else if (currentNodeCount > lastNodeCount) {
-    Serial.println("[INFO] Mesh layout expanded with a new link.");
   }
 
   lastNodeCount = currentNodeCount;
@@ -188,17 +198,19 @@ void changedConnectionCallback() {
 void gatewayWiFiEvent(WiFiEvent_t event, WiFiEventInfo_t info) {
   switch (event) {
     case ARDUINO_EVENT_WIFI_STA_CONNECTED:
-      Serial.println("[GW RADIO] Router association accepted; waiting for DHCP.");
+      ESP_LOGD(WIFI_TAG, "Router association accepted; waiting for DHCP");
       break;
     case ARDUINO_EVENT_WIFI_STA_GOT_IP:
-      Serial.printf("[GW RADIO] Router DHCP complete: %s | Channel: %u\n",
-                    WiFi.localIP().toString().c_str(), WiFi.channel());
+      ESP_LOGI(WIFI_TAG, "Station DHCP completed; channel=%u", static_cast<unsigned>(WiFi.channel()));
       break;
-    case ARDUINO_EVENT_WIFI_STA_DISCONNECTED:
-      Serial.printf("[GW RADIO] Router station disconnected (reason %d). "
-                    "painlessMesh will manage the retry.\n",
-                    info.wifi_sta_disconnected.reason);
+    case ARDUINO_EVENT_WIFI_STA_DISCONNECTED: {
+      static DiagnosticInterval<ARDUHAL_LOG_LEVEL_WARN> disconnectLog;
+      if (disconnectLog.ready()) {
+        ESP_LOGW(WIFI_TAG, "Station disconnected; reason=%u",
+                 static_cast<unsigned>(info.wifi_sta_disconnected.reason));
+      }
       break;
+    }
     default:
       break;
   }
@@ -246,7 +258,8 @@ void receivedCallback(uint32_t from, String &msg) {
 
   bool ok = deserializePacket(msg, env, telem, alert, hb, isLegacy);
   if (!ok) {
-    Serial.printf("\n[ERROR] Malformed or unparseable packet from Node %u\n", from);
+    static DiagnosticInterval<ARDUHAL_LOG_LEVEL_WARN> parseLog;
+    if (parseLog.ready()) ESP_LOGW(PROTO_TAG, "Malformed mesh packet rejected; bytes=%zu", msg.length());
     return;
   }
 
@@ -265,37 +278,35 @@ void receivedCallback(uint32_t from, String &msg) {
 
   // Handle Option 1: Downlink Provisioning Assignment from Gateway
   if (env.msg_type == MSG_PROV_ASSIGN) {
-    Serial.println("[PROV] Legacy uncorrelated assignment rejected; use platform commands.");
+    static DiagnosticInterval<ARDUHAL_LOG_LEVEL_WARN> assignmentLog;
+    if (assignmentLog.ready()) ESP_LOGW(PROV_TAG, "Legacy uncorrelated assignment rejected");
     return;
   }
 
   // Handle Standard v1/v2 protocol packets
   switch (env.msg_type) {
     case MSG_TELEMETRY:
-      Serial.printf("\n[TELEMETRY v%u | Seq #%u] %s (%s) @ %s | T: %.1f C | H: %.1f %% | P: %.0f Pa | Batt: %.2f V\n",
-                    env.version, env.seq, env.sender_id, env.role, env.zone_id, telem.temp_c, telem.humidity_pct, telem.pressure_pa, telem.battery_v);
+    case MSG_HEARTBEAT: {
+      static DiagnosticInterval<ARDUHAL_LOG_LEVEL_DEBUG> receiveLog;
+      if (receiveLog.ready()) {
+        ESP_LOGD(PROTO_TAG, "Routine packet parsed; type=%u version=%u seq=%" PRIu32 " bytes=%zu",
+                 static_cast<unsigned>(env.msg_type), static_cast<unsigned>(env.version),
+                 env.seq, msg.length());
+      }
       break;
+    }
 
-    case MSG_ALERT:
-      Serial.println("\n**************************************************************");
-      Serial.printf(" [EMERGENCY ALERT] Severity: %s | Origin: %s @ %s\n",
-                    alertSeverityToString(alert.severity), env.sender_id, env.zone_id);
-      Serial.printf("   |-- Code    : %s\n", alert.alert_code);
-      Serial.printf("   |-- Details : %s\n", alert.details);
-      Serial.println("**************************************************************");
+    case MSG_ALERT: {
+      static DiagnosticInterval<ARDUHAL_LOG_LEVEL_WARN, 1000> alertLog;
+      if (alertLog.ready()) ESP_LOGW(ALERT_TAG, "Mesh alert parsed; severity=%u", static_cast<unsigned>(alert.severity));
       break;
+    }
 
-    case MSG_LOCAL_ACK:
-      Serial.println("\n**************************************************************");
-      Serial.printf(" [LOCAL ALARM ACKNOWLEDGED] Device: %s @ %s\n", env.sender_id, env.zone_id);
-      Serial.println("**************************************************************");
+    case MSG_LOCAL_ACK: {
+      static DiagnosticInterval<ARDUHAL_LOG_LEVEL_INFO> ackLog;
+      if (ackLog.ready()) ESP_LOGI(ALERT_TAG, "Mesh local alarm clear parsed");
       break;
-
-    case MSG_HEARTBEAT:
-      Serial.printf("\n[HEARTBEAT] Node: %s (%s) | Free Heap: %u B | Peers: %d\n",
-                    env.sender_id, env.role, hb.free_heap, hb.mesh_node_count);
-      break;
-
+    }
     default:
       break;
   }
@@ -368,10 +379,9 @@ void sendTelemetryTask() {
   String packet;
   if (serializeTelemetry(env, data, packet)) {
     mesh.sendBroadcast(packet);
-    Serial.printf("[TX TELEM v%u #%u] %s @ %s (%s) | T: %.1f C | H: %.1f %% | P: %.0f Pa | Gas: %.0f Ohm | Batt: %.2f V (~%.0f%%)\n",
-                  env.version, env.seq, env.sender_id, env.zone_id, env.link_state,
-                  data.temp_c, data.humidity_pct, data.pressure_pa, data.gas_resistance_ohm,
-                  data.battery_v, data.battery_pct);
+    static DiagnosticInterval<ARDUHAL_LOG_LEVEL_DEBUG> telemetryLog;
+    if (telemetryLog.ready()) ESP_LOGD(PROTO_TAG, "Telemetry broadcast requested; seq=%" PRIu32 " bytes=%zu",
+                                      env.seq, packet.length());
 
     if (nodeConfigManager.getRole() == ROLE_GATEWAY) {
       gatewayManager.handleIncomingMeshPacket(mesh.getNodeId(), packet);
@@ -402,8 +412,9 @@ void sendHeartbeatTask() {
   String packet;
   if (serializeHeartbeat(env, hb, packet)) {
     mesh.sendBroadcast(packet);
-    Serial.printf("\n[TX HEARTBEAT #%u] %s (%s) | Free Heap: %u B | Peers: %d\n",
-                  env.seq, env.sender_id, env.role, hb.free_heap, hb.mesh_node_count);
+    static DiagnosticInterval<ARDUHAL_LOG_LEVEL_DEBUG> heartbeatLog;
+    if (heartbeatLog.ready()) ESP_LOGD(PROTO_TAG, "Heartbeat broadcast requested; seq=%" PRIu32 " bytes=%zu",
+                                      env.seq, packet.length());
 
     if (nodeConfigManager.getRole() == ROLE_GATEWAY) {
       gatewayManager.handleIncomingMeshPacket(mesh.getNodeId(), packet);
@@ -441,7 +452,8 @@ void sendProvRequestTask() {
   if (serializeProvRequest(env, req, packet)) {
     if (nodeConfigManager.getRole() == ROLE_GATEWAY) gatewayManager.handleIncomingMeshPacket(mesh.getNodeId(), packet);
     else mesh.sendBroadcast(packet);
-    Serial.printf("\n[PROV TX BEACON] Emitted enrollment announcement for Chip #%s over mesh\n", req.chip_id);
+    ESP_LOGD(PROV_TAG, "Enrollment announcement passed to %s; bytes=%zu",
+             nodeConfigManager.getRole() == ROLE_GATEWAY ? "local gateway" : "mesh", packet.length());
   }
 }
 
@@ -608,8 +620,13 @@ void runWiFiScan() {
 }
 
 void printBootDiagnostics() {
-  Serial.printf("[BOOT] ESP reset reason code: %d | millis() reset to 0\n",
-                static_cast<int>(esp_reset_reason()));
+  const esp_reset_reason_t reason = esp_reset_reason();
+  if (reason == ESP_RST_INT_WDT || reason == ESP_RST_TASK_WDT ||
+      reason == ESP_RST_WDT || reason == ESP_RST_BROWNOUT) {
+    ESP_LOGW(BOOT_TAG, "Restart followed a watchdog or brownout reset; reason=%d", static_cast<int>(reason));
+  } else {
+    ESP_LOGI(BOOT_TAG, "Firmware starting; reset_reason=%d", static_cast<int>(reason));
+  }
 }
 
 void handleSerialCLI() {
@@ -632,7 +649,7 @@ void handleSerialCLI() {
         printStatusDashboard();
       } else if (strcmp(cmd, "setup") == 0) {
         Serial.println("\n[CLI] Entering SoftAP Setup Mode (Captive Portal)...");
-        nodeConfigManager.enterSetupMode();
+        nodeConfigManager.enterSetupMode(true);
         delay(200);
         ESP.restart();
       } else if (strcmp(cmd, "portal") == 0 || strcmp(cmd, "credentials") == 0) {
@@ -646,7 +663,7 @@ void handleSerialCLI() {
         NodeConfig cfg = nodeConfigManager.get();
         cfg.mesh_configured = true;
         cfg.is_provisioned = cfg.role == ROLE_GATEWAY;
-        nodeConfigManager.save(cfg);
+        nodeConfigManager.save(cfg, true);
         delay(200);
         ESP.restart();
       } else if (strcmp(cmd, "scan") == 0) {
@@ -657,7 +674,7 @@ void handleSerialCLI() {
         if (r >= 0 && r <= 2) {
           NodeConfig cfg = nodeConfigManager.get();
           cfg.role = (NodeRole)r;
-          if (!nodeConfigManager.save(cfg)) return;
+          if (!nodeConfigManager.save(cfg, true)) return;
           Serial.printf("[CLI] Node role updated to: %s\n", nodeRoleToString(cfg.role));
         } else {
           Serial.println("[CLI ERROR] Invalid role. Use: 0 (Wearable), 1 (Anchor), 2 (Gateway)");
@@ -668,7 +685,7 @@ void handleSerialCLI() {
         if (strlen(newId) > 0) {
           NodeConfig cfg = nodeConfigManager.get();
           strncpy(cfg.device_id, newId, sizeof(cfg.device_id) - 1);
-          if (!nodeConfigManager.save(cfg)) return;
+          if (!nodeConfigManager.save(cfg, true)) return;
           Serial.printf("[CLI] Device ID updated to: %s\n", cfg.device_id);
         }
       } else if (strncmp(cmd, "zone", 4) == 0) {
@@ -703,7 +720,7 @@ void handleSerialCLI() {
           } else {
             NodeConfig cfg = nodeConfigManager.get();
             strncpy(cfg.zone_id, newZone, sizeof(cfg.zone_id) - 1);
-            if (!nodeConfigManager.save(cfg)) return;
+            if (!nodeConfigManager.save(cfg, true)) return;
             Serial.printf("[CLI] Stationary node zone updated to: %s\n", cfg.zone_id);
           }
         }
@@ -727,7 +744,7 @@ void handleSerialCLI() {
         char* host = cmd + 5;
         while (*host == ' ') host++;
         if (strlen(host) > 0) {
-          IPAddress ip = gatewayManager.resolveMdns(host);
+          IPAddress ip = gatewayManager.resolveMdns(host, true);
           if ((uint32_t)ip != 0) {
             Serial.printf("[CLI] mDNS Resolution: '%s' -> %s\n", host, ip.toString().c_str());
           } else {
@@ -770,7 +787,7 @@ void handleSerialCLI() {
         if (strlen(newApi) > 0) {
           NodeConfig cfg = nodeConfigManager.get();
           strncpy(cfg.backend_url, newApi, sizeof(cfg.backend_url) - 1);
-          if (!nodeConfigManager.save(cfg)) return;
+          if (!nodeConfigManager.save(cfg, true)) return;
           Serial.printf("[CLI] Backend REST URL updated to: %s\n", cfg.backend_url);
         } else {
           Serial.printf("[CLI] Current Backend URL: %s\n", nodeConfigManager.getBackendUrl());
@@ -785,7 +802,7 @@ void handleSerialCLI() {
           if (strlen(newKey) >= 32) {
             NodeConfig cfg = nodeConfigManager.get();
             strncpy(cfg.backend_api_key, newKey, sizeof(cfg.backend_api_key) - 1);
-            if (!nodeConfigManager.save(cfg)) return;
+            if (!nodeConfigManager.save(cfg, true)) return;
             Serial.printf("[CLI] Gateway API Key updated (length %u): %s\n", (unsigned)strlen(cfg.backend_api_key), cfg.backend_api_key);
           } else {
             Serial.printf("[CLI ERROR] API key must be at least 32 characters (got %u).\n", (unsigned)strlen(newKey));
@@ -814,7 +831,7 @@ void handleSerialCLI() {
           NodeConfig cfg = nodeConfigManager.get();
           strncpy(cfg.uplink_ssid, ssidBuf, sizeof(cfg.uplink_ssid) - 1);
           strncpy(cfg.uplink_password, passBuf, sizeof(cfg.uplink_password) - 1);
-          if (!nodeConfigManager.save(cfg)) return;
+          if (!nodeConfigManager.save(cfg, true)) return;
           Serial.printf("[CLI] Uplink Wi-Fi credentials updated: SSID='%s'\n", cfg.uplink_ssid);
         } else {
           Serial.printf("[CLI] Uplink Wi-Fi: SSID='%s'\n", nodeConfigManager.getUplinkSsid());
@@ -915,43 +932,33 @@ void setup() {
   if (digitalRead(PIN_BOOT_BUTTON) == LOW && nodeConfigManager.isProvisioned()) {
     Serial.println("\n[SETUP] Onboard BOOT button (GPIO 0) held during startup!");
     Serial.println("[SETUP] Forcing direct entry into SoftAP Setup Mode (Captive Portal)...");
-    nodeConfigManager.enterSetupMode();
+    nodeConfigManager.enterSetupMode(true);
   }
 
   // 2. Initialize Hardware Abstraction Layer (MQ-7, MPU6050, Battery ADC)
   sensorHAL.begin();
   if (!DeviceTrust::begin()) {
-    Serial.println("[TRUST WARNING] Local enrollment trust missing; remote commands and operational traffic disabled.");
+    ESP_LOGE(TRUST_TAG, "Local enrollment trust unavailable; remote commands and operational traffic disabled");
   } else {
-    Serial.printf("[TRUST] Local enrollment trust verified. Installation: %s | Hardware: %s\n",
-                  DeviceTrust::installation(), nodeConfigManager.getChipId());
+    ESP_LOGI(TRUST_TAG, "Local enrollment trust verified");
   }
 
   // 3. Operational Mode Dispatch
   if (!nodeConfigManager.meshConfigured()) {
     // MODE: SOFTAP CAPTIVE PORTAL COMMISSIONING
     // Radio is dedicated solely to SoftAP. Mesh is halted to prevent Wi-Fi channel/AP collision!
-    Serial.println("\n[MODE] ======================================================================");
-    Serial.println("[MODE] >>> NODE UNCOMMISSIONED: Entering SoftAP Setup Mode (Captive Portal) <<<");
-    Serial.println("[MODE] Mesh radio paused to guarantee 100% stable SoftAP commissioning.");
-    Serial.println("[MODE] ======================================================================");
+    ESP_LOGI(BOOT_TAG, "Entering captive portal mode");
     captivePortal.begin();
   } else {
     // MODE: PRODUCTION WIRELESS MESH
-    Serial.println("\n[MODE] ======================================================================");
-    Serial.println("[MODE] >>> NODE COMMISSIONED: Entering Production Mesh Mode <<<");
-    Serial.printf(" [MODE] Role: %s | Zone: %s | ID: %s\n",
-                  nodeRoleToString(nodeConfigManager.getRole()),
-                  (nodeConfigManager.getRole() == ROLE_WEARABLE) ? zoneTracker.getCurrentZone() : nodeConfigManager.getZoneId(),
-                  nodeConfigManager.getDeviceId());
-    Serial.println("[MODE] ======================================================================");
+    ESP_LOGI(BOOT_TAG, "Entering production mesh mode; role=%s", nodeRoleToString(nodeConfigManager.getRole()));
 
     // painlessMesh 1.5.7 signature is (ssid, password, scheduler, port,
     // connectMode, channel). Keep the TCP port and radio channel explicit.
     uint8_t meshChannel = nodeConfigManager.getMeshChannel();
     if (meshChannel < 1 || meshChannel > 13) {
-      Serial.printf("[MESH CONFIG WARNING] Invalid commissioned channel %u; using default channel %u.\n",
-                    meshChannel, MESH_CHANNEL);
+      ESP_LOGW(MESH_TAG, "Invalid commissioned channel %u; using default %u",
+               static_cast<unsigned>(meshChannel), static_cast<unsigned>(MESH_CHANNEL));
       meshChannel = MESH_CHANNEL;
     }
     mesh.setDebugMsgTypes(ERROR | STARTUP);
@@ -1000,11 +1007,9 @@ void setup() {
           handlePlatformCommand(downlinkMsg, [](const String& response) { gatewayManager.handleIncomingMeshPacket(0, response); });
           return;
         }
-        Serial.println("\n**************************************************************");
-        Serial.println("[DOWNLINK BROADCAST] Re-broadcasting surface command to mesh!");
-        Serial.printf("   |-- Payload: %s\n", downlinkMsg.c_str());
-        Serial.println("**************************************************************");
         mesh.sendBroadcast(downlinkMsg);
+        static DiagnosticInterval<ARDUHAL_LOG_LEVEL_DEBUG> downlinkLog;
+        if (downlinkLog.ready()) ESP_LOGD(MESH_TAG, "Downlink broadcast requested; bytes=%zu", downlinkMsg.length());
       });
 
       gatewayManager.begin(
@@ -1017,8 +1022,8 @@ void setup() {
       );
     }
 
-    Serial.printf("[INIT] Mesh online. Node ID: %u | TCP port: %u | Radio channel: %u\n",
-                  mesh.getNodeId(), MESH_PORT, meshChannel);
+    ESP_LOGI(MESH_TAG, "Mesh startup configured; port=%u channel=%u",
+             static_cast<unsigned>(MESH_PORT), static_cast<unsigned>(meshChannel));
   }
 }
 
@@ -1056,7 +1061,8 @@ void loop() {
 
   // Immediate movement event check (emits boundary crossing updates promptly)
   if (nodeConfigManager.getRole() == ROLE_WEARABLE && zoneTracker.consumeMovementEvent()) {
-    Serial.println("\n[ZONE TRACKER] Boundary crossing detected! Emitting immediate telemetry...");
+    static DiagnosticInterval<ARDUHAL_LOG_LEVEL_DEBUG> movementLog;
+    if (movementLog.ready()) ESP_LOGD(ZONE_TAG, "Location evidence changed; immediate telemetry requested");
     sendTelemetryTask();
   }
 
@@ -1096,7 +1102,7 @@ void loop() {
         digitalWrite(PIN_BUZZER, LOW);
         delay(70);
       }
-      nodeConfigManager.enterSetupMode();
+      nodeConfigManager.enterSetupMode(true);
 
       // Wait for user to physically release the BOOT button before restarting
       Serial.println("[SETUP] Waiting for BOOT button release...");

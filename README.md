@@ -131,14 +131,14 @@ From the repository root (adjust COM port for your OS):
 
 **Windows**:
 ```powershell
-& "C:\Users\innovation_hub\AppData\Local\Programs\arduino-ide\resources\app\lib\backend\resources\arduino-cli.exe" compile --fqbn esp32:esp32:adafruit_feather_esp32s3 ComPallete/ComPallete.ino
-& "C:\Users\innovation_hub\AppData\Local\Programs\arduino-ide\resources\app\lib\backend\resources\arduino-cli.exe" upload -p COM3 --fqbn esp32:esp32:adafruit_feather_esp32s3 ComPallete/ComPallete.ino
+& "C:\Users\innovation_hub\AppData\Local\Programs\arduino-ide\resources\app\lib\backend\resources\arduino-cli.exe" compile --fqbn esp32:esp32:adafruit_feather_esp32s3:DebugLevel=info ComPallete/ComPallete.ino
+& "C:\Users\innovation_hub\AppData\Local\Programs\arduino-ide\resources\app\lib\backend\resources\arduino-cli.exe" upload -p COM3 --fqbn esp32:esp32:adafruit_feather_esp32s3:DebugLevel=info ComPallete/ComPallete.ino
 ```
 
 **Linux / macOS**:
 ```bash
-arduino-cli compile --fqbn esp32:esp32:adafruit_feather_esp32s3 ComPallete/ComPallete.ino
-arduino-cli upload -p /dev/ttyACM0 --fqbn esp32:esp32:adafruit_feather_esp32s3 ComPallete/ComPallete.ino
+arduino-cli compile --fqbn esp32:esp32:adafruit_feather_esp32s3:DebugLevel=info ComPallete/ComPallete.ino
+arduino-cli upload -p /dev/ttyACM0 --fqbn esp32:esp32:adafruit_feather_esp32s3:DebugLevel=info ComPallete/ComPallete.ino
 ```
 
 ### Flashing via Arduino IDE
@@ -146,7 +146,10 @@ arduino-cli upload -p /dev/ttyACM0 --fqbn esp32:esp32:adafruit_feather_esp32s3 C
 2. Under **Tools > Board**, select **Adafruit Feather ESP32-S3 2MB PSRAM** (or `ESP32S3 Dev Module`).
 3. Set **USB CDC On Boot**: `Enabled` (required for native USB serial output).
 4. Set **Partition Scheme**: `Huge APP (3MB No OTA/1MB SPIFFS)` or `Minimal SPIFFS (1.9MB APP with OTA)`.
-5. Select the COM / serial port and click **Upload**.
+5. Set **Core Debug Level** to **Info** for production.
+6. Select the COM / serial port and click **Upload**.
+
+See [Firmware logging](docs/firmware-logging.md) for board-specific output routing, build levels, and verification.
 
 ---
 
@@ -283,7 +286,7 @@ npm test
 
 ### Firmware Compilation Check
 ```bash
-arduino-cli compile --fqbn esp32:esp32:adafruit_feather_esp32s3 ComPallete/ComPallete.ino
+arduino-cli compile --fqbn esp32:esp32:adafruit_feather_esp32s3:DebugLevel=info ComPallete/ComPallete.ino
 ```
 *Expected*: Exit code 0, 0 compilation errors.
 

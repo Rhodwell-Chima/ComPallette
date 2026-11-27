@@ -1,5 +1,11 @@
 #include "SensorHAL.h"
+#include "Logging.h"
 #include <math.h>
+
+static const char* const SENSOR_TAG = "CP_SENSOR";
+static const char* const IMU_TAG = "CP_IMU";
+static const char* const POWER_TAG = "CP_POWER";
+static const char* const ALERT_TAG = "CP_ALERT";
 
 // Global HAL singleton instance
 SensorHAL sensorHAL;
@@ -102,7 +108,8 @@ bool SensorHAL::begin() {
   analogSetPinAttenuation(PIN_BATTERY_ADC, ADC_11db);
 #endif
 
-  Serial.println("[HAL] Initializing Hardware Abstraction Layer...");
+  ESP_LOGI(SENSOR_TAG, "Initializing hardware; profile=%d simulated=%u",
+           ACTIVE_HARDWARE_PROFILE, static_cast<unsigned>(SIMULATE_SENSORS));
 
   // 3. Initialize I2C Bus with Safe Timeout
   Wire.begin(PIN_I2C_SDA, PIN_I2C_SCL);
@@ -118,7 +125,7 @@ bool SensorHAL::begin() {
     if (testVolt >= 2.0f && testVolt <= 5.0f) {
       _batteryAvailable = true;
       _batteryGaugeType = 0; // Divider
-      Serial.printf("[HAL] Battery divider active on GPIO %d (Calibrated: %.2f V)\n", PIN_BATTERY_ADC, testVolt);
+      ESP_LOGI(POWER_TAG, "Battery divider available; gpio=%d", PIN_BATTERY_ADC);
     } else {
       _batteryAvailable = false;
       _batteryGaugeType = 255;
@@ -126,7 +133,7 @@ bool SensorHAL::begin() {
 #else
     _batteryAvailable = false;
     _batteryGaugeType = 255;
-    Serial.println("[HAL] Battery gauge missing or failed; battery status reported as unavailable.");
+    ESP_LOGW(POWER_TAG, "Battery gauge unavailable");
 #endif
   }
 
@@ -139,7 +146,7 @@ bool SensorHAL::begin() {
     _bmeAvailable = initBME688();
   } else {
     _bmeAvailable = false;
-    Serial.println("[HAL] NOTICE: BME688 environmental sensor not found on I2C bus.");
+    ESP_LOGW(SENSOR_TAG, "BME688 unavailable on I2C bus");
   }
 
   // 6. Probe MPU6050 IMU
@@ -151,7 +158,7 @@ bool SensorHAL::begin() {
     _mpuAvailable = initMPU6050();
   } else {
     _mpuAvailable = false;
-    Serial.println("[HAL] NOTICE: MPU6050 IMU not found on I2C bus.");
+    ESP_LOGW(IMU_TAG, "MPU6050 unavailable on I2C bus");
   }
 
   // 7. Probe Legacy MQ Gas Sensor if on analog profile
@@ -159,7 +166,7 @@ bool SensorHAL::begin() {
   int mqRaw = analogRead(PIN_GAS_ANALOG);
   if (mqRaw > 30 && mqRaw < 4080) {
     _mqAvailable = true;
-    Serial.printf("[HAL] MQ-7 gas sensor detected on GPIO %d (Raw ADC: %d)\n", PIN_GAS_ANALOG, mqRaw);
+    ESP_LOGI(SENSOR_TAG, "MQ-7 analog input available; gpio=%d", PIN_GAS_ANALOG);
   } else {
     _mqAvailable = false;
   }
@@ -193,14 +200,14 @@ bool SensorHAL::initBatteryGauge() {
   if (probeI2CDevice(MAX17048_I2C_ADDR)) {
     _batteryGaugeType = 1; // MAX17048
     _gaugeI2cAddress = MAX17048_I2C_ADDR;
-    Serial.println("[HAL] MAX17048 I2C fuel gauge detected at 0x36.");
+    ESP_LOGI(POWER_TAG, "MAX17048 fuel gauge detected");
     return true;
   }
   // Check LC709203F at 0x0B
   if (probeI2CDevice(LC709203F_I2C_ADDR)) {
     _batteryGaugeType = 2; // LC709203F
     _gaugeI2cAddress = LC709203F_I2C_ADDR;
-    Serial.println("[HAL] LC709203F I2C fuel gauge detected at 0x0B.");
+    ESP_LOGI(POWER_TAG, "LC709203F fuel gauge detected");
     return true;
   }
   return false;
@@ -252,7 +259,7 @@ bool SensorHAL::initBME688() {
   if (Wire.requestFrom(_bmeI2cAddress, (uint8_t)1) < 1) return false;
   uint8_t chipId = Wire.read();
   if (chipId != 0x61) {
-    Serial.printf("[HAL] BME688 chip ID mismatch: 0x%02X (expected 0x61)\n", chipId);
+    ESP_LOGW(SENSOR_TAG, "BME688 chip ID mismatch; id=0x%02X", static_cast<unsigned>(chipId));
     return false;
   }
 
@@ -300,7 +307,7 @@ bool SensorHAL::initBME688() {
   Wire.write(0x20);
   Wire.endTransmission();
 
-  Serial.printf("[HAL] BME688 environmental sensor initialized at I2C 0x%02X\n", _bmeI2cAddress);
+  ESP_LOGI(SENSOR_TAG, "BME688 initialized; i2c=0x%02X", static_cast<unsigned>(_bmeI2cAddress));
   return true;
 }
 
@@ -385,7 +392,7 @@ bool SensorHAL::initMPU6050() {
   if (!Wire.available()) return false;
   uint8_t whoAmI = Wire.read();
   if (whoAmI != 0x68 && whoAmI != 0x69 && whoAmI != 0x70) {
-    Serial.printf("[HAL] MPU6050 WHO_AM_I mismatch: 0x%02X\n", whoAmI);
+    ESP_LOGW(IMU_TAG, "MPU6050 identity mismatch; id=0x%02X", static_cast<unsigned>(whoAmI));
     return false;
   }
 
@@ -399,7 +406,7 @@ bool SensorHAL::initMPU6050() {
   Wire.write(0x08); // +/- 4g (8192 LSB/g)
   if (Wire.endTransmission() != 0) return false;
 
-  Serial.printf("[HAL] MPU6050 IMU initialized at I2C 0x%02X (+/-4g)\n", _mpuI2cAddress);
+  ESP_LOGI(IMU_TAG, "MPU6050 initialized; i2c=0x%02X range_g=4", static_cast<unsigned>(_mpuI2cAddress));
   return true;
 }
 
@@ -430,7 +437,7 @@ bool SensorHAL::updateEmergencyInputs(uint32_t now) {
     _sosPressedEvent = true;
     _alarms.raise(Safety::Sos);
     refreshAlarmIndication();
-    Serial.println("\n[HAL EMERGENCY] Physical SOS Panic Button Debounced & Triggered!");
+    ESP_LOGW(ALERT_TAG, "Physical SOS press confirmed");
   }
 
 #if defined(PIN_ACK_BUTTON) && (PIN_ACK_BUTTON >= 0)
@@ -447,7 +454,7 @@ uint8_t SensorHAL::checkAlarmAcknowledge(uint32_t now) {
   uint8_t cleared = _alarms.acknowledge(now, ackHeld);
   if (cleared != 0) {
     refreshAlarmIndication();
-    Serial.printf("\n[HAL ACKNOWLEDGE] Alarm hold confirmed (2s). Cleared mask: 0x%02X\n", cleared);
+    ESP_LOGI(ALERT_TAG, "Local acknowledgement hold confirmed; cleared_mask=0x%02X", static_cast<unsigned>(cleared));
   }
   return cleared;
 #else
@@ -495,7 +502,7 @@ void SensorHAL::setAlarmIndication(bool active, AlertSeverity severity) {
 
 void SensorHAL::resetFallFlag() {
   _fallDetector.reset();
-  Serial.println("[HAL] Fall detector reset.");
+  ESP_LOGD(IMU_TAG, "Fall detector reset");
 }
 
 float SensorHAL::readGasSensor(bool &healthy) {
@@ -642,7 +649,7 @@ SensorReadings SensorHAL::read() {
     if (fallConfirmed) {
       _alarms.raise(Safety::Fall);
       refreshAlarmIndication();
-      Serial.println("\n[HAL EMERGENCY] MAN DOWN CONFIRMED: Free-fall + Impact + Stillness detected!");
+      ESP_LOGW(ALERT_TAG, "Man-down condition confirmed");
     }
   }
   r.fall_detected = (_alarms.active() & Safety::Fall) != 0;

@@ -1,5 +1,14 @@
 #include "DeviceTrust.h"
 #include "GatewayManager.h"
+#include "Logging.h"
+
+static const char* const GW_TAG = "CP_GW";
+static const char* const WIFI_TAG = "CP_WIFI";
+static const char* const HTTP_TAG = "CP_HTTP";
+static const char* const DNS_TAG = "CP_DNS";
+#if ENABLE_WEBSOCKET_UPLINK
+static const char* const WS_TAG = "CP_WS";
+#endif
 
 GatewayManager::GatewayManager()
   : m_ssid(UPLINK_WIFI_SSID),
@@ -41,21 +50,9 @@ bool GatewayManager::begin(
   m_deviceId = (deviceId && strlen(deviceId) > 0) ? deviceId : ACTIVE_DEVICE_ID;
   m_meshChannel = meshChannel;
 
-  Serial.println("\n==============================================================");
-  Serial.println("         COMPALLETTE - GATEWAY BRIDGE INITIALIZATION          ");
-  Serial.printf("  Target Uplink SSID : %s\n", m_ssid.c_str());
-  Serial.printf("  Backend REST URL   : %s\n", m_backendUrl.c_str());
-  Serial.printf("  Gateway Node ID    : %s\n", m_deviceId.c_str());
-  Serial.printf("  Required Radio Ch. : %u\n", m_meshChannel);
-#if ENABLE_WEBSOCKET_UPLINK
-  Serial.println("  Real-time Uplink   : WebSocket Streaming (with HTTP Fallback)");
-#else
-  Serial.println("  Real-time Uplink   : HTTP REST Polling");
-#endif
-  Serial.println("==============================================================");
 
   if (m_apiKey.length() < 32) {
-    Serial.println("[GW CONFIG ERROR] A provisioned API key of at least 32 characters is required; uplink disabled.");
+    ESP_LOGE(GW_TAG, "Provisioned API key missing or too short; uplink disabled");
     m_state = GW_STATE_DISCONNECTED;
     return false;
   }
@@ -78,6 +75,9 @@ bool GatewayManager::begin(
   m_state = GW_STATE_CONNECTING;
   m_lastStateCheckMs = millis();
 
+  ESP_LOGI(GW_TAG, "Gateway initialized; uplink=%s channel=%u",
+           m_useMqtt ? "MQTT over TLS" : (ENABLE_WEBSOCKET_UPLINK ? "WebSocket with HTTP fallback" : "HTTP"),
+           static_cast<unsigned>(m_meshChannel));
   return true;
 }
 
@@ -92,7 +92,7 @@ const char* GatewayManager::getStateString() const {
   }
 }
 
-void GatewayManager::handleIncomingMeshPacket(uint32_t fromNodeId, const String& rawMsg) {
+void GatewayManager::handleIncomingMeshPacket(uint32_t, const String& rawMsg) {
   MessageEnvelope env{};
   TelemetryData telem{};
   AlertData alert{};
@@ -101,7 +101,8 @@ void GatewayManager::handleIncomingMeshPacket(uint32_t fromNodeId, const String&
 
   bool parsed = deserializePacket(rawMsg, env, telem, alert, hb, isLegacy);
   if (!parsed) {
-    Serial.printf("[GW REJECT] Malformed mesh packet from %u dropped.\n", fromNodeId);
+    static DiagnosticInterval<ARDUHAL_LOG_LEVEL_WARN> rejectedLog;
+    if (rejectedLog.ready()) ESP_LOGW(GW_TAG, "Malformed gateway packet rejected; bytes=%zu", rawMsg.length());
     return;
   }
 
@@ -109,17 +110,12 @@ void GatewayManager::handleIncomingMeshPacket(uint32_t fromNodeId, const String&
   bool isPriority = (env.msg_type == MSG_ALERT) || (isLegacy && telem.fall_detected);
 
   // Push to persistent buffer
-  if (!m_buffer.push(rawMsg, env.msg_type, isPriority)) {
-    Serial.printf("[GW DROP] Could not retain packet from %s (priority=%s). Total dropped=%u\n",
-                  env.sender_id, isPriority ? "yes" : "no", m_buffer.getTotalDropped());
-    return;
+  if (!m_buffer.push(rawMsg, env.msg_type, isPriority)) return;
+  static DiagnosticInterval<ARDUHAL_LOG_LEVEL_DEBUG> ingestLog;
+  if (ingestLog.ready()) {
+    ESP_LOGD(GW_TAG, "Packet retained; type=%u priority=%u queued=%zu",
+             static_cast<unsigned>(env.msg_type), static_cast<unsigned>(isPriority), m_buffer.count());
   }
-
-  Serial.printf("[GW INGEST] Buffered packet from %s (Type: %s | Priority: %s | Queue Size: %u)\n",
-                env.sender_id,
-                messageTypeToString(env.msg_type),
-                isPriority ? "HIGH" : "NORMAL",
-                m_buffer.count());
 }
 
 #if ENABLE_WEBSOCKET_UPLINK
@@ -150,11 +146,7 @@ void GatewayManager::initWebSocket() {
   String wsPath = String(ENDPOINT_WS_GATEWAY);
   String extraHeaders = "X-API-Key: " + m_apiKey + "\r\nX-Gateway-ID: " + m_deviceId + "\r\n";
 
-  Serial.println("\n--------------------------------------------------------------");
-  Serial.println("[GW WS] Initializing WebSocket Uplink client...");
-  Serial.printf("  |-- Target Host : %s:%u\n", hostStr.c_str(), port);
-  Serial.printf("  |-- Target Path : %s\n", wsPath.c_str());
-  Serial.println("--------------------------------------------------------------");
+  ESP_LOGD(WS_TAG, "Starting WebSocket client; port=%u", static_cast<unsigned>(port));
 
   m_wsClient.begin(hostStr.c_str(), port, wsPath.c_str());
   m_wsClient.setExtraHeaders(extraHeaders.c_str());
@@ -164,19 +156,21 @@ void GatewayManager::initWebSocket() {
 
 void GatewayManager::handleWsEvent(WStype_t type, uint8_t * payload, size_t length) {
   switch (type) {
-    case WStype_DISCONNECTED:
+    case WStype_DISCONNECTED: {
+      static DiagnosticInterval<ARDUHAL_LOG_LEVEL_WARN> disconnectLog;
       m_wsConnected = false;
-      Serial.println("\n[GW WS WARNING] WebSocket disconnected. Running on HTTP REST fallback mode.");
+      if (disconnectLog.ready()) ESP_LOGW(WS_TAG, "WebSocket disconnected");
       break;
-
+    }
     case WStype_CONNECTED:
       m_wsConnected = true;
-      Serial.printf("\n[GW WS CONNECTED] Streaming socket established to backend! (Server: %s)\n", (char*)payload);
+      ESP_LOGI(WS_TAG, "WebSocket connected");
       break;
 
     case WStype_TEXT: {
       String msg = String((char*)payload);
-      Serial.printf("\n[GW WS DOWNLINK RX] Received message from surface: %s\n", msg.c_str());
+      static DiagnosticInterval<ARDUHAL_LOG_LEVEL_DEBUG> frameLog;
+      if (frameLog.ready()) ESP_LOGD(WS_TAG, "Text frame received; bytes=%zu", length);
       if (m_downlinkCb) {
         m_downlinkCb(msg);
       }
@@ -219,8 +213,7 @@ void GatewayManager::update() {
   // 2. Handle Exponential Backoff Timer
   if (m_state == GW_STATE_BACKOFF) {
     if (now - m_backoffStartMs >= m_currentBackoffMs) {
-      Serial.printf("[GW BACKOFF END] Retrying uplink connection (Waited: %u ms)...\n",
-                    m_currentBackoffMs);
+      ESP_LOGD(GW_TAG, "Retrying uplink; backoff_ms=%" PRIu32, m_currentBackoffMs);
       m_state = (WiFi.status() == WL_CONNECTED) ? GW_STATE_CONNECTED : GW_STATE_CONNECTING;
     } else {
       return; // Still waiting out backoff interval
@@ -240,8 +233,9 @@ void GatewayManager::update() {
       if (m_buffer.peek(item)) {
         bool sent = m_wsClient.sendTXT(item.rawJson);
         if (sent) {
-          Serial.printf("[GW WS FORWARD] Streamed %s (Remaining: %u)\n",
-                        messageTypeToString(item.type), m_buffer.count() - 1);
+          static DiagnosticInterval<ARDUHAL_LOG_LEVEL_DEBUG> sendLog;
+          if (sendLog.ready()) ESP_LOGD(WS_TAG, "WebSocket accepted frame; type=%u",
+                                       static_cast<unsigned>(item.type));
           m_buffer.pop();
           resetBackoff();
         }
@@ -275,18 +269,11 @@ void GatewayManager::checkConnection() {
   if (status == WL_CONNECTED) {
     if (m_state != GW_STATE_CONNECTED && m_state != GW_STATE_BACKOFF) {
       m_state = GW_STATE_CONNECTED;
-      Serial.println("\n[GW UPLINK] Wi-Fi Station CONNECTED!");
-      Serial.printf("   |-- Gateway IP Address : %s\n", WiFi.localIP().toString().c_str());
-      Serial.printf("   |-- Router Gateway IP  : %s\n", WiFi.gatewayIP().toString().c_str());
-      Serial.printf("   |-- Subnet Mask        : %s\n", WiFi.subnetMask().toString().c_str());
-      Serial.printf("   |-- Uplink RSSI        : %d dBm\n", WiFi.RSSI());
-      Serial.printf("   |-- Router Channel     : %u\n", WiFi.channel());
-      Serial.printf("   |-- Pending Queue Size : %u packets\n", m_buffer.count());
+      ESP_LOGD(GW_TAG, "Station available for uplink; queued=%zu", m_buffer.count());
 
       if (WiFi.channel() != m_meshChannel) {
-        Serial.printf("[GW RADIO WARNING] Router channel %u differs from commissioned mesh channel %u. "
-                      "ESP32 AP+STA uses one channel; align the router and mesh before deployment.\n",
-                      WiFi.channel(), m_meshChannel);
+        ESP_LOGW(WIFI_TAG, "Router channel %u differs from commissioned mesh channel %u",
+                 static_cast<unsigned>(WiFi.channel()), static_cast<unsigned>(m_meshChannel));
       }
 
       // Initialize mDNS Responder on the ESP32
@@ -302,16 +289,15 @@ void GatewayManager::checkConnection() {
           m_mdnsInitialized = true;
           MDNS.addService("compallette", "tcp", 80);
           MDNS.addServiceTxt("compallette", "tcp", "role", "gateway");
-          Serial.printf("   |-- mDNS Responder     : Active (http://%s.local)\n", mdnsHost.c_str());
+          ESP_LOGI(DNS_TAG, "mDNS responder initialized");
         } else {
-          Serial.println("   |-- [WARN] MDNS.begin() failed to initialize.");
+          ESP_LOGW(DNS_TAG, "mDNS responder initialization failed");
         }
       }
     }
   } else {
     if (m_state == GW_STATE_CONNECTED) {
-      Serial.printf("\n[GW UPLINK WARNING] Wi-Fi station unavailable (status %d). Switching to offline buffering.\n",
-                    (int)status);
+      ESP_LOGD(GW_TAG, "Station unavailable; uplink paused; status=%d", static_cast<int>(status));
     }
     m_state = GW_STATE_DISCONNECTED;
     m_wsConnected = false;
@@ -323,9 +309,10 @@ void GatewayManager::checkConnection() {
   }
 }
 
-IPAddress GatewayManager::resolveMdns(const String& hostname) {
+IPAddress GatewayManager::resolveMdns(const String& hostname, bool localReport) {
   if (WiFi.status() != WL_CONNECTED) {
-    Serial.println("[mDNS] Wi-Fi not connected. Cannot query mDNS.");
+    if (localReport) Serial.println("[mDNS] Wi-Fi not connected. Cannot query mDNS.");
+    else ESP_LOGD(DNS_TAG, "mDNS lookup skipped; station disconnected");
     return IPAddress(0, 0, 0, 0);
   }
 
@@ -341,19 +328,26 @@ IPAddress GatewayManager::resolveMdns(const String& hostname) {
     clean = clean.substring(0, clean.length() - 6);
   }
 
-  Serial.printf("[mDNS] Querying Multicast DNS for '%s.local'...\n", clean.c_str());
+  if (localReport) Serial.printf("[mDNS] Querying Multicast DNS for '%s.local'...\n", clean.c_str());
   IPAddress ip = MDNS.queryHost(clean.c_str(), 2500);
 
-  if ((uint32_t)ip != 0) {
-    Serial.printf("[mDNS] Successfully resolved '%s.local' -> %s\n", clean.c_str(), ip.toString().c_str());
+  if (localReport) {
+    if ((uint32_t)ip != 0) {
+      Serial.printf("[mDNS] Successfully resolved '%s.local' -> %s\n", clean.c_str(), ip.toString().c_str());
+    } else {
+      Serial.printf("[mDNS] Could not resolve '%s.local' within 2500ms.\n", clean.c_str());
+    }
+  } else if ((uint32_t)ip != 0) {
+    ESP_LOGD(DNS_TAG, "mDNS lookup succeeded");
   } else {
-    Serial.printf("[mDNS] Could not resolve '%s.local' within 2500ms.\n", clean.c_str());
+    static DiagnosticInterval<ARDUHAL_LOG_LEVEL_WARN> lookupLog;
+    if (lookupLog.ready()) ESP_LOGW(DNS_TAG, "mDNS lookup timed out");
   }
 
   return ip;
 }
 
-bool GatewayManager::resolveMdnsHost(const String& rawUrl, String& outResolvedUrl) {
+bool GatewayManager::resolveMdnsHost(const String& rawUrl, String& outResolvedUrl, bool localReport) {
   int protoEnd = rawUrl.indexOf("://");
   if (protoEnd == -1) {
     outResolvedUrl = rawUrl;
@@ -390,7 +384,7 @@ bool GatewayManager::resolveMdnsHost(const String& rawUrl, String& outResolvedUr
   }
 
   // Resolve via mDNS
-  IPAddress ip = resolveMdns(host);
+  IPAddress ip = resolveMdns(host, localReport);
   if ((uint32_t)ip != 0) {
     m_cachedHost = host;
     m_cachedIp = ip;
@@ -416,14 +410,21 @@ String GatewayManager::resolveEndpoint(MessageType type) {
   }
 }
 
-bool GatewayManager::forwardPacket(const BufferedItem& item) {
+bool GatewayManager::forwardPacket(const BufferedItem& item, bool localReport) {
+  static DiagnosticInterval<ARDUHAL_LOG_LEVEL_ERROR> urlLog;
+  static DiagnosticInterval<ARDUHAL_LOG_LEVEL_ERROR> authLog;
+  static DiagnosticInterval<ARDUHAL_LOG_LEVEL_WARN> receiptLog;
+  static DiagnosticInterval<ARDUHAL_LOG_LEVEL_WARN> rejectedLog;
+  static DiagnosticInterval<ARDUHAL_LOG_LEVEL_WARN> uplinkLog;
+  static DiagnosticInterval<ARDUHAL_LOG_LEVEL_DEBUG> confirmedLog;
   String rawUrl = m_backendUrl + resolveEndpoint(item.type);
   String finalUrl;
-  resolveMdnsHost(rawUrl, finalUrl);
+  resolveMdnsHost(rawUrl, finalUrl, localReport);
 
   HTTPClient http;
   if (!http.begin(finalUrl)) {
-    Serial.printf("[GW HTTP ERROR] Unable to parse URL: %s\n", finalUrl.c_str());
+    if (localReport) Serial.println("[GW TEST] Unable to initialize HTTP request.");
+    if (urlLog.ready()) ESP_LOGE(HTTP_TAG, "Unable to initialize HTTP request");
     return false;
   }
 
@@ -451,7 +452,7 @@ bool GatewayManager::forwardPacket(const BufferedItem& item) {
     }
   }
   int httpCode = http.POST(body);
-
+  if (localReport) Serial.printf("[GW TEST] HTTP result: %d\n", httpCode);
   if (httpCode >= 200 && httpCode < 300) {
     StaticJsonDocument<2048> receipt;
     StaticJsonDocument<2048> packet;
@@ -470,6 +471,11 @@ bool GatewayManager::forwardPacket(const BufferedItem& item) {
       String control; serializeJson(receipt["control"], control); m_downlinkCb(control);
     }
     http.end();
+    if (matched) {
+      if (confirmedLog.ready()) ESP_LOGD(HTTP_TAG, "Matching persistence receipt verified; status=%d", httpCode);
+    } else if (receiptLog.ready()) {
+      ESP_LOGW(HTTP_TAG, "Persistence receipt missing or mismatched; status=%d", httpCode);
+    }
     return matched;
   }
 
@@ -477,14 +483,6 @@ bool GatewayManager::forwardPacket(const BufferedItem& item) {
   // accepted. Other 4xx failures (host policy, credentials, proxy policy)
   // remain queued for operator correction and later replay.
   if (httpCode == 400 || httpCode == 422) {
-    uint32_t rejectedSeq = 0;
-    const char* rejectedSender = "unknown";
-    StaticJsonDocument<512> diagnosticDoc;
-    if (!deserializeJson(diagnosticDoc, item.rawJson)) {
-      rejectedSeq = diagnosticDoc["seq"] | 0UL;
-      rejectedSender = diagnosticDoc["sender"] | "unknown";
-    }
-
     const int responseSize = http.getSize();
     String responseBody = http.getString();
     bool permanentlyInvalid = false;
@@ -493,33 +491,20 @@ bool GatewayManager::forwardPacket(const BufferedItem& item) {
       const char* errorCode = responseDoc["error_code"] | "";
       permanentlyInvalid = strcmp(errorCode, "VALIDATION_ERROR") == 0;
     }
-    responseBody.replace('\r', ' ');
-    responseBody.replace('\n', ' ');
-    if (responseBody.length() > 160) responseBody.remove(160);
-
-    if (permanentlyInvalid) {
-      Serial.printf("[GW INVALID EVENT] HTTP %d for %s %s #%u; retaining invalid event for review. Response (%d B): %s\n",
-                    httpCode, messageTypeToString(item.type), rejectedSender, rejectedSeq,
-                    responseSize, responseBody.c_str());
-      http.end();
-      return false; // Retain invalid data for explicit operator review.
-    }
-    if (responseBody.length() > 0) {
-      Serial.printf("[GW CONFIG ERROR] HTTP %d for %s %s #%u; retaining packet for recovery. Response (%d B): %s\n",
-                    httpCode, messageTypeToString(item.type), rejectedSender, rejectedSeq,
-                    responseSize, responseBody.c_str());
-    } else {
-      Serial.printf("[GW CONFIG ERROR] HTTP %d for %s %s #%u; retaining packet for recovery (response size: %d B).\n",
-                    httpCode, messageTypeToString(item.type), rejectedSender, rejectedSeq, responseSize);
+    if (rejectedLog.ready()) {
+      ESP_LOGW(HTTP_TAG, "Event rejected; status=%d type=%u validation_error=%u response_bytes=%d",
+               httpCode, static_cast<unsigned>(item.type), static_cast<unsigned>(permanentlyInvalid), responseSize);
     }
     http.end();
     return false;
   }
 
-  // Server error (5xx) or Network timeout/connection failure (< 0)
-  Serial.printf("[GW UPLINK ERROR] Failed to send to backend (HTTP %d: %s). Packet retained in buffer.\n",
-                httpCode,
-                httpCode < 0 ? http.errorToString(httpCode).c_str() : "Server Error");
+  // Authorization failures block forwarding. Other failures remain retryable.
+  if (httpCode == 401 || httpCode == 403) {
+    if (authLog.ready()) ESP_LOGE(HTTP_TAG, "Uplink authorization rejected; status=%d", httpCode);
+  } else if (uplinkLog.ready()) {
+    ESP_LOGW(HTTP_TAG, "Uplink request failed; status=%d", httpCode);
+  }
   http.end();
 
   // Invalidate mDNS cache on network failure so it will re-query host next attempt
@@ -544,7 +529,7 @@ bool GatewayManager::sendDirectTestPacket(const String& jsonPayload, MessageType
   item.type = type;
   item.isPriority = false;
   item.queuedTimestampMs = millis();
-  const bool confirmed = forwardPacket(item);
+  const bool confirmed = forwardPacket(item, true);
   Serial.println(confirmed ? "[GW TEST] Matching database persistence receipt received."
                            : "[GW TEST] Persistence not confirmed. Check registration, transport and server diagnostics.");
   return confirmed;
@@ -561,13 +546,13 @@ void GatewayManager::triggerBackoff() {
     m_currentBackoffMs = GW_RECONNECT_MAX_MS;
   }
 
-  Serial.printf("[GW BACKOFF] Failures: %u | Backoff penalty: %u ms | Buffered items: %u\n",
-                m_consecutiveFailures, m_currentBackoffMs, m_buffer.count());
+  ESP_LOGD(GW_TAG, "Uplink retry scheduled; failures=%u backoff_ms=%" PRIu32 " queued=%zu",
+           static_cast<unsigned>(m_consecutiveFailures), m_currentBackoffMs, m_buffer.count());
 }
 
 void GatewayManager::resetBackoff() {
   if (m_consecutiveFailures > 0) {
-    Serial.println("[GW RECOVERY] Uplink stabilized. Backoff penalty reset.");
+    ESP_LOGI(GW_TAG, "Uplink retry backoff cleared after a successful forward");
   }
   m_consecutiveFailures = 0;
   m_currentBackoffMs = GW_RECONNECT_MIN_MS;

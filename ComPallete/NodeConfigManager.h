@@ -42,7 +42,7 @@ public:
   bool load();
 
   // Save updated configuration structure to NVS
-  bool save(const NodeConfig& cfg);
+  bool save(const NodeConfig& cfg, bool localReport = false);
 
   // Set individual provisioning assignment and commit to NVS
   bool setAssignment(const char* deviceId, NodeRole role, const char* zoneId, float coWarn = 25.0f, float coCrit = 50.0f);
@@ -55,7 +55,7 @@ public:
   void clear();
 
   // Enter SoftAP setup mode (unprovisions node so portal starts, preserving current parameters)
-  void enterSetupMode();
+  void enterSetupMode(bool localReport = false);
 
   // Accessors
   const NodeConfig& get() const { return _config; }

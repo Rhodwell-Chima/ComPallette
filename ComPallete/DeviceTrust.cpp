@@ -1,4 +1,5 @@
 #include "DeviceTrust.h"
+#include "Logging.h"
 #include "NodeConfigManager.h"
 #include "Config.h"
 #include <LittleFS.h>
@@ -6,6 +7,8 @@
 #include <esp_timer.h>
 #include <esp_system.h>
 #include <sys/time.h>
+
+static const char* const TRUST_TAG = "CP_TRUST";
 
 namespace {
 uint8_t key[32] = {};
@@ -87,7 +90,7 @@ bool DeviceTrust::begin() {
         gwdoc["credential"] = nodeConfigManager.getBackendApiKey();
         serializeJson(gwdoc, gwf);
         gwf.close();
-        Serial.println("[TRUST] Initialized /gateway-credentials.json for gateway");
+        ESP_LOGD(TRUST_TAG, "Gateway credential bundle creation attempted");
       }
     }
     File credentials = LittleFS.open("/gateway-credentials.json", "r");
