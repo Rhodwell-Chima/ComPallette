@@ -1,80 +1,35 @@
-import { useEffect, useRef, useState } from 'react';
-import { AnimatePresence, motion } from 'framer-motion';
+import { useEffect, useRef } from 'react';
+import * as Tooltip from '@radix-ui/react-tooltip';
 import { Outlet, useLocation } from 'react-router-dom';
 import { Navbar } from './Navbar';
-import {
-  getPrefersReducedMotion,
-  pageBackVariants,
-  pageDashboardVariants,
-  pageDrillDownVariants,
-  reducedMotionVariants,
-} from './motion';
+import { AppSidebar } from './navigation/ResponsiveNavigation';
+import { useNavigationLayout } from './navigation/useNavigationLayout';
 
 export function AppShell() {
-  const location = useLocation();
-
-  // Route history depth tracking for directional transition variant selection
-  const prevPathRef = useRef(location.pathname);
-  const [direction, setDirection] = useState<'dashboard' | 'drilldown' | 'back'>('dashboard');
+  const { pathname } = useLocation();
+  const previousPath = useRef(pathname);
+  const content = useRef<HTMLElement>(null);
+  const layout = useNavigationLayout();
 
   useEffect(() => {
-    const prev = prevPathRef.current;
-    const current = location.pathname;
-    if (current === '/') {
-      setDirection('dashboard');
-    } else if (prev === '/' && current !== '/') {
-      setDirection('drilldown');
-    } else if (prev !== '/' && current === '/') {
-      setDirection('back');
-    } else {
-      setDirection('drilldown');
-    }
-    prevPathRef.current = current;
-
-    // Reset scroll to top on forward/normal route change
-    window.scrollTo({ top: 0, left: 0, behavior: 'instant' as ScrollBehavior });
-  }, [location.pathname]);
-
-  const prefersReduced = getPrefersReducedMotion();
-  const currentVariants = prefersReduced
-    ? reducedMotionVariants
-    : direction === 'dashboard'
-    ? pageDashboardVariants
-    : direction === 'back'
-    ? pageBackVariants
-    : pageDrillDownVariants;
-
-  // On the Digital Twin stage (/twin), we can optionally provide a sleek transparent header effect
-  const isTwinStage = location.pathname === '/twin';
+    if (previousPath.current === pathname) return;
+    previousPath.current = pathname;
+    window.scrollTo(0, 0);
+    content.current?.focus({ preventScroll: true });
+  }, [pathname]);
 
   return (
-    <div className="app-shell full-width-layout" style={{ display: 'flex', flexDirection: 'column', minHeight: '100vh' }}>
-      {/* Universal Desktop & Mobile Navbar with Mega Menu, Dropdowns, Sticky Elevation & Search */}
-      <Navbar transparent={isTwinStage} />
-
-      {/* Main Page Stage with Animated Directional Transitions */}
-      <main
-        className="page-content"
-        style={{
-          position: 'relative',
-          overflowX: 'hidden',
-          flex: 1,
-          width: '100%',
-        }}
-      >
-        <AnimatePresence mode="wait">
-          <motion.div
-            key={location.pathname}
-            initial="initial"
-            animate="animate"
-            exit="exit"
-            variants={currentVariants}
-            style={{ width: '100%' }}
-          >
+    <Tooltip.Provider delayDuration={300}>
+      <div className="app-shell cockpit-shell min-h-dvh" data-navigation-layout={layout}>
+        <a className="nav-skip-link" href="#main-content" tabIndex={0}>Skip to main content</a>
+        <Navbar mobile={layout === 'mobile'} />
+        <div className="flex min-w-0 grow items-start">
+          {layout !== 'mobile' && <AppSidebar desktop={layout === 'desktop'} />}
+          <main ref={content} id="main-content" tabIndex={-1} className="page-content min-w-0 grow">
             <Outlet />
-          </motion.div>
-        </AnimatePresence>
-      </main>
-    </div>
+          </main>
+        </div>
+      </div>
+    </Tooltip.Provider>
   );
 }

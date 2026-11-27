@@ -3,5 +3,8 @@ dist
 .env
 .env.*
 tests
+test-results
+playwright-report
+playwright.config.ts
 coverage
 *.log
