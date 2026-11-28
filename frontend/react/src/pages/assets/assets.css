@@ -1,0 +1,43 @@
+@source "./";
+@source "../../platform/table/DataTable.tsx";
+
+.asset-page { overflow-wrap: anywhere; }
+.asset-title {
+  margin: 0;
+  font-size: clamp(1.6rem, 3vw, 2.15rem);
+  letter-spacing: -.032em;
+  line-height: 1.18;
+}
+.asset-page h2, .asset-page h3 { margin: 0; line-height: 1.3; }
+.asset-page h2 { font-size: 1rem; }
+.asset-page h3 { font-size: .86rem; }
+.asset-overview p, .asset-history p, .asset-impact p { margin: 0; }
+.asset-page :is(h1, h2)[tabindex]:focus-visible, .asset-page [role="status"][tabindex]:focus-visible {
+  outline: 2px solid var(--primary);
+  outline-offset: 3px;
+}
+.asset-link { color: var(--primary-strong); text-decoration: underline; text-underline-offset: 3px; }
+.asset-page .asset-filter { margin-bottom: 0 !important; min-width: 0; }
+.asset-table [data-table-scroll] { max-height: clamp(14rem, calc(100dvh - 31rem), 34rem) !important; }
+.asset-table :is(th, td) { overflow-wrap: anywhere; vertical-align: top; }
+.asset-table th { text-transform: none !important; letter-spacing: normal !important; }
+.asset-table th button { padding: 0; border: 0; background: transparent; color: inherit; font: inherit; }
+.asset-evidence time { color: var(--muted); }
+.asset-evidence .location-label.last_known { color: color-mix(in srgb, var(--warning) 78%, var(--text)); }
+.asset-detail .personnel-absolute { display: block; font-size: .75rem; }
+.asset-history { margin-top: 12px; padding-top: 10px; border-top: 1px solid var(--border); }
+.asset-history summary { cursor: pointer; font-size: .85rem; font-weight: 650; }
+.asset-history ul, .asset-history-list { margin: 0; padding: 0; list-style: none; }
+.asset-history li, .asset-history-list li {
+  margin-top: 7px;
+  padding-top: 7px;
+  border-top: 1px solid var(--border);
+  color: var(--muted);
+  font-size: .79rem;
+}
+.asset-history li strong, .asset-history-list li strong { color: var(--text); }
+.asset-modal { max-height: calc(100dvh - 3rem) !important; }
+@media (max-width: 639px) {
+  .asset-page .button, .asset-modal .button { min-height: 42px; }
+  .asset-modal { max-height: calc(100dvh - 1.25rem) !important; }
+}

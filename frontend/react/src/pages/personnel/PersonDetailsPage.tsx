@@ -303,7 +303,10 @@ function PersonHistory({ person, timezone, showAudit }: { person: PersonDetail; 
     </div>
     {(person.custody_history?.length || person.device_alerts?.length || person.measurements?.length) ? <details>
       <summary>Custody and device records</summary><p className="personnel-muted">Device readings and alerts describe the hardware.</p>
-      {person.custody_history?.slice(0, 10).map(item => <p key={`custody-${item.id}`}><Link to={`/assets/${item.asset_id}`}>Asset #{item.asset_id}</Link> · {item.ended_at ? 'Returned' : 'Current custody'}</p>)}
+      {person.custody_history?.slice(0, 10).map(item => <p key={`custody-${item.id}`}>
+        {item.asset_name ? <Link to={`/assets/${item.asset_id}`}>{item.asset_name}{item.asset_identifier ? ` · ${item.asset_identifier}` : ''}</Link>
+          : 'Equipment custody'} · {item.ended_at ? 'Returned' : 'Current custody'}
+      </p>)}
       {person.device_alerts?.slice(0, 10).map(item => <p key={`alert-${item.id}`}><Link to={`/alerts?alert=${item.id}`}>{item.alert_code}</Link> · {item.status}</p>)}
       {person.measurements?.slice(0, 10).map(item => <p key={`reading-${item.id}`}>{item.measurement_key}: {item.value} {item.unit} · <EvidenceTime value={item.received_at} zone={timezone} /></p>)}
     </details> : null}

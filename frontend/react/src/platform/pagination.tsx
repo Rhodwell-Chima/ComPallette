@@ -64,6 +64,7 @@ export interface PaginationProps {
   variant?: 'full' | 'compact';
   enableKeyboardNavigation?: boolean;
   className?: string;
+  itemLabel?: string;
 }
 
 export function Pagination({
@@ -77,6 +78,7 @@ export function Pagination({
   variant = 'full',
   enableKeyboardNavigation = true,
   className = '',
+  itemLabel,
 }: PaginationProps) {
   const safeTotalPages = Math.max(1, totalPages);
   const safeCurrentPage = Math.min(Math.max(1, currentPage), safeTotalPages);
@@ -108,9 +110,9 @@ export function Pagination({
   if (variant === 'compact') {
     return (
       <div className={`pagination-container compact ${className}`} style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '0.75rem', fontSize: '0.875rem' }}>
-        <span className="muted">
-          Page <strong>{safeCurrentPage}</strong> of <strong>{safeTotalPages}</strong>
-        </span>
+        <span className="muted">{itemLabel && totalItems !== undefined
+          ? (totalItems ? `${startItem}–${endItem} of ${totalItems} ${itemLabel}` : `0 ${itemLabel}`)
+          : <>Page <strong>{safeCurrentPage}</strong> of <strong>{safeTotalPages}</strong></>}</span>
         <div style={{ display: 'flex', gap: '0.25rem' }}>
           <button
             type="button"

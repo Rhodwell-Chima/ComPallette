@@ -5,7 +5,8 @@ import { Navigate, Route, Routes } from 'react-router-dom';
 import { AppShell } from './platform/AppShell';
 import { DashboardPage } from './pages/DashboardPage';
 import { AlertsPage } from './pages/AlertsPage';
-import { AssetsPage } from './pages/RegistryPages';
+import { AssetsPage } from './pages/assets/AssetsPage';
+import { AssetDetailsPage } from './pages/assets/AssetDetailsPage';
 import { PersonnelPage } from './pages/personnel/PersonnelPage';
 import { PersonDetailsPage } from './pages/personnel/PersonDetailsPage';
 import { DevicesPage, EnvironmentalPage } from './pages/MonitoringPages';
@@ -42,7 +43,7 @@ export function App() {
         } />
         <Route path="alerts" element={<AlertsPage />} />
         <Route path="personnel/:id" element={<PersonDetailsPage />} />
-        <Route path="assets/:id" element={<EntityDetailPage kind="assets" />} />
+        <Route path="assets/:id" element={<AssetDetailsPage />} />
         <Route path="devices/:id" element={<EntityDetailPage kind="devices" />} />
         <Route path="personnel" element={<PersonnelPage />} />
         <Route path="assets" element={<AssetsPage />} />

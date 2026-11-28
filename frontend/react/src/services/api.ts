@@ -6,6 +6,10 @@ import {
   SystemSummary,
   TelemetryItem,
   AssetItem,
+  AssetFields,
+  AssetRegistry,
+  AssetDetail,
+  AssetImpact,
   DashboardData,
   EnhancedDashboardData,
   EnvironmentChannel,
@@ -230,7 +234,7 @@ export const platformApi = {
   entity: (kind: string, id: string) => json<Record<string, any>>(`/api/v1/entities/${kind}/${encodeURIComponent(id)}`),
   entityAction: (kind: string, id: string, input: Record<string, unknown>) => json<Record<string, unknown>>(`/api/v1/entities/${kind}/${encodeURIComponent(id)}`, jsonRequest('POST', input)),
   transferPreview: (kind: string, id: string, destination: number) => json<{ assignment_ids: number[]; custody_ids: number[] }>(`/api/v1/entities/${kind}/${encodeURIComponent(id)}?preview_destination=${destination}`),
-  eligibleDevices: (site: number, q = '') => json<{ nodes: NodeItem[] }>(`/api/v1/devices/eligible${siteQuery(site, { q })}`),
+  eligibleDevices: (site: number, q = '', signal?: AbortSignal) => json<{ nodes: NodeItem[] }>(`/api/v1/devices/eligible${siteQuery(site, { q })}`, { signal }),
   gateways: (site: number) => json<GatewaysResponse>(`/api/v1/gateways${siteQuery(site)}`),
   gatewayAction: (input: Record<string, unknown>) => json<GatewayMutationResult>('/api/v1/gateways', jsonRequest('POST', input)),
   command: (input: Record<string, unknown>) => json<CommandMutationResult>('/api/v1/commands', jsonRequest('POST', input)),
@@ -265,8 +269,18 @@ export const platformApi = {
   personnel: (siteId?: number, q?: string, signal?: AbortSignal) => json<PersonnelRoster>(`/api/v1/personnel${siteQuery(siteId, { q })}`, { signal }),
   personnelDetail: (id: string, signal?: AbortSignal) => json<PersonDetail>(`/api/v1/entities/personnel/${encodeURIComponent(id)}`, { signal }),
   createPersonnel: (input: PersonnelFields & { site?: number }) => json<PersonnelItem>('/api/v1/personnel', jsonRequest('POST', input)),
-  assets: (siteId?: number, q?: string) => json<{ assets: AssetItem[]; count: number }>(`/api/v1/assets${siteQuery(siteId, { q })}`),
-  createAsset: (input: Pick<AssetItem, 'identifier' | 'name' | 'asset_type' | 'operational_status'> & { site?: number; assigned_node?: string | null }) => json<AssetItem>('/api/v1/assets', jsonRequest('POST', input)),
+  assets: (siteId?: number, q?: string) => json<AssetRegistry>(`/api/v1/assets${siteQuery(siteId, { q })}`),
+  assetRegistry: (site: number, params: Record<string, string | number>, signal?: AbortSignal) =>
+    json<AssetRegistry>(`/api/v1/assets${siteQuery(site, params)}`, { signal }),
+  assetDetail: (id: string, signal?: AbortSignal) =>
+    json<AssetDetail>(`/api/v1/entities/assets/${encodeURIComponent(id)}`, { signal }),
+  assetImpact: (id: string, destination?: number, signal?: AbortSignal) =>
+    json<AssetImpact>(`/api/v1/entities/assets/${encodeURIComponent(id)}${siteQuery(undefined,
+      destination ? { preview_destination: destination } : { preview_archive: 1 })}`, { signal }),
+  eligibleCustodians: (site: number, q: string, signal?: AbortSignal) =>
+    json<{ personnel: Pick<PersonnelItem, 'id' | 'display_name' | 'identifier'>[] }>(
+      `/api/v1/assets/eligible-custodians${siteQuery(site, { q })}`, { signal }),
+  createAsset: (input: AssetFields & { site: number }) => json<AssetItem>('/api/v1/assets', jsonRequest('POST', input)),
   devices: (siteId?: number, status?: string) => json<{ nodes: NodeItem[]; count: number }>(`/api/v1/nodes${siteQuery(siteId, { status })}`),
   environment: (siteId?: number) => json<{ channels: EnvironmentChannel[]; readings: MeasurementReading[] }>(`/api/v1/environment/overview${siteQuery(siteId)}`),
   readings: (

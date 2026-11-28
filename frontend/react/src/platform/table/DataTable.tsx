@@ -19,16 +19,25 @@ export function DataTable<T>({
   density: propDensity,
   onDensityChange,
   className = '',
+  columnPreferenceKey,
 }: DataTableProps<T>) {
   const [internalDensity, setInternalDensity] = useState<'compact' | 'comfortable'>('compact');
-  const [visibleColumns, setVisibleColumns] = useState<string[]>(() => columns.map((c) => c.key));
+  const [visibleColumns, setVisibleColumns] = useState<string[]>(() => {
+    if (columnPreferenceKey) {
+      try {
+        const saved: unknown = JSON.parse(localStorage.getItem(columnPreferenceKey) ?? 'null');
+        if (Array.isArray(saved) && saved.every(value => typeof value === 'string')) return saved;
+      } catch { /* The table still has defaults. */ }
+    }
+    return columns.map(column => column.key);
+  });
   const [showColPicker, setShowColPicker] = useState(false);
 
   const density = propDensity || internalDensity;
   const setDensity = onDensityChange || setInternalDensity;
 
   const activeColumns = useMemo(() => {
-    return columns.filter((c) => visibleColumns.includes(c.key));
+    return columns.filter((c) => c.required || visibleColumns.includes(c.key));
   }, [columns, visibleColumns]);
 
   const allSelected = useMemo(() => {
@@ -120,6 +129,7 @@ export function DataTable<T>({
             type="button"
             onClick={() => setShowColPicker(!showColPicker)}
             title="Configure visible columns"
+            aria-expanded={showColPicker}
             style={{
               background: 'var(--surface)',
               border: '1px solid var(--border)',
@@ -173,12 +183,14 @@ export function DataTable<T>({
                 >
                   <input
                     type="checkbox"
-                    checked={visibleColumns.includes(col.key)}
+                    checked={col.required || visibleColumns.includes(col.key)}
+                    disabled={col.required}
                     onChange={(e) => {
-                      if (e.target.checked) {
-                        setVisibleColumns([...visibleColumns, col.key]);
-                      } else if (visibleColumns.length > 1) {
-                        setVisibleColumns(visibleColumns.filter((k) => k !== col.key));
+                      if (!e.target.checked && activeColumns.length <= 1) return;
+                      const next = e.target.checked ? [...visibleColumns, col.key] : visibleColumns.filter(key => key !== col.key);
+                      setVisibleColumns(next);
+                      if (columnPreferenceKey) {
+                        try { localStorage.setItem(columnPreferenceKey, JSON.stringify(next)); } catch { /* Optional preference. */ }
                       }
                     }}
                   />
@@ -219,6 +231,7 @@ export function DataTable<T>({
 
       {/* Table Frame */}
       <div
+        data-table-scroll
         style={{
           overflow: 'auto',
           maxHeight: '72vh',
@@ -267,7 +280,9 @@ export function DataTable<T>({
                 return (
                   <th
                     key={col.key}
-                    onClick={() => handleHeaderClick(col)}
+                    scope="col"
+                    className={col.className}
+                    aria-sort={isSorted && sortState?.direction ? (sortState.direction === 'asc' ? 'ascending' : 'descending') : undefined}
                     style={{
                       position: 'sticky',
                       top: 0,
@@ -286,7 +301,12 @@ export function DataTable<T>({
                       boxShadow: 'inset 0 -1px 0 var(--border)',
                     }}
                   >
-                    <div
+                    {col.sortable && onSortChange ? (
+                      <button type="button" className="inline-flex items-center gap-1.5 text-left" onClick={() => handleHeaderClick(col)}>
+                        {col.header}
+                        <span aria-hidden="true">{isSorted && sortState?.direction === 'desc' ? '▼' : isSorted ? '▲' : '↕'}</span>
+                      </button>
+                    ) : <div
                       style={{
                         display: 'inline-flex',
                         alignItems: 'center',
@@ -296,18 +316,7 @@ export function DataTable<T>({
                       }}
                     >
                       <span>{col.header}</span>
-                      {col.sortable && (
-                        <span style={{ display: 'inline-flex', flexDirection: 'column', fontSize: '0.65rem' }}>
-                          {isSorted && sortState?.direction === 'asc' ? (
-                            '▲'
-                          ) : isSorted && sortState?.direction === 'desc' ? (
-                            '▼'
-                          ) : (
-                            <span style={{ opacity: 0.35 }}>▲</span>
-                          )}
-                        </span>
-                      )}
-                    </div>
+                    </div>}
                   </th>
                 );
               })}
@@ -324,7 +333,7 @@ export function DataTable<T>({
                     </td>
                   )}
                   {activeColumns.map((col) => (
-                    <td key={col.key} style={{ padding: rowPadding }}>
+                    <td key={col.key} className={col.className} style={{ padding: rowPadding }}>
                       <Skeleton height="14px" width="80%" />
                     </td>
                   ))}
@@ -390,6 +399,7 @@ export function DataTable<T>({
                     {activeColumns.map((col) => (
                       <td
                         key={col.key}
+                        className={col.className}
                         style={{
                           padding: rowPadding,
                           textAlign: col.align || 'left',

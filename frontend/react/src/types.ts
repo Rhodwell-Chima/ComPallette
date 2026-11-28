@@ -214,7 +214,7 @@ export interface PersonDetail extends PersonnelItem, PersonnelOptions {
   current_assignments?: PersonAssignment[];
   assignment_history?: PersonAssignment[];
   current_custody?: { id: number; asset_id: number }[];
-  custody_history?: { id: number; asset_id: number; started_at: string; ended_at: string | null }[];
+  custody_history?: { id: number; asset_id: number; asset_name?: string | null; asset_identifier?: string | null; started_at: string; ended_at: string | null }[];
   location_observations?: { id: number; node_id: string; reported_zone: string; source: string; quality: string; captured_at: string | null; received_at: string; simulated?: boolean }[];
   device_alerts?: AlertItem[];
   measurements?: MeasurementReading[];
@@ -240,11 +240,63 @@ export interface AssetItem {
   asset_type: string;
   operational_status: string;
   assigned_node: string | null;
-  node_id?: string;
-  current_zone?: string;
+  node_id?: string | null;
+  current_zone?: string | null;
   location_evidence?: LocationEvidence;
-  location_observed_at?: number;
-  node_status?: NodeStatus;
+  location_observed_at?: number | null;
+  node_status?: NodeStatus | null;
+  archived?: boolean;
+  tracker_started_at?: string | null;
+  custodian?: { id: number; name: string; identifier: string; started_at: string } | null;
+}
+
+export type AssetFields = Pick<AssetItem, 'name' | 'identifier' | 'asset_type' | 'operational_status'>;
+
+export interface AssetRegistry {
+  assets: AssetItem[];
+  count: number;
+  page?: number;
+  page_size?: number;
+  site_total?: number;
+  classifications?: string[];
+  statuses?: string[];
+}
+
+export interface AssetRelationship {
+  id: number;
+  node_id?: string;
+  personnel_id?: number | null;
+  person_name?: string | null;
+  person_identifier?: string | null;
+  started_at: string;
+  ended_at: string | null;
+  reason?: string;
+  end_reason?: string;
+  started_actor?: string;
+  ended_actor?: string;
+}
+
+export interface AssetImpact {
+  version: number;
+  assignment_ids: number[];
+  custody_ids: number[];
+  trackers: Pick<AssetRelationship, 'id' | 'node_id'>[];
+  custodians: Pick<AssetRelationship, 'id' | 'personnel_id' | 'person_name' | 'person_identifier'>[];
+}
+
+export interface AssetDetail extends AssetItem {
+  version: number;
+  capabilities?: string[];
+  current_assignments?: AssetRelationship[];
+  current_custody?: AssetRelationship[];
+  assignment_history?: AssetRelationship[];
+  custody_history?: AssetRelationship[];
+  transfer_destinations?: { id: number; name: string }[];
+  transfer_history?: { id: number; source_name: string; destination_name: string; created_at: string; reason: string; actor_name?: string }[];
+  location_observations?: PersonDetail['location_observations'];
+  measurements?: MeasurementReading[];
+  device_alerts?: AlertItem[];
+  audit?: AuditItem[];
 }
 
 export interface DeviceCapability {

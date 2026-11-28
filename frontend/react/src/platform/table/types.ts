@@ -10,6 +10,8 @@ export interface ColumnDef<T> {
   width?: string;
   align?: 'left' | 'center' | 'right';
   sticky?: boolean;
+  required?: boolean;
+  className?: string;
 }
 
 export interface SortState {
@@ -32,4 +34,5 @@ export interface DataTableProps<T> {
   density?: 'compact' | 'comfortable';
   onDensityChange?: (density: 'compact' | 'comfortable') => void;
   className?: string;
+  columnPreferenceKey?: string;
 }
