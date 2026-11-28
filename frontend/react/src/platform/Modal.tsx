@@ -12,6 +12,7 @@ export interface ModalProps {
   children: ReactNode;
   maxWidth?: string;
   initialFocusRef?: RefObject<HTMLElement>;
+  className?: string;
 }
 
 export function Modal({
@@ -22,6 +23,7 @@ export function Modal({
   children,
   maxWidth = '520px',
   initialFocusRef,
+  className,
 }: ModalProps) {
   const modalRef = useRef<HTMLDivElement>(null);
   const overlayRef = useRef<HTMLDivElement>(null);
@@ -114,6 +116,7 @@ export function Modal({
           {/* Centered Dialog Window (Opaque surface, strictly above backdrop) */}
           <motion.div
             ref={modalRef}
+            className={className}
             role="dialog"
             aria-modal="true"
             aria-labelledby={titleId}

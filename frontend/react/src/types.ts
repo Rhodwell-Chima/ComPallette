@@ -62,6 +62,7 @@ export interface FacilityLayout {
 
 export interface NodeItem {
   node_id: string;
+  archived?: boolean;
   hardware_id?: string;
   commissioned?: boolean;
   role: NodeRole;
@@ -180,14 +181,54 @@ export interface PersonnelItem {
   site: number | null;
   identifier: string;
   display_name: string;
+  operational_role?: string | null;
+  operational_role_label?: string | null;
   team: string;
   employment_status: string;
   assigned_node: string | null;
   node_id?: string;
-  current_zone?: string;
+  current_zone?: string | null;
   location_evidence?: LocationEvidence;
-  location_observed_at?: number;
+  location_observed_at?: number | null;
   node_status?: NodeStatus;
+  archived?: boolean;
+}
+
+export type PersonnelOption = { value: string; label: string };
+export interface PersonnelOptions {
+  operational_roles?: PersonnelOption[];
+  employment_statuses?: PersonnelOption[];
+}
+
+export type PersonnelFields = Pick<PersonnelItem, 'identifier' | 'display_name' | 'team' | 'employment_status' | 'operational_role'>;
+export interface PersonnelRoster extends PersonnelOptions {
+  personnel: PersonnelItem[];
+  count: number;
+  site_total?: number;
+}
+
+export interface PersonDetail extends PersonnelItem, PersonnelOptions {
+  version: number;
+  capabilities?: string[];
+  user_id?: number | null;
+  current_assignments?: PersonAssignment[];
+  assignment_history?: PersonAssignment[];
+  current_custody?: { id: number; asset_id: number }[];
+  custody_history?: { id: number; asset_id: number; started_at: string; ended_at: string | null }[];
+  location_observations?: { id: number; node_id: string; reported_zone: string; source: string; quality: string; captured_at: string | null; received_at: string; simulated?: boolean }[];
+  device_alerts?: AlertItem[];
+  measurements?: MeasurementReading[];
+  audit?: AuditItem[];
+}
+
+export interface PersonAssignment {
+  id: number;
+  node_id: string;
+  site_id?: number;
+  started_at: string;
+  ended_at: string | null;
+  reason?: string;
+  end_reason?: string;
 }
 
 export interface AssetItem {

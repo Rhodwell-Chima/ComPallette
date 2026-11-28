@@ -5,7 +5,9 @@ import { Navigate, Route, Routes } from 'react-router-dom';
 import { AppShell } from './platform/AppShell';
 import { DashboardPage } from './pages/DashboardPage';
 import { AlertsPage } from './pages/AlertsPage';
-import { AssetsPage, PersonnelPage } from './pages/RegistryPages';
+import { AssetsPage } from './pages/RegistryPages';
+import { PersonnelPage } from './pages/personnel/PersonnelPage';
+import { PersonDetailsPage } from './pages/personnel/PersonDetailsPage';
 import { DevicesPage, EnvironmentalPage } from './pages/MonitoringPages';
 import { AccessPage, AuditPage, IntegrationsPage, ReportsPage, SettingsPage, SitesZonesPage } from './pages/AdministrationPages';
 import { ProtectedRoute } from './platform/rbac';
@@ -39,7 +41,7 @@ export function App() {
           </TwinRouteBoundary>
         } />
         <Route path="alerts" element={<AlertsPage />} />
-        <Route path="personnel/:id" element={<EntityDetailPage kind="personnel" />} />
+        <Route path="personnel/:id" element={<PersonDetailsPage />} />
         <Route path="assets/:id" element={<EntityDetailPage kind="assets" />} />
         <Route path="devices/:id" element={<EntityDetailPage kind="devices" />} />
         <Route path="personnel" element={<PersonnelPage />} />

@@ -9,12 +9,13 @@ import { AlertSessionProvider } from '../src/platform/AlertSessionContext';
 import { App } from '../src/App';
 import '../src/index.css';
 import { twinFixture } from './twin/fixture';
+import { personnelResponse, personnelScenario } from './personnel/fixture';
 
 const now = 1794902400000;
 const navigationTest = import.meta.env.MODE === 'navigation-test';
 const testCase = navigationTest ? new URLSearchParams(location.search).get('fixture') : null;
 const username = testCase === 'long-account' ? 'TEST-OPERATOR-WITH-AN-UNUSUALLY-LONG-LOCAL-NAME-FOR-REFLOW' : testCase === 'missing-account' ? undefined : 'TEST-OPERATOR';
-const sites = [1, 2].map(id => ({ id, organisation: 1, organisation_name: 'TEST ORGANISATION', name: `TEST SITE ${id}`, code: `TEST-${id}`, industry: 'Mining test fixture', timezone: 'Africa/Lusaka', active: true }));
+const sites = [1, 2].map(id => ({ id, organisation: 1, organisation_name: 'TEST ORGANISATION', name: personnelScenario && id === 1 ? 'Mining Pilot Site' : `TEST SITE ${id}`, code: `TEST-${id}`, industry: 'Mining test fixture', timezone: 'Africa/Lusaka', active: true }));
 const permittedSites = testCase === 'dashboard-no-site' ? [] : sites;
 const capabilities = ['view', 'operate_alerts', 'manage_users', 'manage_sites', 'manage_settings', 'view_audit', 'manage_personnel', 'manage_assets', 'manage_devices'];
 const alerts = Array.from({ length: testCase === 'long-account' ? 100 : 2 }, (_, index) => {
@@ -38,7 +39,7 @@ window.fetch = async (input, init) => {
   if (path === '/api/v1/auth/session') { if (init?.method === 'DELETE') signedIn = false; if (init?.method === 'POST') signedIn = true; return response({ authenticated: signedIn, username, is_staff: true, capabilities, sites: permittedSites }); }
   if (path === '/api/v1/platform/bootstrap') {
     if (testCase === 'dashboard-bootstrap-failure' && bootstrapRequests++ > 0) return response({ error: 'Synthetic bootstrap failure' }, 503);
-    return response({ contract_version: 2, build_revision: 'ISOLATED FIXTURE', sites: permittedSites, organisations: [], capabilities, site_capabilities: { 1: capabilities, 2: navigationTest ? ['view'] : capabilities } });
+    return response({ contract_version: 2, build_revision: 'ISOLATED FIXTURE', sites: permittedSites, organisations: [], capabilities, site_capabilities: { 1: personnelScenario === 'personnel-readonly' ? ['view'] : capabilities, 2: navigationTest ? ['view'] : capabilities } });
   }
   if (path === '/health/') {
     if (testCase === 'stale' && healthRequests++ > 0) throw new TypeError('Simulated health refresh failure');
@@ -129,6 +130,8 @@ window.fetch = async (input, init) => {
     return response(twinFixture(site, testCase));
   }
   const entityMatch = path.match(/^\/api\/v1\/entities\/(personnel|assets|devices)\/([^/]+)$/);
+  const personnelFixture = await personnelResponse(url, init, capabilities);
+  if (personnelFixture) return personnelFixture;
   if (entityMatch) return response({ id: entityMatch[2], site: 1, organisation: 1, identifier: 'TEST-001', display_name: 'Isolated test person', version: 1, archived: false, location_evidence: 'UNKNOWN', current_assignments: [], current_custody: [], assignment_history: [], custody_history: [], location_observations: [], device_alerts: [], measurements: [], audit: [] });
   if (path === '/api/v1/devices/eligible') return response({ nodes: [{ node_id: 'TEST-DEVICE-1' }] });
   if (path === '/api/v1/gateways') return response({ gateways: [], discoveries: [], commands: [], devices: [] });

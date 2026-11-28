@@ -50,7 +50,7 @@ test('uses one complete destination set and follows route history and direct lin
   await expect(page.getByRole('menu')).toBeVisible();
   await page.goBack();
   await expect(page.getByRole('menu')).toHaveCount(0);
-  await expect(page.getByRole('main')).toBeFocused();
+  await expect(page.getByRole('heading', { name: 'Isolated test person' })).toBeFocused();
 });
 
 test('updates links when the selected site changes capabilities and preserves direct guards', async ({ page }) => {
