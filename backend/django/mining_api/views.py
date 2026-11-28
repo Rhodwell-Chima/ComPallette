@@ -18,9 +18,10 @@ from .models import (
     Node, NodeRole, NodeStatus, TelemetryRecord, SafetyAlert, AlertSeverity,
     AlertStatus, AuditEntry, ProvisioningRequest, ProvisioningStatus,
     Asset, DeviceCapability, FacilityLayout, Level, LocationEvidence,
-    MeasurementReading, MembershipRole, Organisation, Personnel, Site,
+    MeasurementReading, MembershipRole, OperationalRole, Organisation, Personnel, Site,
     SiteMembership, Structure, Zone,
 )
+from .personnel import personnel_options, personnel_with_wearables
 from .serializers import (
     NodeSerializer, TelemetryRecordSerializer, SafetyAlertSerializer,
     AuditEntrySerializer, ProvisioningRequestSerializer, AssetSerializer,
@@ -676,31 +677,38 @@ class PersonnelListCreateView(APIView):
         site = resolve_site(request)
         if not site:
             return Response({'personnel': [], 'count': 0})
-        query = request.query_params.get('q', '').strip()
-        records = Personnel.objects.filter(site=site).select_related('assigned_node')
+        query = ' '.join(request.query_params.get('q', '').split())
+        records = personnel_with_wearables(Personnel.objects.filter(site=site))
+        site_total = records.count()
         if query:
-            records = records.filter(Q(identifier__icontains=query) | Q(display_name__icontains=query) | Q(team__icontains=query))
-        return Response({'personnel': PersonnelSerializer(records, many=True).data, 'count': records.count()})
+            matched_roles = [code for code, label in OperationalRole.choices if query.casefold() in label.casefold()]
+            records = records.filter(
+                Q(identifier__icontains=query) | Q(display_name__icontains=query)
+                | Q(team__icontains=query) | Q(operational_role__in=matched_roles)
+            )
+        people = PersonnelSerializer(records, many=True).data
+        return Response({'personnel': people, 'count': len(people), 'site_total': site_total, **personnel_options()})
 
     def post(self, request):
-        denied = require_capability(request, 'manage_assets')
-        if denied:
-            return denied
         site = resolve_site(request)
         if not site:
             return Response({'error': 'Select a permitted site before registering personnel.'}, status=status.HTTP_400_BAD_REQUEST)
+        enforce(request.user, 'manage_assets', site)
         serializer = PersonnelSerializer(data={**request.data, 'site': site.id, 'organisation': site.organisation_id})
         serializer.is_valid(raise_exception=True)
-        assigned_node = serializer.validated_data.get('assigned_node')
-        if assigned_node and assigned_node.site_id != site.id:
-            return Response({'error': 'Assigned device must belong to the selected site.'}, status=status.HTTP_400_BAD_REQUEST)
-        person = serializer.save()
+        try:
+            with transaction.atomic():
+                person = serializer.save()
+        except IntegrityError:
+            if Personnel.objects.filter(organisation=site.organisation, identifier=serializer.validated_data['identifier']).exists():
+                return Response({'identifier': ['This personnel ID is already used in this organisation.']}, status=status.HTTP_400_BAD_REQUEST)
+            raise
         return Response(PersonnelSerializer(person).data, status=status.HTTP_201_CREATED)
 
 
 class PersonnelDetailView(APIView):
     def get(self, request, person_id):
-        person = get_object_or_404(Personnel.objects.select_related('assigned_node'), pk=person_id, site__in=permitted_sites(request.user))
+        person = get_object_or_404(personnel_with_wearables(Personnel.objects.all()), pk=person_id, site__in=permitted_sites(request.user))
         return Response(PersonnelSerializer(person).data)
 
 

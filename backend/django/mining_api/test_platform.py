@@ -6,6 +6,7 @@ from django.contrib.auth import get_user_model
 from django.contrib.auth.hashers import make_password
 from django.db import IntegrityError, connection, transaction
 from django.test.utils import CaptureQueriesContext
+from django.utils import timezone
 from rest_framework.test import APIClient
 from .models import (Organisation, Site, SiteMembership, Node, Personnel, Asset,
     AuditEntry, MeasurementReading, SafetyAlert, GatewayRegistration, IngestedEvent, DeviceAssignment, LocationObservation)
@@ -111,6 +112,78 @@ class PlatformIntegrityTests(TestCase):
         self.assertEqual(DeviceAssignment.objects.count(), 1)
         with self.assertRaises(IntegrityError), transaction.atomic():
             DeviceAssignment.objects.create(node=self.node, asset=self.asset, site=self.a, started_by=self.operator)
+
+    def test_personnel_role_roundtrip_validation_and_read_only_scope(self):
+        endpoint = '/api/v1/personnel'
+        payload = {'site': self.a.pk, 'identifier': 'PER-0082', 'display_name': ' Mwamba Phiri ',
+                   'team': 'Ventilation crew', 'operational_role': 'MAINTENANCE_TECHNICIAN', 'assigned_node': self.node.pk}
+        invalid = self.client.post(endpoint, {**payload, 'operational_role': 'SITE_ADMIN'}, format='json')
+        self.assertEqual(invalid.status_code, 400)
+        self.assertIn('operational_role', invalid.json())
+        legacy = self.client.post(endpoint, {'site': self.a.pk, 'identifier': '0003', 'display_name': 'Legacy person'}, format='json')
+        self.assertEqual(legacy.status_code, 201)
+        self.assertIsNone(legacy.json()['operational_role'])
+        created = self.client.post(endpoint, payload, format='json')
+        self.assertEqual(created.status_code, 201)
+        row = created.json()
+        self.assertEqual(row['identifier'], 'PER-0082')
+        self.assertEqual(row['display_name'], 'Mwamba Phiri')
+        self.assertIsNone(row['assigned_node'])
+        self.assertIsNone(Personnel.objects.get(pk=row['id']).user_id)
+        denied = self.client.post(endpoint, {**payload, 'site': self.b.pk}, format='json')
+        self.assertEqual(denied.status_code, 403)
+        self.client.force_authenticate(self.admin)
+        duplicate = self.client.post(endpoint, {**payload, 'site': self.b.pk}, format='json')
+        self.assertEqual(duplicate.status_code, 400)
+        self.assertEqual(duplicate.json()['identifier'], ['This personnel ID is already used in this organisation.'])
+        self.client.force_authenticate(self.operator)
+        detail = f'/api/v1/entities/personnel/{row["id"]}'
+        direct = f'{endpoint}/{row["id"]}'
+        self.assertEqual(self.client.get(direct).json()['operational_role'], 'MAINTENANCE_TECHNICIAN')
+        self.assertEqual(self.client.get(detail).json()['operational_role_label'], 'Maintenance technician')
+        edit = self.operation('edit', expected_site=self.a.pk, changes={'operational_role': 'SHIFT_SUPERVISOR'})
+        self.assertEqual(self.client.post(detail, edit, format='json').status_code, 200)
+        roster = self.client.get(endpoint, {'site_id': self.a.pk, 'q': 'shift supervisor'}).json()
+        self.assertEqual([person['id'] for person in roster['personnel']], [row['id']])
+        stale = self.client.post(detail, self.operation('edit', changes={'operational_role': None}), format='json')
+        self.assertEqual(stale.status_code, 409)
+        self.assertEqual(self.client.post(detail, self.operation('edit', expected_version=2, changes={'team': ''}), format='json').status_code, 200)
+        self.assertEqual(self.client.get(detail).json()['operational_role'], 'SHIFT_SUPERVISOR')
+        clear = self.operation('edit', expected_version=3, changes={'operational_role': None})
+        self.assertEqual(self.client.post(detail, clear, format='json').status_code, 200)
+        self.assertIsNone(self.client.get(detail).json()['operational_role'])
+        self.assertEqual(SiteMembership.objects.get(user=self.operator, site=self.a).role, 'OPERATIONS')
+        self.assertFalse(DeviceAssignment.objects.exists())
+
+    def test_personnel_wearable_preserves_device_state_and_gates_prior_evidence(self):
+        self.client.force_authenticate(user=None)
+        self.client.force_login(self.operator)
+        self.node.is_simulated = False
+        self.node.current_zone = 'PREVIOUS-ZONE'
+        self.node.location_evidence = 'CONFIRMED'
+        self.node.location_observed_at = int(timezone.now().timestamp() * 1000) - 60_000
+        self.node.status = 'ONLINE'
+        self.node.save()
+        eligible = '/api/v1/devices/eligible'
+        self.assertIn(self.node.pk, [node['node_id'] for node in self.client.get(eligible, {'site_id': self.a.pk}).json()['nodes']])
+        detail = f'/api/v1/entities/personnel/{self.person.pk}'
+        self.assertEqual(self.client.post(detail, self.operation('assign', expected_site=self.a.pk, node_id=self.node.pk), format='json').status_code, 200)
+        self.assertNotIn(self.node.pk, [node['node_id'] for node in self.client.get(eligible, {'site_id': self.a.pk}).json()['nodes']])
+        other = Personnel.objects.create(organisation=self.org, site=self.a, identifier='P2', display_name='Second person')
+        self.assertEqual(self.client.post(f'/api/v1/entities/personnel/{other.pk}', self.operation('assign', node_id=self.node.pk), format='json').status_code, 409)
+        for response in (self.client.get(detail), self.client.get(f'/api/v1/personnel/{self.person.pk}')):
+            person = response.json()
+            self.assertEqual((person['node_id'], person['node_status']), (self.node.pk, 'ONLINE'))
+            self.assertEqual(person['location_evidence'], 'UNKNOWN')
+            self.assertIsNone(person['location_observed_at'])
+            self.assertIsNone(person['current_zone'])
+        self.node.current_zone = 'NORTH'
+        self.node.location_evidence = 'LAST_KNOWN'
+        self.node.location_observed_at = int(timezone.now().timestamp() * 1000) + 1000
+        self.node.save()
+        roster_person = self.client.get('/api/v1/personnel', {'site_id': self.a.pk, 'q': self.person.identifier}).json()['personnel'][0]
+        self.assertEqual((roster_person['location_evidence'], roster_person['current_zone']), ('LAST_KNOWN', 'NORTH'))
+        self.assertEqual(roster_person['location_observed_at'], self.node.location_observed_at)
 
     def test_transfer_preserves_event_site_and_closes_assignment(self):
         mutate(self.operator, 'personnel', self.person.pk, self.operation('assign', node_id=self.node.pk))

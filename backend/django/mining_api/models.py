@@ -137,7 +137,16 @@ class SiteMembership(models.Model):
         constraints = [models.UniqueConstraint(fields=['user', 'organisation', 'site'], name='unique_user_organisation_site_membership')]
 
 
+class OperationalRole(models.TextChoices):
+    UNDERGROUND_MINER = 'UNDERGROUND_MINER', 'Underground miner'
+    SHIFT_SUPERVISOR = 'SHIFT_SUPERVISOR', 'Shift supervisor'
+    MAINTENANCE_TECHNICIAN = 'MAINTENANCE_TECHNICIAN', 'Maintenance technician'
+    EQUIPMENT_OPERATOR = 'EQUIPMENT_OPERATOR', 'Equipment operator'
+    SAFETY_OFFICER = 'SAFETY_OFFICER', 'Safety officer'
+
+
 class Personnel(models.Model):
+    EMPLOYMENT_STATUSES = [('ACTIVE', 'Active'), ('INACTIVE', 'Inactive')]
     user = models.ForeignKey(settings.AUTH_USER_MODEL, null=True, blank=True, on_delete=models.PROTECT, related_name='personnel_identities')
     archived = models.BooleanField(default=False)
     version = models.PositiveIntegerField(default=1)
@@ -145,6 +154,7 @@ class Personnel(models.Model):
     site = models.ForeignKey(Site, null=True, blank=True, on_delete=models.SET_NULL, related_name='personnel')
     identifier = models.CharField(max_length=32)
     display_name = models.CharField(max_length=120)
+    operational_role = models.CharField(max_length=32, choices=OperationalRole.choices, null=True, blank=True)
     team = models.CharField(max_length=80, blank=True, default='')
     employment_status = models.CharField(max_length=24, default='ACTIVE')
     assigned_node = models.OneToOneField('Node', null=True, blank=True, on_delete=models.SET_NULL, related_name='assigned_person')

@@ -1,9 +1,10 @@
 from rest_framework import serializers
 from .models import (
     Asset, AuditEntry, DeviceCapability, FacilityLayout, Level, MeasurementReading,
-    Node, Organisation, Personnel, ProvisioningRequest, SafetyAlert, Site, TelemetryRecord,
+    LocationEvidence, Node, OperationalRole, Organisation, Personnel, ProvisioningRequest, SafetyAlert, Site, TelemetryRecord,
     Structure, Zone, SiteMembership,
 )
+from .personnel import wearable_location
 
 class NodeSerializer(serializers.ModelSerializer):
     site_name = serializers.CharField(source='site.name', read_only=True)
@@ -110,6 +111,12 @@ class FacilityLayoutSerializer(serializers.ModelSerializer):
 
 
 class PersonnelSerializer(serializers.ModelSerializer):
+    operational_role = serializers.ChoiceField(
+        choices=OperationalRole.choices, allow_null=True, required=False,
+        error_messages={'invalid_choice': 'Select a supported operational role or leave it unassigned.'},
+    )
+    operational_role_label = serializers.CharField(source='get_operational_role_display', read_only=True)
+    employment_status = serializers.ChoiceField(choices=Personnel.EMPLOYMENT_STATUSES, required=False)
     node_id = serializers.CharField(source='assigned_node.node_id', read_only=True)
     current_zone = serializers.CharField(source='assigned_node.current_zone', read_only=True)
     location_evidence = serializers.CharField(source='assigned_node.location_evidence', read_only=True)
@@ -118,8 +125,26 @@ class PersonnelSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = Personnel
-        read_only_fields = ['assigned_node']
-        fields = ['id', 'organisation', 'site', 'identifier', 'display_name', 'team', 'employment_status', 'assigned_node', 'node_id', 'current_zone', 'location_evidence', 'location_observed_at', 'node_status']
+        read_only_fields = ['assigned_node', 'archived']
+        fields = [
+            'id', 'organisation', 'site', 'identifier', 'display_name', 'operational_role',
+            'operational_role_label', 'team', 'employment_status', 'assigned_node', 'node_id',
+            'current_zone', 'location_evidence', 'location_observed_at', 'node_status', 'archived',
+        ]
+        validators = []
+
+    def validate(self, attrs):
+        if Personnel.objects.filter(organisation=attrs['organisation'], identifier=attrs['identifier']).exists():
+            raise serializers.ValidationError({'identifier': 'This personnel ID is already used in this organisation.'})
+        return attrs
+
+    def to_representation(self, person):
+        data = super().to_representation(person)
+        if person.assigned_node and person.assigned_node.site_id != person.site_id:
+            data.update(assigned_node=None, node_id=None, node_status=None)
+        if wearable_location(person) is None:
+            data.update(current_zone=None, location_evidence=LocationEvidence.UNKNOWN, location_observed_at=None)
+        return data
 
 
 class AssetSerializer(serializers.ModelSerializer):

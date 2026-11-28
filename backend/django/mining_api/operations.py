@@ -2,6 +2,7 @@
 import hashlib
 import json
 import uuid
+from django.contrib.auth import get_user_model
 from django.db import transaction, IntegrityError
 from django.core.exceptions import ValidationError as ModelValidationError
 from django.db.models import Q, F
@@ -9,7 +10,7 @@ from django.utils import timezone
 from django.shortcuts import get_object_or_404
 from rest_framework.exceptions import APIException, ValidationError
 from .access import enforce
-from .models import (Node, Personnel, Asset, Site, DeviceAssignment, AssetCustody,
+from .models import (Node, OperationalRole, Personnel, Asset, Site, DeviceAssignment, AssetCustody,
                      PlatformOperation, SiteTransfer, AuditEntry)
 
 
@@ -82,7 +83,7 @@ def _mutate(user, kind, pk, payload):
     except ValueError:
         raise ValidationError({'operation_id': 'A UUID is required.'})
     # Lock the actor to serialize same-actor retries before reserving the operation ID.
-    type(user).objects.select_for_update().get(pk=user.pk)
+    get_user_model().objects.select_for_update().get(pk=user.pk)
     digest = hashlib.sha256(json.dumps([kind, str(pk), payload], sort_keys=True).encode()).hexdigest()
     prior = PlatformOperation.objects.filter(pk=operation_id).first()
     if prior:
@@ -102,6 +103,8 @@ def _mutate(user, kind, pk, payload):
     if entity.site_id is None:
         raise ValidationError('The record must belong to a site before changing relationships.')
     enforce(user, 'manage_devices' if kind == 'devices' else 'manage_assets', entity.site)
+    if kind == 'personnel' and payload.get('expected_site', entity.site_id) != entity.site_id:
+        raise Conflict('The record belongs to another site. Reload before changing it.')
     if entity.archived:
         raise Conflict('Archived records cannot be changed.')
     if payload.get('expected_version') != entity.version:
@@ -179,11 +182,23 @@ def _mutate(user, kind, pk, payload):
         else:
             entity.archived = True
     elif action == 'edit':
-        allowed = {'personnel': ['display_name', 'team', 'employment_status'], 'assets': ['name', 'asset_type', 'operational_status'], 'devices': []}[kind]
+        allowed = {'personnel': ['display_name', 'team', 'employment_status', 'operational_role'], 'assets': ['name', 'asset_type', 'operational_status'], 'devices': []}[kind]
         changes = payload.get('changes', {})
         if not isinstance(changes, dict) or set(changes) - set(allowed):
             raise ValidationError('Unsupported edit fields.')
         for field, value in changes.items():
+            if field == 'operational_role':
+                if value is not None and (not isinstance(value, str) or value not in OperationalRole.values):
+                    raise ValidationError({field: 'Select a supported operational role or leave it unassigned.'})
+                entity.operational_role = value
+                continue
+            if kind == 'personnel' and field == 'employment_status' and (
+                not isinstance(value, str) or value not in dict(Personnel.EMPLOYMENT_STATUSES)
+            ):
+                raise ValidationError({field: 'Select Active or Inactive.'})
+            if kind == 'personnel' and field == 'team' and isinstance(value, str):
+                entity.team = value.strip()
+                continue
             if not isinstance(value, str) or not value.strip():
                 raise ValidationError({field: 'A non-empty string is required.'})
             setattr(entity, field, value.strip())
@@ -192,7 +207,6 @@ def _mutate(user, kind, pk, payload):
         if kind != 'personnel':
             raise ValidationError('Accounts link to personnel only.')
         enforce(user, 'manage_users', entity.site)
-        from django.contrib.auth import get_user_model
         linked = get_object_or_404(get_user_model(), pk=payload.get('user_id')) if payload.get('user_id') else None
         if linked:
             from .access import permitted_sites
