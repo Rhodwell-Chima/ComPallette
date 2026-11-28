@@ -22,6 +22,7 @@ from .models import (
     SiteMembership, Structure, Zone,
 )
 from .personnel import personnel_options, personnel_with_wearables
+from .assets import asset_projection, registry_page, site_asset_options
 from .serializers import (
     NodeSerializer, TelemetryRecordSerializer, SafetyAlertSerializer,
     AuditEntrySerializer, ProvisioningRequestSerializer, AssetSerializer,
@@ -718,30 +719,37 @@ class AssetListCreateView(APIView):
         if not site:
             return Response({'assets': [], 'count': 0})
         query = request.query_params.get('q', '').strip()
-        records = Asset.objects.filter(site=site).select_related('assigned_node')
+        records = Asset.objects.filter(site=site, organisation_id=site.organisation_id)
+        paginated = 'page' in request.query_params or 'page_size' in request.query_params
+        options = site_asset_options(records) if paginated else {}
         if query:
             records = records.filter(Q(identifier__icontains=query) | Q(name__icontains=query) | Q(asset_type__icontains=query))
-        return Response({'assets': AssetSerializer(records, many=True).data, 'count': records.count()})
+        if paginated:
+            records, pagination = registry_page(asset_projection(records), request.query_params)
+            return Response({'assets': AssetSerializer(records, many=True).data, **pagination, **options})
+        assets = AssetSerializer(asset_projection(records), many=True).data
+        return Response({'assets': assets, 'count': len(assets)})
 
     def post(self, request):
-        denied = require_capability(request, 'manage_assets')
-        if denied:
-            return denied
         site = resolve_site(request)
         if not site:
             return Response({'error': 'Select a permitted site before registering an asset.'}, status=status.HTTP_400_BAD_REQUEST)
+        enforce(request.user, 'manage_assets', site)
         serializer = AssetSerializer(data={**request.data, 'site': site.id, 'organisation': site.organisation_id})
         serializer.is_valid(raise_exception=True)
-        assigned_node = serializer.validated_data.get('assigned_node')
-        if assigned_node and assigned_node.site_id != site.id:
-            return Response({'error': 'Assigned device must belong to the selected site.'}, status=status.HTTP_400_BAD_REQUEST)
-        asset = serializer.save()
+        try:
+            with transaction.atomic():
+                asset = serializer.save()
+        except IntegrityError:
+            if Asset.objects.filter(organisation=site.organisation, identifier=serializer.validated_data['identifier']).exists():
+                return Response({'identifier': ['This asset ID is already used in this organisation.']}, status=status.HTTP_400_BAD_REQUEST)
+            raise
         return Response(AssetSerializer(asset).data, status=status.HTTP_201_CREATED)
 
 
 class AssetDetailView(APIView):
     def get(self, request, asset_id):
-        asset = get_object_or_404(Asset.objects.select_related('assigned_node'), pk=asset_id, site__in=permitted_sites(request.user))
+        asset = get_object_or_404(asset_projection(Asset.objects.all()), pk=asset_id, site__in=permitted_sites(request.user))
         return Response(AssetSerializer(asset).data)
 
 

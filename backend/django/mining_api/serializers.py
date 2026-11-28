@@ -156,8 +156,36 @@ class AssetSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = Asset
-        read_only_fields = ['assigned_node']
-        fields = ['id', 'organisation', 'site', 'identifier', 'name', 'asset_type', 'operational_status', 'assigned_node', 'node_id', 'current_zone', 'location_evidence', 'location_observed_at', 'node_status']
+        fields = ['id', 'organisation', 'site', 'identifier', 'name', 'asset_type', 'operational_status', 'assigned_node', 'node_id', 'current_zone', 'location_evidence', 'location_observed_at', 'node_status', 'archived']
+        read_only_fields = ['assigned_node', 'archived']
+        validators = []
+
+    def validate(self, attrs):
+        if Asset.objects.filter(organisation=attrs['organisation'], identifier=attrs['identifier']).exists():
+            raise serializers.ValidationError({'identifier': 'This asset ID is already used in this organisation.'})
+        return attrs
+
+    def to_representation(self, asset):
+        from .assets import EVIDENCE
+
+        data = super().to_representation(asset)
+        node = asset.assigned_node
+        if node and (node.site_id != asset.site_id or node.organisation_id != asset.organisation_id):
+            data.update(assigned_node=None, node_id=None, node_status=None)
+        if node and not node.last_seen_ts:
+            data['node_status'] = None
+        observed = getattr(asset, 'asset_observed_at', None)
+        data.update(
+            current_zone=getattr(asset, 'asset_zone', None),
+            location_evidence=EVIDENCE.get(getattr(asset, 'asset_observation_quality', None), 'UNKNOWN'),
+            location_observed_at=int(observed.timestamp() * 1000) if observed else None,
+            tracker_started_at=getattr(asset, 'tracker_started_at', None),
+            custodian=None,
+        )
+        if getattr(asset, 'custodian_id', None):
+            data['custodian'] = {'id': asset.custodian_id, 'name': asset.custodian_name,
+                                 'identifier': asset.custodian_identifier, 'started_at': asset.custody_started_at}
+        return data
 
 
 class DeviceCapabilitySerializer(serializers.ModelSerializer):

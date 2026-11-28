@@ -103,7 +103,7 @@ def _mutate(user, kind, pk, payload):
     if entity.site_id is None:
         raise ValidationError('The record must belong to a site before changing relationships.')
     enforce(user, 'manage_devices' if kind == 'devices' else 'manage_assets', entity.site)
-    if kind == 'personnel' and payload.get('expected_site', entity.site_id) != entity.site_id:
+    if kind in ('personnel', 'assets') and payload.get('expected_site', entity.site_id) != entity.site_id:
         raise Conflict('The record belongs to another site. Reload before changing it.')
     if entity.archived:
         raise Conflict('Archived records cannot be changed.')
@@ -196,8 +196,8 @@ def _mutate(user, kind, pk, payload):
                 not isinstance(value, str) or value not in dict(Personnel.EMPLOYMENT_STATUSES)
             ):
                 raise ValidationError({field: 'Select Active or Inactive.'})
-            if kind == 'personnel' and field == 'team' and isinstance(value, str):
-                entity.team = value.strip()
+            if field in ('team', 'asset_type') and isinstance(value, str):
+                setattr(entity, field, value.strip())
                 continue
             if not isinstance(value, str) or not value.strip():
                 raise ValidationError({field: 'A non-empty string is required.'})
